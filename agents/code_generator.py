@@ -98,16 +98,10 @@ class CodeGenerator:
         
         # Step 6: Generate dependencies and setup
         dependencies = await self._generate_dependencies("fastapi", list(all_files.keys()))
-        setup_instructions = await self._generate_setup_instructions(
-            "fastapi",
-            entity_name,
-            project_input.db_type
-        )
         
         return GeneratedCode(
             framework="fastapi",
             files=all_files,
-            setup_instructions=setup_instructions,
             dependencies=dependencies
         )
     
@@ -177,16 +171,10 @@ class CodeGenerator:
         
         # Step 6: Generate dependencies and setup
         dependencies = await self._generate_dependencies("express", list(all_files.keys()))
-        setup_instructions = await self._generate_setup_instructions(
-            "express",
-            entity_name,
-            project_input.db_type
-        )
         
         return GeneratedCode(
             framework="express",
             files=all_files,
-            setup_instructions=setup_instructions,
             dependencies=dependencies
         )
     

@@ -2,7 +2,8 @@ import os
 from anthropic import Anthropic
 from typing import Optional, Dict, Any
 import json
-
+from dotenv import load_dotenv
+load_dotenv()
 
 class ClaudeService:
     def __init__(self, api_key: Optional[str] = None):

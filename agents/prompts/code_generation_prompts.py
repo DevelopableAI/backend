@@ -190,24 +190,24 @@ class CodeGenerationPrompts:
     def get_dockerfile_system_prompt() -> str:
         return """You are an expert DevOps engineer specializing in Docker containerization.
 
-    Generate a production-ready Dockerfile for the application.
+        Generate a production-ready Dockerfile for the application.
 
-    CRITICAL RULES:
-    1. Output ONLY raw Dockerfile content - NO markdown, NO explanations
-    2. Do NOT wrap in ```dockerfile or ``` blocks
-    3. Use multi-stage builds when appropriate
-    4. Follow Docker best practices:
-    - Use specific base image versions
-    - Minimize layers
-    - Use .dockerignore
-    - Run as non-root user
-    - Optimize caching
-    5. Include health checks
-    6. Set proper working directory
-    7. Expose appropriate ports
-    8. Use environment variables for configuration
+        CRITICAL RULES:
+        1. Output ONLY raw Dockerfile content - NO markdown, NO explanations
+        2. Do NOT wrap in ```dockerfile or ``` blocks
+        3. Use multi-stage builds when appropriate
+        4. Follow Docker best practices:
+        - Use specific base image versions
+        - Minimize layers
+        - Use .dockerignore
+        - Run as non-root user
+        - Optimize caching
+        5. Include health checks
+        6. Set proper working directory
+        7. Expose appropriate ports
+        8. Use environment variables for configuration
 
-    Generate a complete, production-ready Dockerfile."""
+        Generate a complete, production-ready Dockerfile."""
 
     @staticmethod
     def get_dockerfile_user_message(
@@ -234,37 +234,37 @@ class CodeGenerationPrompts:
     def _get_framework_docker_requirements(framework: str) -> str:
         if framework == "fastapi":
             return """- Python 3.11+ base image
-        - Install dependencies from requirements.txt
-        - Run with uvicorn
-        - Expose port 8000
-        - Health check endpoint"""
+            - Install dependencies from requirements.txt
+            - Run with uvicorn
+            - Expose port 8000
+            - Health check endpoint"""
         else:  # express
             return """- Node 18+ base image
-        - Install dependencies from package.json
-        - Run with npm start or node
-        - Expose port 3000
-        - Health check endpoint"""
+            - Install dependencies from package.json
+            - Run with npm start or node
+            - Expose port 3000
+            - Health check endpoint"""
 
     @staticmethod
     def get_docker_compose_system_prompt() -> str:
         return """You are an expert DevOps engineer specializing in Docker Compose orchestration.
 
-    Generate a production-ready docker-compose.yml file.
+        Generate a production-ready docker-compose.yml file.
 
-    CRITICAL RULES:
-    1. Output ONLY raw YAML content - NO markdown, NO explanations
-    2. Do NOT wrap in ```yaml or ``` blocks
-    3. Include services for:
-    - Application
-    - Database
-    - Any other required services
-    4. Use environment variables
-    5. Set up networks
-    6. Configure volumes for data persistence
-    7. Add health checks
-    8. Use proper service dependencies
+        CRITICAL RULES:
+        1. Output ONLY raw YAML content - NO markdown, NO explanations
+        2. Do NOT wrap in ```yaml or ``` blocks
+        3. Include services for:
+        - Application
+        - Database
+        - Any other required services
+        4. Use environment variables
+        5. Set up networks
+        6. Configure volumes for data persistence
+        7. Add health checks
+        8. Use proper service dependencies
 
-    Generate a complete, production-ready docker-compose.yml."""
+        Generate a complete, production-ready docker-compose.yml."""
 
     @staticmethod
     def get_docker_compose_user_message(
@@ -297,7 +297,8 @@ class CodeGenerationPrompts:
         Generate COMPLETE docker-compose.yml.
         Output ONLY the YAML content - no markdown, no explanations."""
 
-    def _get_db_service_config(self, db_type: str) -> str:
+    @staticmethod
+    def _get_db_service_config(db_type: str) -> str:
         configs = {
             "postgresql": """- Image: postgres:15
     - Port: 5432

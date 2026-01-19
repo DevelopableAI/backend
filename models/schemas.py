@@ -55,7 +55,6 @@ class HumanFeedback(BaseModel):
 class GeneratedCode(BaseModel):
     framework: str
     files: Dict[str, str]
-    setup_instructions: str
     dependencies: List[str]
 
 
