@@ -147,7 +147,7 @@ delivery-api/
 | `/api/status/{session_id}` | GET | Get workflow status |
 | `/api/session/{session_id}` | DELETE | Clean up session |
 
-## 🎯 Key Features Explained
+## Key Features Explained
 
 ### 1. Human-in-the-Loop
 Unlike fully autonomous code generators, this system includes a critical review step where developers can:
