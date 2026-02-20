@@ -1,0 +1,12 @@
+import { Router } from 'express';
+import { {{ entity.name }}Controller } from '../controllers/{{ entity.name_lower }}.controller.js';
+
+const router = Router();
+const controller = new {{ entity.name }}Controller();
+
+{% for route in routes %}
+// {{ route.description }}
+router.{{ route.method | lower }}('{{ route.path | replace('/' + entity.name_plural, '') or '/' }}', controller.{{ route.handler }}.bind(controller));
+{% endfor %}
+
+export { router as {{ entity.name_plural }}Router };

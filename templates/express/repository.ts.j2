@@ -1,0 +1,50 @@
+import { Prisma } from '@prisma/client';
+import { prisma } from '../lib/prisma.js';
+import { PaginationParams } from '../lib/pagination.js';
+import { {{ entity.name }}CreateInput, {{ entity.name }}UpdateInput } from '../types/{{ entity.name_lower }}.types.js';
+
+export class {{ entity.name }}Repository {
+
+  async findMany(
+    pagination: PaginationParams,
+  ): Promise<{ data: any[]; total: number }> {
+    const [data, total] = await prisma.$transaction([
+      prisma.{{ entity.name_lower }}.findMany({
+        skip: pagination.skip,
+        take: pagination.limit,
+        orderBy: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: 'desc' },
+      }),
+      prisma.{{ entity.name_lower }}.count(),
+    ]);
+
+    return { data, total };
+  }
+
+  async findById(id: number): Promise<any | null> {
+    return prisma.{{ entity.name_lower }}.findUnique({
+      where: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: id },
+    });
+  }
+
+  async create(data: {{ entity.name }}CreateInput): Promise<any> {
+    return prisma.{{ entity.name_lower }}.create({ data });
+  }
+
+  async update(id: number, data: {{ entity.name }}UpdateInput): Promise<any | null> {
+    try {
+      return await prisma.{{ entity.name_lower }}.update({
+        where: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: id },
+        data,
+      });
+    } catch (err: any) {
+      if (err.code === 'P2025') return null;
+      throw err;
+    }
+  }
+
+  async delete(id: number): Promise<void> {
+    await prisma.{{ entity.name_lower }}.delete({
+      where: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: id },
+    });
+  }
+}

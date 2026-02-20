@@ -1,0 +1,25 @@
+import { z } from 'zod';
+import { ValidationError } from '../lib/errors.js';
+import { {{ entity.name }}CreateInput, {{ entity.name }}UpdateInput } from '../types/{{ entity.name_lower }}.types.js';
+
+/* LLM_SECTION_START */
+// TODO: define zod schemas for {{ entity.name }} create and update
+const {{ entity.name_lower }}CreateSchema = z.object({});
+const {{ entity.name_lower }}UpdateSchema = z.object({});
+/* LLM_SECTION_END */
+
+export function validate{{ entity.name }}Create(body: unknown): {{ entity.name }}CreateInput {
+  const result = {{ entity.name_lower }}CreateSchema.safeParse(body);
+  if (!result.success) {
+    throw new ValidationError(result.error.errors.map(e => e.message).join(', '));
+  }
+  return result.data as {{ entity.name }}CreateInput;
+}
+
+export function validate{{ entity.name }}Update(body: unknown): {{ entity.name }}UpdateInput {
+  const result = {{ entity.name_lower }}UpdateSchema.safeParse(body);
+  if (!result.success) {
+    throw new ValidationError(result.error.errors.map(e => e.message).join(', '));
+  }
+  return result.data as {{ entity.name }}UpdateInput;
+}
