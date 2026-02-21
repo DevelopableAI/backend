@@ -1,13 +1,8 @@
 FROM postgres:15-alpine
 
-ENV POSTGRES_USER=root
-ENV POSTGRES_PASSWORD=root
-
-# Copy initialization SQL into the image so Postgres will run it on first startup
-COPY docker/initdb/init.sql /docker-entrypoint-initdb.d/
-
+ENV POSTGRES_USER=postgres
+ENV POSTGRES_PASSWORD=postgres
 EXPOSE 5432
-
 
 # Basic healthcheck (requires `pg_isready` present in image)
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s \
