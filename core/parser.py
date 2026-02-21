@@ -255,15 +255,26 @@ class PrismaParser:
 
         return relations
 
+    # Common password field names that indicate an auth entity even without @llm sensitive
+    _PASSWORD_FIELD_NAMES = {
+        "password", "passwordHash", "hashedPassword",
+        "password_hash", "hashed_password", "passwd",
+    }
+
     def _detect_auth_entity(self, spec: dict) -> None:
         """
         Find the entity that acts as the authentication principal.
-        Heuristic: has an 'email' field AND at least one field marked is_sensitive.
+        Heuristic: has an 'email' field AND at least one field that is either
+        marked @llm sensitive OR has a well-known password field name.
         Marks it with is_auth_entity=True and sets spec['auth_entity_name'].
         """
         for entity in spec["entities"]:
             has_email = any(f["name"] == "email" for f in entity["fields"] if not f["is_relation"])
-            has_sensitive = any(f["is_sensitive"] for f in entity["fields"])
+            has_sensitive = any(
+                f["is_sensitive"] or f["name"] in self._PASSWORD_FIELD_NAMES
+                for f in entity["fields"]
+                if not f["is_relation"]
+            )
             if has_email and has_sensitive:
                 entity["is_auth_entity"] = True
                 spec["auth_entity_name"] = entity["name"]
