@@ -8,10 +8,25 @@ const {{ entity.name_lower }}CreateSchema = z.object({});
 const {{ entity.name_lower }}UpdateSchema = z.object({});
 /* LLM_SECTION_END */
 
+function formatErrors(errors: z.ZodIssue[]): string {
+  const seen = new Set<string>();
+  return errors
+    .map(e => {
+      const field = e.path.length > 0 ? e.path.join('.') : null;
+      return field ? `${field}: ${e.message}` : e.message;
+    })
+    .filter(msg => {
+      if (seen.has(msg)) return false;
+      seen.add(msg);
+      return true;
+    })
+    .join(', ');
+}
+
 export function validate{{ entity.name }}Create(body: unknown): {{ entity.name }}CreateInput {
   const result = {{ entity.name_lower }}CreateSchema.safeParse(body);
   if (!result.success) {
-    throw new ValidationError(result.error.errors.map(e => e.message).join(', '));
+    throw new ValidationError(formatErrors(result.error.errors));
   }
   return result.data as {{ entity.name }}CreateInput;
 }
@@ -19,7 +34,7 @@ export function validate{{ entity.name }}Create(body: unknown): {{ entity.name }
 export function validate{{ entity.name }}Update(body: unknown): {{ entity.name }}UpdateInput {
   const result = {{ entity.name_lower }}UpdateSchema.safeParse(body);
   if (!result.success) {
-    throw new ValidationError(result.error.errors.map(e => e.message).join(', '));
+    throw new ValidationError(formatErrors(result.error.errors));
   }
   return result.data as {{ entity.name }}UpdateInput;
 }
