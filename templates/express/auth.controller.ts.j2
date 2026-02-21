@@ -1,0 +1,116 @@
+import { Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
+import { z } from 'zod';
+import { prisma } from '../lib/prisma.js';
+import { hashValue, compareValue } from '../lib/crypto.js';
+import { AppError, ValidationError } from '../lib/errors.js';
+
+{% set credential_field = sensitive_fields[0] if sensitive_fields else None %}
+
+const registerSchema = z.object({
+  email: z.string().email({ message: 'Please provide a valid email address' }),
+{% if credential_field %}
+  {{ credential_field.name }}: z.string().min(8, { message: '{{ credential_field.name | capitalize }} must be at least 8 characters' }).max(128),
+{% endif %}
+{% for field in auth_entity.fields if not field.is_relation and not field.is_id and field.name != 'email' and not field.is_sensitive %}
+{% if not field.is_optional and not field.default %}
+  {{ field.name }}: z.{{ 'string()' if field.ts_type == 'string' else 'number()' if field.ts_type == 'number' else 'boolean()' if field.ts_type == 'boolean' else 'string()' }},
+{% else %}
+  {{ field.name }}: z.{{ 'string()' if field.ts_type == 'string' else 'number()' if field.ts_type == 'number' else 'boolean()' if field.ts_type == 'boolean' else 'string()' }}.optional(),
+{% endif %}
+{% endfor %}
+});
+
+const loginSchema = z.object({
+  email: z.string().email({ message: 'Please provide a valid email address' }),
+{% if credential_field %}
+  {{ credential_field.name }}: z.string().min(1),
+{% endif %}
+});
+
+// Safe select: all non-sensitive fields returned from register
+const safeSelect = {
+{% for field in auth_entity.fields if not field.is_relation and not field.is_sensitive %}
+  {{ field.name }}: true,
+{% endfor %}
+} as const;
+
+export class AuthController {
+  async register(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const parsed = registerSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const message = parsed.error.errors.map((e) => e.message).join(', ');
+        throw new ValidationError(message);
+      }
+
+      const data = parsed.data;
+{% if credential_field %}
+      const hashedCredential = await hashValue(data.{{ credential_field.name }});
+{% endif %}
+
+      const {{ auth_entity.name_lower }} = await prisma.{{ auth_entity.name_lower }}.create({
+        data: {
+          ...data,
+{% if credential_field %}
+          {{ credential_field.name }}: hashedCredential,
+{% endif %}
+        },
+        select: safeSelect,
+      });
+
+      const token = jwt.sign(
+        { id: {{ auth_entity.name_lower }}.id, email: {{ auth_entity.name_lower }}.email },
+        process.env.JWT_SECRET!,
+        { expiresIn: '7d' },
+      );
+
+      res.status(201).json({ token, {{ auth_entity.name_lower }} });
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        next(new AppError(409, 'An account with this email already exists'));
+      } else {
+        next(err);
+      }
+    }
+  }
+
+  async login(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const parsed = loginSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const message = parsed.error.errors.map((e) => e.message).join(', ');
+        throw new ValidationError(message);
+      }
+
+      const { email{% if credential_field %}, {{ credential_field.name }}{% endif %} } = parsed.data;
+
+      // Fetch the record including the sensitive credential field for verification
+      const {{ auth_entity.name_lower }} = await prisma.{{ auth_entity.name_lower }}.findUnique({
+        where: { email },
+      });
+
+      if (!{{ auth_entity.name_lower }}) {
+        throw new AppError(401, 'Invalid email or password');
+      }
+
+{% if credential_field %}
+      const credentialValid = await compareValue({{ credential_field.name }}, {{ auth_entity.name_lower }}.{{ credential_field.name }});
+      if (!credentialValid) {
+        throw new AppError(401, 'Invalid email or password');
+      }
+{% endif %}
+
+      const token = jwt.sign(
+        { id: {{ auth_entity.name_lower }}.id, email: {{ auth_entity.name_lower }}.email },
+        process.env.JWT_SECRET!,
+        { expiresIn: '7d' },
+      );
+
+      // Return token only — never expose the credential field in a response
+      res.json({ token });
+    } catch (err) {
+      next(err);
+    }
+  }
+}

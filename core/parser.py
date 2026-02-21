@@ -37,6 +37,7 @@ class PrismaParser:
                         "is_id": True,
                         "is_unique": False,
                         "is_relation": False,
+                        "is_sensitive": False,   # True when // @llm sensitive comment is present
                         "default": "autoincrement()",
                         "annotations": []
                     },
@@ -46,16 +47,19 @@ class PrismaParser:
                     {
                         "name": "posts",
                         "related_entity": "Post",
-                        "type": "one_to_many"   # one_to_one | one_to_many | many_to_one
+                        "type": "one_to_many",   # one_to_one | one_to_many | many_to_one
+                        "fk_field": None          # scalar FK field name (many_to_one only)
                     }
                 ],
+                "is_auth_entity": False,   # True for the entity with email + sensitive field
                 "llm_hints": []   # anything from // @llm comments above the model
             }
         ],
         "datasource": {
             "provider": "postgresql",
             "url": "env(\"DATABASE_URL\")"
-        }
+        },
+        "auth_entity_name": None   # name of the detected auth entity, or None
     }
     """
 
@@ -65,7 +69,8 @@ class PrismaParser:
             "entities": [],
             "datasource": self._parse_datasource(text),
             "env_vars": self._extract_env_vars(text),
-            "schema_path": str(path)
+            "schema_path": str(path),
+            "auth_entity_name": None,
         }
 
         for model_block, llm_hints in self._extract_model_blocks(text):
@@ -80,6 +85,9 @@ class PrismaParser:
                     field["is_relation"] = True
 
             entity["relations"] = self._resolve_relations(entity, known_entities)
+
+        # third pass: detect auth entity (has email field + at least one sensitive field)
+        self._detect_auth_entity(spec)
 
         return spec
 
@@ -168,10 +176,14 @@ class PrismaParser:
             "name_plural": self._pluralize(name[0].lower() + name[1:]),
             "fields": fields,
             "relations": [],
+            "is_auth_entity": False,
             "llm_hints": llm_hints,
         }
 
     def _parse_field_line(self, line: str) -> dict | None:
+        # detect // @llm sensitive BEFORE stripping inline comments
+        is_sensitive = bool(re.search(r"//\s*@llm\s+sensitive", line))
+
         # strip inline comments
         line = re.sub(r"\s*//.*$", "", line).strip()
         if not line:
@@ -208,24 +220,54 @@ class PrismaParser:
             "is_id": is_id,
             "is_unique": is_unique,
             "is_relation": False,
+            "is_sensitive": is_sensitive,
             "default": default_val,
             "annotations": annotations,
         }
 
     def _resolve_relations(self, entity: dict, known_entities: set[str]) -> list[dict]:
         relations = []
+
+        # Build fk_map: relation field name -> FK scalar field name
+        # by parsing @relation(fields: [...]) annotations on relation fields
+        fk_map: dict[str, str] = {}
+        for field in entity["fields"]:
+            for ann in field.get("annotations", []):
+                fk_match = re.search(r"@relation\(fields:\s*\[([^\]]+)\]", ann)
+                if fk_match:
+                    fk_fields = [f.strip() for f in fk_match.group(1).split(",")]
+                    if fk_fields:
+                        fk_map[field["name"]] = fk_fields[0]
+
         for field in entity["fields"]:
             if field["prisma_type"] not in known_entities:
                 continue
 
             rel_type = "one_to_many" if field["is_list"] else "many_to_one"
+            fk_field = fk_map.get(field["name"])  # None for one_to_many (FK is on the child side)
+
             relations.append({
                 "name": field["name"],
                 "related_entity": field["prisma_type"],
                 "type": rel_type,
+                "fk_field": fk_field,
             })
 
         return relations
+
+    def _detect_auth_entity(self, spec: dict) -> None:
+        """
+        Find the entity that acts as the authentication principal.
+        Heuristic: has an 'email' field AND at least one field marked is_sensitive.
+        Marks it with is_auth_entity=True and sets spec['auth_entity_name'].
+        """
+        for entity in spec["entities"]:
+            has_email = any(f["name"] == "email" for f in entity["fields"] if not f["is_relation"])
+            has_sensitive = any(f["is_sensitive"] for f in entity["fields"])
+            if has_email and has_sensitive:
+                entity["is_auth_entity"] = True
+                spec["auth_entity_name"] = entity["name"]
+                return  # only one auth entity supported
 
     def _pluralize(self, word: str) -> str:
         if word.endswith("y") and not word[-2] in "aeiou":

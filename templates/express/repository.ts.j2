@@ -1,10 +1,23 @@
-import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { PaginationParams } from '../lib/pagination.js';
 import { {{ entity.name }}CreateInput, {{ entity.name }}UpdateInput } from '../types/{{ entity.name_lower }}.types.js';
+{% set sensitive_fields = entity.fields | selectattr('is_sensitive') | list %}
+{% if sensitive_fields %}
+import { hashValue } from '../lib/crypto.js';
+{% endif %}
+
+{% set has_safe_select = sensitive_fields | length > 0 %}
 
 export class {{ entity.name }}Repository {
+{% if has_safe_select %}
+  // Sensitive fields are excluded from all read responses
+  private readonly safeSelect = {
+{% for field in entity.fields if not field.is_relation %}
+    {{ field.name }}: {{ 'false' if field.is_sensitive else 'true' }},
+{% endfor %}
+  } as const;
 
+{% endif %}
   async findMany(
     pagination: PaginationParams,
   ): Promise<{ data: any[]; total: number }> {
@@ -13,6 +26,9 @@ export class {{ entity.name }}Repository {
         skip: pagination.skip,
         take: pagination.limit,
         orderBy: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: 'desc' },
+{% if has_safe_select %}
+        select: this.safeSelect,
+{% endif %}
       }),
       prisma.{{ entity.name_lower }}.count(),
     ]);
@@ -23,19 +39,63 @@ export class {{ entity.name }}Repository {
   async findById(id: number): Promise<any | null> {
     return prisma.{{ entity.name_lower }}.findUnique({
       where: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: id },
+{% if has_safe_select %}
+      select: this.safeSelect,
+{% endif %}
     });
   }
 
   async create(data: {{ entity.name }}CreateInput): Promise<any> {
-    return prisma.{{ entity.name_lower }}.create({ data });
+{% if sensitive_fields %}
+    // Hash sensitive fields before persisting to the database
+    const securedData: Record<string, any> = { ...data };
+{% for field in sensitive_fields %}
+    if (securedData.{{ field.name }}) {
+      securedData.{{ field.name }} = await hashValue(String(securedData.{{ field.name }}));
+    }
+{% endfor %}
+    return prisma.{{ entity.name_lower }}.create({
+      data: securedData as {{ entity.name }}CreateInput,
+{% if has_safe_select %}
+      select: this.safeSelect,
+{% endif %}
+    });
+{% else %}
+    return prisma.{{ entity.name_lower }}.create({
+      data,
+{% if has_safe_select %}
+      select: this.safeSelect,
+{% endif %}
+    });
+{% endif %}
   }
 
   async update(id: number, data: {{ entity.name }}UpdateInput): Promise<any | null> {
     try {
+{% if sensitive_fields %}
+      // Hash sensitive fields if included in the update payload
+      const securedData: Record<string, any> = { ...data };
+{% for field in sensitive_fields %}
+      if (securedData.{{ field.name }}) {
+        securedData.{{ field.name }} = await hashValue(String(securedData.{{ field.name }}));
+      }
+{% endfor %}
+      return await prisma.{{ entity.name_lower }}.update({
+        where: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: id },
+        data: securedData as {{ entity.name }}UpdateInput,
+{% if has_safe_select %}
+        select: this.safeSelect,
+{% endif %}
+      });
+{% else %}
       return await prisma.{{ entity.name_lower }}.update({
         where: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: id },
         data,
+{% if has_safe_select %}
+        select: this.safeSelect,
+{% endif %}
       });
+{% endif %}
     } catch (err: any) {
       if (err.code === 'P2025') return null;
       throw err;
@@ -47,4 +107,27 @@ export class {{ entity.name }}Repository {
       where: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: id },
     });
   }
+{% for rel in parent_fk_relations %}
+
+  // Find all {{ entity.name_plural }} belonging to a parent via {{ rel.fk_field }}
+  async findManyBy{{ rel.fk_field | capitalize }}(
+    parentId: number,
+    pagination: PaginationParams,
+  ): Promise<{ data: any[]; total: number }> {
+    const [data, total] = await prisma.$transaction([
+      prisma.{{ entity.name_lower }}.findMany({
+        where: { {{ rel.fk_field }}: parentId },
+        skip: pagination.skip,
+        take: pagination.limit,
+        orderBy: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: 'desc' },
+{% if has_safe_select %}
+        select: this.safeSelect,
+{% endif %}
+      }),
+      prisma.{{ entity.name_lower }}.count({ where: { {{ rel.fk_field }}: parentId } }),
+    ]);
+
+    return { data, total };
+  }
+{% endfor %}
 }
