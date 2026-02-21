@@ -75,7 +75,7 @@ class Planner:
             {
                 "path": ".env.example",
                 "template": "express/env.example.j2",
-                "context": {"datasource": datasource},
+                "context": {"datasource": datasource, "env_vars": spec.get("env_vars", [])},
                 "needs_llm": False,
             },
         ]

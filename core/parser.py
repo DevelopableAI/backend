@@ -64,6 +64,7 @@ class PrismaParser:
         spec: dict[str, Any] = {
             "entities": [],
             "datasource": self._parse_datasource(text),
+            "env_vars": self._extract_env_vars(text),
             "schema_path": str(path)
         }
 
@@ -81,6 +82,17 @@ class PrismaParser:
             entity["relations"] = self._resolve_relations(entity, known_entities)
 
         return spec
+
+    def _extract_env_vars(self, text: str) -> list[str]:
+        """Extract all env variable names referenced via env("VAR_NAME") in the schema."""
+        matches = re.findall(r'env\("([^"]+)"\)', text)
+        seen: set[str] = set()
+        result = []
+        for m in matches:
+            if m not in seen:
+                seen.add(m)
+                result.append(m)
+        return result
 
     def _parse_datasource(self, text: str) -> dict:
         datasource: dict[str, str] = {"provider": "postgresql", "url": "env(\"DATABASE_URL\")"}

@@ -13,7 +13,7 @@ class Assembler:
         self.template_gen = TemplateGenerator()
         self.llm_gen = LLMGenerator() if use_llm else None
 
-    def assemble(self, spec: dict[str, Any], plan: dict[str, Any]):
+    def assemble(self, spec: dict[str, Any], plan: dict[str, Any], env_values: dict[str, str] | None = None):
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
         for file_plan in plan["files"]:
@@ -25,6 +25,10 @@ class Assembler:
             print(f"  wrote {file_plan['path']}")
 
         self._copy_schema(spec)
+
+        if env_values:
+            self._write_env_file(env_values)
+
         self._run_formatter()
 
     def _generate_file(self, file_plan: dict, spec: dict) -> str:
@@ -62,6 +66,12 @@ class Assembler:
         except subprocess.CalledProcessError:
             print("Prettier not available, skipping formatting")
     
+    def _write_env_file(self, env_values: dict[str, str]):
+        env_path = self.out_dir / ".env"
+        lines = [f"{key}={value}" for key, value in env_values.items()]
+        env_path.write_text("\n".join(lines) + "\n")
+        print("  wrote .env")
+
     def _copy_schema(self, spec: dict):
         source = spec.get("schema_path")
         if not source:
