@@ -73,6 +73,12 @@ class Planner:
                 "needs_llm": False,
             },
             {
+                "path": "src/lib/logger.ts",
+                "template": "express/logger.ts.j2",
+                "context": {},
+                "needs_llm": False,
+            },
+            {
                 "path": ".env.example",
                 "template": "express/env.example.j2",
                 "context": {"datasource": datasource, "env_vars": spec.get("env_vars", [])},
