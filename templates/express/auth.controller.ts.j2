@@ -1,11 +1,12 @@
+{% set credential_field = sensitive_fields[0] if sensitive_fields else None %}
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
+{% if credential_field %}
 import { hashValue, compareValue } from '../lib/crypto.js';
+{% endif %}
 import { AppError, ValidationError } from '../lib/errors.js';
-
-{% set credential_field = sensitive_fields[0] if sensitive_fields else None %}
 
 const registerSchema = z.object({
   email: z.string().email({ message: 'Please provide a valid email address' }),
