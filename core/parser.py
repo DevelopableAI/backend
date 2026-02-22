@@ -276,6 +276,12 @@ class PrismaParser:
                 if not f["is_relation"]
             )
             if has_email and has_sensitive:
+                # Ensure password-named fields are marked sensitive so the
+                # template pipeline (planner → template) can use them correctly
+                # even when the schema omits the // @llm sensitive comment.
+                for f in entity["fields"]:
+                    if not f["is_relation"] and f["name"] in self._PASSWORD_FIELD_NAMES:
+                        f["is_sensitive"] = True
                 entity["is_auth_entity"] = True
                 spec["auth_entity_name"] = entity["name"]
                 return  # only one auth entity supported
