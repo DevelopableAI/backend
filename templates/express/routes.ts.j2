@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { {{ entity.name }}Controller } from '../controllers/{{ entity.name_lower }}.controller.js';
-{% if auth_entity_name and (owner_fk_field or nested_routes) %}
+{% if auth_entity_name %}
 import { authenticate } from '../lib/auth.js';
 {% endif %}
 
@@ -8,10 +8,14 @@ const router = Router();
 const controller = new {{ entity.name }}Controller();
 
 {% for route in routes %}
-{% if route.method in ['PUT', 'DELETE'] and owner_fk_field %}
+{% if route.method in ['PUT', 'DELETE'] and auth_entity_name %}
+{% if owner_fk_field %}
 // {{ route.description }} (requires authentication + ownership)
+{% else %}
+// {{ route.description }} (requires authentication)
+{% endif %}
 router.{{ route.method | lower }}('{{ route.path | replace('/' + entity.name_plural, '') or '/' }}', authenticate, controller.{{ route.handler }}.bind(controller));
-{% elif route.method == 'POST' and owner_fk_field %}
+{% elif route.method == 'POST' and auth_entity_name %}
 // {{ route.description }} (requires authentication)
 router.{{ route.method | lower }}('{{ route.path | replace('/' + entity.name_plural, '') or '/' }}', authenticate, controller.{{ route.handler }}.bind(controller));
 {% else %}
