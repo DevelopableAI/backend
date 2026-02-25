@@ -7,6 +7,7 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// @auth_entity
 model User {
   id        Int       @id @default(autoincrement())
   email     String    @unique

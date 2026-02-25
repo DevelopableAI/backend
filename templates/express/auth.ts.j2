@@ -3,11 +3,8 @@ import jwt from 'jsonwebtoken';
 
 export interface AuthUser {
   id: {{ auth_entity.auth_id_ts_type }};
-{% if auth_entity.auth_login_field %}
-  {{ auth_entity.auth_login_field.name }}: {{ auth_entity.auth_login_field.ts_type }};
-{% endif %}
-{% for field in auth_entity.auth_extra_info_fields %}
-  {{ field.name }}: {{ field.ts_type }};
+{% for field in auth_entity.fields if not field.is_id and not field.is_sensitive and not field.is_relation %}
+  {{ field.name }}{% if field.is_optional %}?{% endif %}: {{ field.ts_type }};
 {% endfor %}
 }
 

@@ -43,7 +43,7 @@ const loginSchema = z.object({
 {% endif %}
 });
 
-// Safe select: all non-sensitive fields returned from register
+// Safe select: all non-sensitive fields returned from register / embedded in JWT
 const safeSelect = {
 {% for field in auth_entity.fields if not field.is_relation and not field.is_sensitive %}
   {{ field.name }}: true,
@@ -74,16 +74,10 @@ export class AuthController {
         select: safeSelect,
       });
 
+      // Spread entire safe record into JWT; map PK field to 'id' for a stable AuthUser.id
+      const { {{ id_field_name }}: pkValue, ...otherFields } = {{ auth_entity.name_lower }};
       const token = jwt.sign(
-        {
-          id: {{ auth_entity.name_lower }}.{{ id_field_name }},
-{% if login_field %}
-          {{ login_field.name }}: {{ auth_entity.name_lower }}.{{ login_field.name }},
-{% endif %}
-{% for field in auth_entity.auth_extra_info_fields %}
-          {{ field.name }}: {{ auth_entity.name_lower }}.{{ field.name }},
-{% endfor %}
-        },
+        { id: pkValue, ...otherFields },
         process.env.JWT_SECRET!,
         { expiresIn: '7d' },
       );
@@ -140,16 +134,10 @@ export class AuthController {
       }
 {% endif %}
 
+      // Build JWT payload: exclude sensitive fields, map PK to 'id' for a stable AuthUser.id
+      const { {{ id_field_name }}: pkValue, {% for sf in sensitive_fields %}{{ sf.name }}: _sf{{ loop.index0 }}, {% endfor %}...otherFields } = {{ auth_entity.name_lower }};
       const token = jwt.sign(
-        {
-          id: {{ auth_entity.name_lower }}.{{ id_field_name }},
-{% if login_field %}
-          {{ login_field.name }}: {{ auth_entity.name_lower }}.{{ login_field.name }},
-{% endif %}
-{% for field in auth_entity.auth_extra_info_fields %}
-          {{ field.name }}: {{ auth_entity.name_lower }}.{{ field.name }},
-{% endfor %}
-        },
+        { id: pkValue, ...otherFields },
         process.env.JWT_SECRET!,
         { expiresIn: '7d' },
       );
