@@ -2,8 +2,13 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
 export interface AuthUser {
-  id: number;
-  email: string;
+  id: {{ auth_entity.auth_id_ts_type }};
+{% if auth_entity.auth_login_field %}
+  {{ auth_entity.auth_login_field.name }}: {{ auth_entity.auth_login_field.ts_type }};
+{% endif %}
+{% for field in auth_entity.auth_extra_info_fields %}
+  {{ field.name }}: {{ field.ts_type }};
+{% endfor %}
 }
 
 declare global {

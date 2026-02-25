@@ -1,4 +1,6 @@
 {% set credential_field = sensitive_fields[0] if sensitive_fields else None %}
+{% set login_field = auth_entity.auth_login_field %}
+{% set id_field_name = auth_entity.auth_id_field %}
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
@@ -9,11 +11,17 @@ import { hashValue, compareValue } from '../lib/crypto.js';
 import { AppError, ValidationError } from '../lib/errors.js';
 
 const registerSchema = z.object({
+{% if login_field %}
+{% if login_field.name == 'email' %}
   email: z.string().email({ message: 'Please provide a valid email address' }),
+{% else %}
+  {{ login_field.name }}: z.string(),
+{% endif %}
+{% endif %}
 {% if credential_field %}
   {{ credential_field.name }}: z.string().min(8, { message: '{{ credential_field.name | capitalize }} must be at least 8 characters' }).max(128),
 {% endif %}
-{% for field in auth_entity.fields if not field.is_relation and not field.is_id and field.name != 'email' and not field.is_sensitive %}
+{% for field in auth_entity.fields if not field.is_relation and not field.is_id and not field.is_sensitive and (not login_field or field.name != login_field.name) %}
 {% if not field.is_optional and not field.default %}
   {{ field.name }}: z.{{ 'string()' if field.ts_type == 'string' else 'number()' if field.ts_type == 'number' else 'boolean()' if field.ts_type == 'boolean' else 'string()' }},
 {% else %}
@@ -23,7 +31,13 @@ const registerSchema = z.object({
 });
 
 const loginSchema = z.object({
+{% if login_field %}
+{% if login_field.name == 'email' %}
   email: z.string().email({ message: 'Please provide a valid email address' }),
+{% else %}
+  {{ login_field.name }}: z.string().min(1),
+{% endif %}
+{% endif %}
 {% if credential_field %}
   {{ credential_field.name }}: z.string().min(1),
 {% endif %}
@@ -61,7 +75,15 @@ export class AuthController {
       });
 
       const token = jwt.sign(
-        { id: {{ auth_entity.name_lower }}.id, email: {{ auth_entity.name_lower }}.email },
+        {
+          id: {{ auth_entity.name_lower }}.{{ id_field_name }},
+{% if login_field %}
+          {{ login_field.name }}: {{ auth_entity.name_lower }}.{{ login_field.name }},
+{% endif %}
+{% for field in auth_entity.auth_extra_info_fields %}
+          {{ field.name }}: {{ auth_entity.name_lower }}.{{ field.name }},
+{% endfor %}
+        },
         process.env.JWT_SECRET!,
         { expiresIn: '7d' },
       );
@@ -69,7 +91,7 @@ export class AuthController {
       res.status(201).json({ token, {{ auth_entity.name_lower }} });
     } catch (err: any) {
       if (err?.code === 'P2002') {
-        next(new AppError(409, 'An account with this email already exists'));
+        next(new AppError(409, 'An account with this {{ login_field.name if login_field else 'identifier' }} already exists'));
       } else {
         next(err);
       }
@@ -84,26 +106,50 @@ export class AuthController {
         throw new ValidationError(message);
       }
 
-      const { email{% if credential_field %}, {{ credential_field.name }}{% endif %} } = parsed.data;
+{% if login_field %}
+      const {{ login_field.name }} = parsed.data.{{ login_field.name }};
+{% endif %}
+{% if credential_field %}
+      const {{ credential_field.name }} = parsed.data.{{ credential_field.name }};
+{% endif %}
 
       // Fetch the record including the sensitive credential field for verification
+{% if login_field %}
+{% if login_field.is_unique or login_field.is_id %}
       const {{ auth_entity.name_lower }} = await prisma.{{ auth_entity.name_lower }}.findUnique({
-        where: { email },
+        where: { {{ login_field.name }} },
       });
+{% else %}
+      const {{ auth_entity.name_lower }} = await prisma.{{ auth_entity.name_lower }}.findFirst({
+        where: { {{ login_field.name }} },
+      });
+{% endif %}
+{% else %}
+      // No unique login field available — cannot perform login lookup
+      throw new AppError(501, 'Login not supported for this entity configuration');
+{% endif %}
 
       if (!{{ auth_entity.name_lower }}) {
-        throw new AppError(401, 'Invalid email or password');
+        throw new AppError(401, 'Invalid {{ login_field.name if login_field else 'credentials' }} or {{ credential_field.name if credential_field else 'password' }}');
       }
 
 {% if credential_field %}
       const credentialValid = await compareValue({{ credential_field.name }}, {{ auth_entity.name_lower }}.{{ credential_field.name }});
       if (!credentialValid) {
-        throw new AppError(401, 'Invalid email or password');
+        throw new AppError(401, 'Invalid {{ login_field.name if login_field else 'credentials' }} or {{ credential_field.name }}');
       }
 {% endif %}
 
       const token = jwt.sign(
-        { id: {{ auth_entity.name_lower }}.id, email: {{ auth_entity.name_lower }}.email },
+        {
+          id: {{ auth_entity.name_lower }}.{{ id_field_name }},
+{% if login_field %}
+          {{ login_field.name }}: {{ auth_entity.name_lower }}.{{ login_field.name }},
+{% endif %}
+{% for field in auth_entity.auth_extra_info_fields %}
+          {{ field.name }}: {{ auth_entity.name_lower }}.{{ field.name }},
+{% endfor %}
+        },
         process.env.JWT_SECRET!,
         { expiresIn: '7d' },
       );

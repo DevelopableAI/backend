@@ -264,27 +264,67 @@ class PrismaParser:
     def _detect_auth_entity(self, spec: dict) -> None:
         """
         Find the entity that acts as the authentication principal.
-        Heuristic: has an 'email' field AND at least one field that is either
-        marked @llm sensitive OR has a well-known password field name.
+        Heuristic: has at least one field that is either marked @llm sensitive
+        OR has a well-known password field name. Email is no longer required —
+        the unique login identifier is detected separately.
         Marks it with is_auth_entity=True and sets spec['auth_entity_name'].
+
+        Stores on the entity:
+          auth_id_field        — actual PK field name (e.g. 'id', 'UserID', 'userID')
+          auth_id_ts_type      — TypeScript type of the PK field (e.g. 'number', 'string')
+          auth_login_field     — field dict used to uniquely identify users at login
+                                 (email preferred, then first @unique scalar, then first scalar)
+                                 May be None if no suitable field exists.
+          auth_extra_info_fields — list of other non-ID, non-sensitive field dicts to
+                                   embed in the JWT alongside 'id' and the login field.
         """
         for entity in spec["entities"]:
-            has_email = any(f["name"] == "email" for f in entity["fields"] if not f["is_relation"])
             has_sensitive = any(
                 f["is_sensitive"] or f["name"] in self._PASSWORD_FIELD_NAMES
                 for f in entity["fields"]
                 if not f["is_relation"]
             )
-            if has_email and has_sensitive:
-                # Ensure password-named fields are marked sensitive so the
-                # template pipeline (planner → template) can use them correctly
-                # even when the schema omits the // @llm sensitive comment.
-                for f in entity["fields"]:
-                    if not f["is_relation"] and f["name"] in self._PASSWORD_FIELD_NAMES:
-                        f["is_sensitive"] = True
-                entity["is_auth_entity"] = True
-                spec["auth_entity_name"] = entity["name"]
-                return  # only one auth entity supported
+            if not has_sensitive:
+                continue
+
+            # Ensure password-named fields are marked sensitive so the
+            # template pipeline (planner → template) can use them correctly
+            # even when the schema omits the // @llm sensitive comment.
+            for f in entity["fields"]:
+                if not f["is_relation"] and f["name"] in self._PASSWORD_FIELD_NAMES:
+                    f["is_sensitive"] = True
+
+            # Locate the primary key field (could be named 'id', 'UserID', etc.)
+            id_field = next(
+                (f for f in entity["fields"] if f["is_id"] and not f["is_relation"]),
+                None,
+            )
+
+            # Candidate scalar fields: non-relation, non-ID, non-sensitive
+            candidate_scalars = [
+                f for f in entity["fields"]
+                if not f["is_relation"] and not f["is_id"] and not f["is_sensitive"]
+            ]
+
+            # Login field priority: email > any @unique scalar > any scalar
+            email_field = next((f for f in candidate_scalars if f["name"] == "email"), None)
+            unique_field = next((f for f in candidate_scalars if f["is_unique"]), None)
+            any_field = next(iter(candidate_scalars), None)
+            login_field = email_field or unique_field or any_field
+
+            # Extra JWT payload fields: everything else that isn't the login field
+            extra_info_fields = [
+                f for f in candidate_scalars
+                if login_field is None or f["name"] != login_field["name"]
+            ]
+
+            entity["is_auth_entity"] = True
+            entity["auth_id_field"] = id_field["name"] if id_field else "id"
+            entity["auth_id_ts_type"] = id_field["ts_type"] if id_field else "number"
+            entity["auth_login_field"] = login_field   # may be None
+            entity["auth_extra_info_fields"] = extra_info_fields
+            spec["auth_entity_name"] = entity["name"]
+            return  # only one auth entity supported
 
     def _pluralize(self, word: str) -> str:
         if word.endswith("y") and not word[-2] in "aeiou":

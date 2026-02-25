@@ -117,7 +117,12 @@ export class {{ entity.name }}Controller {
 
   async create{{ nested.related_entity }}For{{ entity.name }}(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+{% if entity.is_auth_entity %}
+      // Parent ID comes from the authenticated user's token, not the URL
+      const parentId = req.user!.id;
+{% else %}
       const parentId = this._parseId(req.params.id);
+{% endif %}
       const data = validate{{ nested.related_entity }}Create(req.body);
       // Inject the parent FK; ignore any {{ nested.fk_field }} provided in the body
       const record = await this.{{ nested.related_entity_lower }}Repository.create({ ...data, {{ nested.fk_field }}: parentId });
@@ -129,7 +134,12 @@ export class {{ entity.name }}Controller {
 
   async update{{ nested.related_entity }}For{{ entity.name }}(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+{% if entity.is_auth_entity %}
+      // Parent ID comes from the authenticated user's token, not the URL
+      const parentId = req.user!.id;
+{% else %}
       const parentId = this._parseId(req.params.id);
+{% endif %}
       const childId = this._parseId(req.params.childId);
       const existing = await this.{{ nested.related_entity_lower }}Repository.findById(childId);
       if (!existing) {
@@ -151,7 +161,12 @@ export class {{ entity.name }}Controller {
 
   async delete{{ nested.related_entity }}For{{ entity.name }}(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+{% if entity.is_auth_entity %}
+      // Parent ID comes from the authenticated user's token, not the URL
+      const parentId = req.user!.id;
+{% else %}
       const parentId = this._parseId(req.params.id);
+{% endif %}
       const childId = this._parseId(req.params.childId);
       const existing = await this.{{ nested.related_entity_lower }}Repository.findById(childId);
       if (!existing) {
