@@ -1,0 +1,202 @@
+"""
+helpers.py — shared test context, HTTP utilities, and logging for all sections.
+
+Legend:
+  🚀  Sending API request
+  ✅  Test passed
+  ❌  Test failed
+  ⛔️  Auth / authorization issue detected
+  ⚠️  Security warning
+"""
+
+import sys
+import os
+import json
+import base64
+import uuid
+from typing import Any, Optional
+
+try:
+    import requests
+except ImportError:
+    print("Error: 'requests' is not installed.  Run: pip install requests")
+    sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# TestContext — carries state and counters across all sections
+# ---------------------------------------------------------------------------
+
+class TestContext:
+    """Single mutable object threaded through every test section."""
+
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.state: dict[str, Any] = {}
+        self.pass_count = 0
+        self.fail_count = 0
+        self.warn_count = 0
+
+    # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
+
+    def ok(self, msg: str) -> None:
+        self.pass_count += 1
+        print(f"  ✅  {msg}")
+
+    def fail(self, msg: str) -> None:
+        self.fail_count += 1
+        print(f"  ❌  {msg}")
+
+    def auth(self, msg: str) -> None:
+        """Log an auth/authz failure (counts as fail)."""
+        self.fail_count += 1
+        print(f"  ⛔️  {msg}")
+
+    def warn(self, msg: str) -> None:
+        """Log a security warning (does NOT count as a failure)."""
+        self.warn_count += 1
+        print(f"  ⚠️   {msg}")
+
+    # ------------------------------------------------------------------
+    # HTTP helpers
+    # ------------------------------------------------------------------
+
+    def req(
+        self,
+        method: str,
+        path: str,
+        token: Optional[str] = None,
+        body: Optional[dict] = None,
+        params: Optional[dict] = None,
+    ) -> "requests.Response":
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        url = f"{self.base_url}{path}"
+        print(f"  🚀  {method.upper()} {path}")
+        try:
+            return requests.request(
+                method, url, headers=headers, json=body, params=params, timeout=10
+            )
+        except requests.exceptions.ConnectionError:
+            print(f"\n  ❌  Cannot connect to {self.base_url}. Is the API server running?")
+            sys.exit(1)
+        except requests.exceptions.Timeout:
+            print(f"\n  ❌  Request to {path} timed out.")
+            sys.exit(1)
+
+    # ------------------------------------------------------------------
+    # Assertion helpers
+    # ------------------------------------------------------------------
+
+    def assert_status(
+        self,
+        resp: "requests.Response",
+        expected: int,
+        label: str,
+        auth_fail: bool = False,
+    ) -> bool:
+        if resp.status_code == expected:
+            self.ok(f"{label} → HTTP {resp.status_code}")
+            return True
+        msg = (
+            f"{label} → expected HTTP {expected}, got {resp.status_code}"
+            f" | body: {resp.text[:300]}"
+        )
+        if auth_fail:
+            self.auth(msg)
+        else:
+            self.fail(msg)
+        return False
+
+    def assert_field(
+        self,
+        data: dict,
+        field: str,
+        label: str,
+        absent: bool = False,
+    ) -> bool:
+        if absent:
+            if field in data:
+                self.fail(f"{label}: field '{field}' should NOT be present but was found")
+                return False
+            self.ok(f"{label}: field '{field}' correctly absent")
+            return True
+        if field in data:
+            self.ok(f"{label}: field '{field}' present")
+            return True
+        self.fail(f"{label}: field '{field}' missing from response")
+        return False
+
+    def assert_paginated(self, data: dict, label: str) -> bool:
+        ok = True
+        if "data" not in data:
+            self.fail(f"{label}: missing 'data' array")
+            ok = False
+        if "meta" not in data:
+            self.fail(f"{label}: missing 'meta' object")
+            ok = False
+        if not ok:
+            return False
+        meta = data["meta"]
+        for key in ("total", "page", "limit", "totalPages", "hasNext", "hasPrev"):
+            if key not in meta:
+                self.fail(f"{label}: meta missing key '{key}'")
+                ok = False
+        if ok:
+            self.ok(
+                f"{label}: paginated response — total={meta['total']} "
+                f"page={meta['page']}/{meta['totalPages']}"
+            )
+        return ok
+
+    # ------------------------------------------------------------------
+    # Utility helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def unique_email(prefix: str = "user") -> str:
+        """Generate a collision-resistant test email."""
+        return f"{prefix}_{uuid.uuid4().hex[:8]}@test.example.com"
+
+    @staticmethod
+    def safe_json(resp: "requests.Response") -> dict:
+        try:
+            return resp.json()
+        except Exception:
+            return {}
+
+    @staticmethod
+    def decode_jwt(token: str) -> Optional[dict]:
+        """Decode JWT payload without signature verification."""
+        try:
+            payload_b64 = token.split(".")[1]
+            padding = 4 - len(payload_b64) % 4
+            if padding != 4:
+                payload_b64 += "=" * padding
+            return json.loads(base64.urlsafe_b64decode(payload_b64))
+        except Exception:
+            return None
+
+    @staticmethod
+    def no_password_in(obj: Any, context: str = "response") -> bool:
+        """Recursively verify 'password' does not appear in any value."""
+        if isinstance(obj, dict):
+            if "password" in obj:
+                return False
+            return all(TestContext.no_password_in(v, context) for v in obj.values())
+        if isinstance(obj, list):
+            return all(TestContext.no_password_in(item, context) for item in obj)
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Section header printer (standalone, no counter impact)
+# ---------------------------------------------------------------------------
+
+def section(title: str) -> None:
+    print(f"\n{'═' * 64}")
+    print(f"  {title}")
+    print(f"{'═' * 64}")
