@@ -3,6 +3,7 @@ Generate two Zod schemas for this entity: one for CREATE and one for UPDATE.
 Rules:
 - For CREATE: required fields are required. Optional fields and fields with defaults are optional.
 - For UPDATE: all fields are optional (partial update pattern).
+- SERVER-INJECTED fields: if you see a comment like "SERVER-INJECTED: fieldName is set from req.user.id", omit that field entirely from both the create and update schemas — it is injected by the controller and must never be accepted from user input.
 - Apply sensible constraints based on field names and types:
   - email → z.string().email({ message: 'Please provide a valid email address' })
       NOTE: do NOT add .min(1) or .nonempty() to email fields — .email() already rejects empty strings

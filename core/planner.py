@@ -176,6 +176,7 @@ class Planner:
                 "context": {
                     "entity": entity,
                     "scalar_fields": scalar_fields,
+                    "owner_fk_field": owner_fk_field,
                 },
                 "needs_llm": True,
                 "llm_task": "validation_logic",
