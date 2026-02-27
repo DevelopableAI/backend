@@ -77,7 +77,7 @@ def main() -> None:
     )
 
     print("╔══════════════════════════════════════════════════════════════╗")
-    print("║        Blog API — Comprehensive Test Suite                  ║")
+    print("║        Developable — Comprehensive Test Suite                  ║")
     print("╚══════════════════════════════════════════════════════════════╝")
     print(f"  Target : {base_url}")
     print(f"  Sections: {len(SECTIONS)}")
