@@ -73,8 +73,8 @@ class PrismaParser:
             "auth_entity_name": None,
         }
 
-        for model_block, llm_hints in self._extract_model_blocks(text):
-            entity = self._parse_model(model_block, llm_hints)
+        for model_block, llm_hints, is_auth_entity_marker in self._extract_model_blocks(text):
+            entity = self._parse_model(model_block, llm_hints, is_auth_entity_marker)
             spec["entities"].append(entity)
 
         # second pass: resolve relation types now that all entities are known
@@ -121,8 +121,8 @@ class PrismaParser:
 
         return datasource
 
-    def _extract_model_blocks(self, text: str) -> list[tuple[str, list[str]]]:
-        """Returns list of (model_block_text, llm_hints) tuples."""
+    def _extract_model_blocks(self, text: str) -> list[tuple[str, list[str], bool]]:
+        """Returns list of (model_block_text, llm_hints, is_auth_entity_marker) tuples."""
         results = []
         lines = text.splitlines()
 
@@ -130,11 +130,19 @@ class PrismaParser:
         while i < len(lines):
             line = lines[i].strip()
 
-            # collect @llm hints above the model declaration
+            # collect @llm hints and detect @auth_entity marker above the model declaration
             llm_hints = []
+            is_auth_entity_marker = False
             j = i
-            while j < len(lines) and lines[j].strip().startswith("// @llm"):
-                llm_hints.append(lines[j].strip().removeprefix("// @llm").strip())
+            while j < len(lines) and (
+                lines[j].strip().startswith("// @llm")
+                or lines[j].strip() == "// @auth_entity"
+            ):
+                stripped = lines[j].strip()
+                if stripped == "// @auth_entity":
+                    is_auth_entity_marker = True
+                else:
+                    llm_hints.append(stripped.removeprefix("// @llm").strip())
                 j += 1
 
             if j < len(lines) and re.match(r"^model\s+\w+\s*\{", lines[j].strip()):
@@ -148,14 +156,14 @@ class PrismaParser:
                     if depth == 0 and k > j:
                         break
                     k += 1
-                results.append(("\n".join(block_lines), llm_hints))
+                results.append(("\n".join(block_lines), llm_hints, is_auth_entity_marker))
                 i = k + 1
             else:
                 i = j + 1 if j > i else i + 1
 
         return results
 
-    def _parse_model(self, block: str, llm_hints: list[str]) -> dict:
+    def _parse_model(self, block: str, llm_hints: list[str], is_auth_entity_marker: bool = False) -> dict:
         lines = block.splitlines()
         header = lines[0].strip()
         name = re.match(r"model\s+(\w+)", header).group(1)
@@ -177,6 +185,7 @@ class PrismaParser:
             "fields": fields,
             "relations": [],
             "is_auth_entity": False,
+            "is_auth_entity_marker": is_auth_entity_marker,
             "llm_hints": llm_hints,
         }
 
@@ -264,27 +273,52 @@ class PrismaParser:
     def _detect_auth_entity(self, spec: dict) -> None:
         """
         Find the entity that acts as the authentication principal.
-        Heuristic: has an 'email' field AND at least one field that is either
-        marked @llm sensitive OR has a well-known password field name.
-        Marks it with is_auth_entity=True and sets spec['auth_entity_name'].
+
+        An entity is the auth entity when it is preceded by a '// @auth_entity'
+        comment in the schema file (set via is_auth_entity_marker during parsing).
+
+        Stores on the entity:
+          auth_id_field    — actual PK field name (e.g. 'id', 'UserID', 'userID')
+          auth_id_ts_type  — TypeScript type of the PK field (e.g. 'number', 'string')
+          auth_login_field — field dict used to uniquely identify users at login
+                             (email preferred, then first @unique scalar, then first scalar)
+                             May be None if no suitable field exists.
         """
         for entity in spec["entities"]:
-            has_email = any(f["name"] == "email" for f in entity["fields"] if not f["is_relation"])
-            has_sensitive = any(
-                f["is_sensitive"] or f["name"] in self._PASSWORD_FIELD_NAMES
-                for f in entity["fields"]
-                if not f["is_relation"]
+            if not entity.get("is_auth_entity_marker"):
+                continue
+
+            # Ensure password-named fields are marked sensitive so the
+            # template pipeline (planner → template) can use them correctly
+            # even when the schema omits the // @llm sensitive comment.
+            for f in entity["fields"]:
+                if not f["is_relation"] and f["name"] in self._PASSWORD_FIELD_NAMES:
+                    f["is_sensitive"] = True
+
+            # Locate the primary key field (could be named 'id', 'UserID', etc.)
+            id_field = next(
+                (f for f in entity["fields"] if f["is_id"] and not f["is_relation"]),
+                None,
             )
-            if has_email and has_sensitive:
-                # Ensure password-named fields are marked sensitive so the
-                # template pipeline (planner → template) can use them correctly
-                # even when the schema omits the // @llm sensitive comment.
-                for f in entity["fields"]:
-                    if not f["is_relation"] and f["name"] in self._PASSWORD_FIELD_NAMES:
-                        f["is_sensitive"] = True
-                entity["is_auth_entity"] = True
-                spec["auth_entity_name"] = entity["name"]
-                return  # only one auth entity supported
+
+            # Candidate scalar fields for login: non-relation, non-ID, non-sensitive
+            candidate_scalars = [
+                f for f in entity["fields"]
+                if not f["is_relation"] and not f["is_id"] and not f["is_sensitive"]
+            ]
+
+            # Login field priority: email > any @unique scalar > any scalar
+            email_field = next((f for f in candidate_scalars if f["name"] == "email"), None)
+            unique_field = next((f for f in candidate_scalars if f["is_unique"]), None)
+            any_field = next(iter(candidate_scalars), None)
+            login_field = email_field or unique_field or any_field
+
+            entity["is_auth_entity"] = True
+            entity["auth_id_field"] = id_field["name"] if id_field else "id"
+            entity["auth_id_ts_type"] = id_field["ts_type"] if id_field else "number"
+            entity["auth_login_field"] = login_field   # may be None
+            spec["auth_entity_name"] = entity["name"]
+            return  # only one auth entity supported
 
     def _pluralize(self, word: str) -> str:
         if word.endswith("y") and not word[-2] in "aeiou":

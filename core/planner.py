@@ -105,10 +105,11 @@ class Planner:
 
         # Add JWT auth middleware if an auth entity was detected
         if auth_entity_name:
+            auth_entity = next((e for e in entities if e.get("is_auth_entity")), None)
             files.append({
                 "path": "src/lib/auth.ts",
                 "template": "express/auth.ts.j2",
-                "context": {},
+                "context": {"auth_entity": auth_entity},
                 "needs_llm": False,
             })
 
