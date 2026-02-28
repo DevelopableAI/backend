@@ -135,15 +135,20 @@ class Planner:
         endpoint_deny: list[dict] = entity.get("endpoint_deny", [])
         llm_constraints: list[str] = entity.get("llm_constraints", [])
 
+        # primary parent: determines the canonical create endpoint for this entity
+        primary_parent = self._get_primary_parent_name(entity, all_entities, auth_entity_name)
+
         # many_to_one relations on this entity (for findManyByFK generation in child repo)
         parent_fk_relations = [
             r for r in entity.get("relations", []) if r["type"] == "many_to_one" and r.get("fk_field")
         ]
 
-        # Filter out routes denied by business rules
+        # Filter out routes denied by business rules and suppress direct POST for entities
+        # that have a primary parent (canonical create is the nested route under that parent)
         allowed_routes = [
             r for r in self._infer_routes(entity)
             if not self._is_route_denied(r, endpoint_deny)
+            and not (r["method"] == "POST" and primary_parent is not None)
         ]
 
         files = [
@@ -299,6 +304,35 @@ class Planner:
                 return rel.get("fk_field")
         return None
 
+    def _get_primary_parent_name(
+        self, entity: dict, all_entities: list[dict], auth_entity_name: str | None
+    ) -> str | None:
+        """
+        Returns the name of this entity's primary parent — the single entity whose nested route
+        is the canonical write (create) path for this entity.
+
+        Priority:
+        1. Explicit override from business rules YAML: entity["primary_parent"]
+        2. First non-auth many_to_one FK (e.g. Comment's postId → Post wins over authorId → User)
+        3. Auth entity FK (e.g. Post's authorId → User when User is the only parent)
+        4. None — no parent, entity gets a direct POST route
+
+        This drives two decisions in the planner:
+        - Suppresses the direct POST /entity route when a primary parent exists
+        - Marks exactly one nested route as is_primary_parent=True (the rest expose GET only)
+        """
+        # Explicit override via business rules
+        if entity.get("primary_parent"):
+            return entity["primary_parent"]
+        # First non-auth many_to_one FK
+        for rel in entity.get("relations", []):
+            if rel["type"] == "many_to_one" and rel["related_entity"] != auth_entity_name and rel.get("fk_field"):
+                return rel["related_entity"]
+        # Auth entity FK
+        if auth_entity_name and self._get_owner_fk_field(entity, auth_entity_name):
+            return auth_entity_name
+        return None
+
     def _get_parent_fk_fields(self, entity: dict, auth_entity_name: str | None) -> list[str]:
         """
         Returns FK scalar field names on this entity that point to non-auth parent entities.
@@ -358,6 +392,12 @@ class Planner:
             # (i.e. the schema for this nested create must exclude the parent FK injected from URL)
             use_nested_schema = fk_field in child_parent_fk_fields
 
+            # is_primary_parent: True only when THIS entity (the loop parent) is the child's
+            # primary parent. Only the primary parent's nested route exposes POST (create).
+            # All other parents expose GET (filtered list) only.
+            primary_parent_name = self._get_primary_parent_name(child_entity, all_entities, auth_entity_name)
+            is_primary_parent = (entity["name"] == primary_parent_name)
+
             nested.append({
                 "relation_name": rel["name"],                          # e.g. "comments"
                 "related_entity": child_entity_name,                   # e.g. "Comment"
@@ -367,6 +407,7 @@ class Planner:
                 "child_owner_fk_field": child_owner_fk_field,          # e.g. "authorId" or None
                 "has_parent_fk_schema": has_parent_fk_schema,          # e.g. True
                 "use_nested_schema": use_nested_schema,                # e.g. True
+                "is_primary_parent": is_primary_parent,               # e.g. True for Post→Comment
             })
 
         return nested

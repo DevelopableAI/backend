@@ -18,17 +18,16 @@ class BusinessRulesParser:
           EntityName:
             constraints:
               - "Free-text business rule used as LLM hint"
+            primary_parent: OtherEntity  # override the auto-detected primary parent
             endpoints:
               deny:
                 - method: POST
                   path: /entity/:id/entity   # suppress route generation
-              require_auth:
-                - method: GET
-                  path: /entity/:id          # force auth middleware on this route
 
     Rules are merged into each entity dict under:
         entity["endpoint_deny"]     — list of {method, path} dicts
         entity["llm_constraints"]   — list of free-text constraint strings
+        entity["primary_parent"]    — entity name string (overrides auto-detection)
 
     Missing entities in the rules file are silently ignored.
     If no rules file is provided, the spec is returned unchanged.
@@ -66,5 +65,8 @@ class BusinessRulesParser:
                 for r in rules.get("endpoints", {}).get("deny", [])
             ]
             entity["llm_constraints"] = list(rules.get("constraints", []))
+            # Explicit primary parent override (entity name string, or None if not specified)
+            if "primary_parent" in rules:
+                entity["primary_parent"] = rules["primary_parent"]
 
         return spec

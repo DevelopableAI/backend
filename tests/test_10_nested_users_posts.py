@@ -1,6 +1,11 @@
 """
-Section 10 — Nested routes: POST/PUT/DELETE /api/users/posts
-            (auth-entity route — parent ID from token, not URL).
+Section 10 — Nested routes: POST /api/users/posts (canonical create for Post).
+
+POST /api/users/posts is the canonical create endpoint for Post — the direct
+POST /api/posts does not exist (User is Post's primary parent).
+
+PUT and DELETE use the direct /api/posts/:id route (no nested equivalents).
+Ownership is enforced via JWT in all write operations.
 
 Populates ctx.state: user_nested_post_id.
 Requires ctx.state: user1_id, user1_token, user2_token (sections 1-2).
@@ -10,7 +15,7 @@ from helpers import TestContext, section
 
 
 def run(ctx: TestContext) -> None:
-    section("10 · NESTED ROUTES — POST/PUT/DELETE /api/users/posts")
+    section("10 · NESTED ROUTES — POST /api/users/posts + direct PUT/DELETE")
 
     user1_id = ctx.state.get("user1_id")
     token1 = ctx.state.get("user1_token")
@@ -42,62 +47,60 @@ def run(ctx: TestContext) -> None:
         resp = ctx.req("POST", "/api/users/posts", token=token1, body={"title": "No content"})
         ctx.assert_status(resp, 400, "POST /api/users/posts missing content → 400")
 
-    # 10-4  PUT by token owner → 200
+    # 10-4  PUT by token owner → 200  (direct route — no nested PUT exists)
     nested_post_id = ctx.state.get("user_nested_post_id")
     if nested_post_id and token1:
-        resp = ctx.req("PUT", f"/api/users/posts/{nested_post_id}", token=token1,
-                       body={"title": "Updated via user-nested route"})
-        if ctx.assert_status(resp, 200, f"PUT /api/users/posts/{nested_post_id} by owner → 200"):
+        resp = ctx.req("PUT", f"/api/posts/{nested_post_id}", token=token1,
+                       body={"title": "Updated via direct PUT route"})
+        if ctx.assert_status(resp, 200, f"PUT /api/posts/{nested_post_id} by owner → 200"):
             data = ctx.safe_json(resp)
-            if data.get("title") == "Updated via user-nested route":
-                ctx.ok("Update via user-nested PUT persisted correctly")
+            if data.get("title") == "Updated via direct PUT route":
+                ctx.ok("Update via direct PUT persisted correctly")
             else:
                 ctx.fail(f"Title not updated: {data.get('title')!r}")
 
     # 10-5  PUT by different user → 403 or 404
-    #       Controller checks: existing.authorId !== req.user.id → AppError(404, …)
     if nested_post_id and token2:
-        resp = ctx.req("PUT", f"/api/users/posts/{nested_post_id}", token=token2,
-                       body={"title": "Bob hijacks user-nested post"})
+        resp = ctx.req("PUT", f"/api/posts/{nested_post_id}", token=token2,
+                       body={"title": "Bob hijacks post"})
         if resp.status_code in (403, 404):
             ctx.ok(
-                f"PUT /api/users/posts/{nested_post_id} by non-owner → "
+                f"PUT /api/posts/{nested_post_id} by non-owner → "
                 f"HTTP {resp.status_code} (correct)"
             )
         else:
             ctx.auth(
-                f"PUT /api/users/posts/{nested_post_id} by non-owner → "
+                f"PUT /api/posts/{nested_post_id} by non-owner → "
                 f"unexpected HTTP {resp.status_code}"
             )
 
-    # 10-6  PUT non-existent child → 404
+    # 10-6  PUT non-existent → 404
     if token1:
-        resp = ctx.req("PUT", "/api/users/posts/9999999", token=token1,
-                       body={"title": "Ghost"})
-        ctx.assert_status(resp, 404, "PUT /api/users/posts/9999999 (non-existent) → 404")
+        resp = ctx.req("PUT", "/api/posts/9999999", token=token1, body={"title": "Ghost"})
+        ctx.assert_status(resp, 404, "PUT /api/posts/9999999 (non-existent) → 404")
 
     # 10-7  DELETE without auth → 401
     if nested_post_id:
-        resp = ctx.req("DELETE", f"/api/users/posts/{nested_post_id}")
-        ctx.assert_status(resp, 401, f"DELETE /api/users/posts/{nested_post_id} no auth → 401",
+        resp = ctx.req("DELETE", f"/api/posts/{nested_post_id}")
+        ctx.assert_status(resp, 401, f"DELETE /api/posts/{nested_post_id} no auth → 401",
                           auth_fail=True)
 
     # 10-8  DELETE by different user → 403 or 404
     if nested_post_id and token2:
-        resp = ctx.req("DELETE", f"/api/users/posts/{nested_post_id}", token=token2)
+        resp = ctx.req("DELETE", f"/api/posts/{nested_post_id}", token=token2)
         if resp.status_code in (403, 404):
             ctx.ok(
-                f"DELETE /api/users/posts/{nested_post_id} by non-owner → "
+                f"DELETE /api/posts/{nested_post_id} by non-owner → "
                 f"HTTP {resp.status_code} (correct)"
             )
         else:
             ctx.auth(
-                f"DELETE /api/users/posts/{nested_post_id} by non-owner → "
+                f"DELETE /api/posts/{nested_post_id} by non-owner → "
                 f"unexpected HTTP {resp.status_code}"
             )
 
     # 10-9  DELETE by owner → 204
     if nested_post_id and token1:
-        resp = ctx.req("DELETE", f"/api/users/posts/{nested_post_id}", token=token1)
-        if ctx.assert_status(resp, 204, f"DELETE /api/users/posts/{nested_post_id} by owner → 204"):
+        resp = ctx.req("DELETE", f"/api/posts/{nested_post_id}", token=token1)
+        if ctx.assert_status(resp, 204, f"DELETE /api/posts/{nested_post_id} by owner → 204"):
             ctx.state.pop("user_nested_post_id", None)

@@ -150,55 +150,6 @@ export class {{ entity.name }}Controller {
     }
   }
 
-  async update{{ nested.related_entity }}For{{ entity.name }}(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-{% if entity.is_auth_entity %}
-      // Parent ID comes from the authenticated user's token, not the URL
-      const parentId = req.user!.id;
-{% else %}
-      const parentId = this._parseId(req.params.id);
-{% endif %}
-      const childId = this._parseId(req.params.childId);
-      const existing = await this.{{ nested.related_entity_lower }}Repository.findById(childId);
-      if (!existing) {
-        throw new NotFoundError('{{ nested.related_entity }}', childId);
-      }
-      if (existing.{{ nested.fk_field }} !== parentId) {
-        throw new AppError(404, '{{ nested.related_entity }} not found under this {{ entity.name }}');
-      }
-      const data = validate{{ nested.related_entity }}Update(req.body);
-      const record = await this.{{ nested.related_entity_lower }}Repository.update(childId, data);
-      if (!record) {
-        throw new NotFoundError('{{ nested.related_entity }}', childId);
-      }
-      res.json(record);
-    } catch (err) {
-      next(err);
-    }
-  }
-
-  async delete{{ nested.related_entity }}For{{ entity.name }}(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-{% if entity.is_auth_entity %}
-      // Parent ID comes from the authenticated user's token, not the URL
-      const parentId = req.user!.id;
-{% else %}
-      const parentId = this._parseId(req.params.id);
-{% endif %}
-      const childId = this._parseId(req.params.childId);
-      const existing = await this.{{ nested.related_entity_lower }}Repository.findById(childId);
-      if (!existing) {
-        throw new NotFoundError('{{ nested.related_entity }}', childId);
-      }
-      if (existing.{{ nested.fk_field }} !== parentId) {
-        throw new AppError(404, '{{ nested.related_entity }} not found under this {{ entity.name }}');
-      }
-      await this.{{ nested.related_entity_lower }}Repository.delete(childId);
-      res.status(204).send();
-    } catch (err) {
-      next(err);
-    }
-  }
 {% endfor %}
 
   private _parseId(raw: string): number {
