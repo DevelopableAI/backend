@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { {{ entity.name }}Repository } from '../repositories/{{ entity.name_lower }}.repository.js';
 import { validate{{ entity.name }}Create, validate{{ entity.name }}Update } from '../validators/{{ entity.name_lower }}.validator.js';
 import { parsePagination, buildPaginatedResponse } from '../lib/pagination.js';
-import { NotFoundError{{ ', AppError' if owner_fk_field or nested_routes else '' }} } from '../lib/errors.js';
+import { NotFoundError, AppError } from '../lib/errors.js';
 {% for nested in nested_routes %}
 import { {{ nested.related_entity }}Repository } from '../repositories/{{ nested.related_entity_lower }}.repository.js';
 import { validate{{ nested.related_entity }}Create, validate{{ nested.related_entity }}Update } from '../validators/{{ nested.related_entity_lower }}.validator.js';
@@ -62,7 +62,11 @@ export class {{ entity.name }}Controller {
   async update(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = this._parseId(req.params.id);
-{% if owner_fk_field %}
+{% if entity.is_auth_entity and auth_entity_name %}
+      if (id !== req.user!.id) {
+        throw new AppError(403, 'Forbidden');
+      }
+{% elif owner_fk_field %}
       const existing = await this.repository.findById(id);
       if (!existing) {
         throw new NotFoundError('{{ entity.name }}', id);
@@ -85,7 +89,11 @@ export class {{ entity.name }}Controller {
   async remove(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = this._parseId(req.params.id);
-{% if owner_fk_field %}
+{% if entity.is_auth_entity and auth_entity_name %}
+      if (id !== req.user!.id) {
+        throw new AppError(403, 'Forbidden');
+      }
+{% elif owner_fk_field %}
       const existing = await this.repository.findById(id);
       if (!existing) {
         throw new NotFoundError('{{ entity.name }}', id);
@@ -184,9 +192,12 @@ export class {{ entity.name }}Controller {
 {% endfor %}
 
   private _parseId(raw: string): number {
-    const id = parseInt(raw, 10);
-    if (isNaN(id)) {
-      throw { statusCode: 400, message: 'Invalid ID format' };
+    if (!/^\d+$/.test(raw)) {
+      throw new AppError(400, 'Invalid ID format');
+    }
+    const id = Number(raw);
+    if (id > Number.MAX_SAFE_INTEGER) {
+      throw new AppError(400, 'ID out of range');
     }
     return id;
   }

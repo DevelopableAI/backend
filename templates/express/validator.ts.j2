@@ -4,6 +4,9 @@ import { {{ entity.name }}CreateInput, {{ entity.name }}UpdateInput } from '../t
 
 /* LLM_SECTION_START */
 // TODO: define zod schemas for {{ entity.name }} create and update
+{% if owner_fk_field %}
+// SERVER-INJECTED: {{ owner_fk_field }} is set from req.user.id in the controller — exclude it from {{ entity.name_lower }}CreateSchema and {{ entity.name_lower }}UpdateSchema
+{% endif %}
 const {{ entity.name_lower }}CreateSchema = z.object({});
 const {{ entity.name_lower }}UpdateSchema = z.object({});
 /* LLM_SECTION_END */
