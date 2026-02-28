@@ -1,0 +1,54 @@
+# example.rules.yaml — business logic rules for the blog schema
+# Pass to the generator with:
+#   python main.py schema.prisma --out ./output --rules example.rules.yaml
+#
+# Supported keys per entity:
+#
+#   constraints     — free-text rules forwarded to the LLM as hints when generating
+#                     validation logic (Zod schemas). Useful for domain invariants
+#                     that can't be inferred from the schema topology alone.
+#
+#   primary_parent  — overrides the auto-detected canonical create endpoint.
+#                     Auto-detection priority: first non-auth FK > auth entity FK > none.
+#                     The primary parent determines which nested route is the single
+#                     canonical POST (create) path for the entity. All other parent
+#                     relationships expose GET (filtered list) only.
+#
+#   endpoints.deny  — list of {method, path} pairs to suppress entirely from route
+#                     generation. Paths match the entity's own route table (e.g.
+#                     /posts, /posts/:id). Useful for removing endpoints that are
+#                     technically possible but semantically wrong for your domain.
+
+entities:
+  User:
+    constraints:
+      - "Users can only read and modify their own profile — enforce self-ownership on GET/PUT/DELETE /users/:id"
+      - "Email must be unique and lowercased before storage"
+      - "Password must be at least 8 characters; never returned in any API response"
+
+  Post:
+    constraints:
+      - "Only the author can edit or delete a post"
+      - "Title must be non-empty and trimmed; content must be at least 10 characters"
+    # primary_parent is auto-detected as User (authorId → User is Post's only FK).
+    # Canonical create: POST /api/users/posts (parent ID from JWT, no URL param).
+    # Uncomment below to override if your domain differs:
+    # primary_parent: User
+
+  Comment:
+    constraints:
+      - "Comments belong to both an author (User) and a post (Post)"
+      - "Body must be non-empty; no maximum length restriction for comments"
+    # Post is auto-detected as primary parent (first non-auth FK: postId → Post).
+    # Canonical create: POST /api/posts/:id/comments
+    #   — postId injected from URL param, authorId injected from JWT.
+    # GET /api/users/:id/comments is still generated as a filtered read.
+    # Uncomment below to make User the primary parent instead:
+    # primary_parent: User
+
+    # Example: suppress a generated route entirely.
+    # Uncomment to prevent comment deletion (e.g. soft-delete handled elsewhere):
+    # endpoints:
+    #   deny:
+    #     - method: DELETE
+    #       path: /comments/:id
