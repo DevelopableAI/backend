@@ -129,11 +129,26 @@ class Planner:
         owner_fk_field = self._get_owner_fk_field(entity, auth_entity_name)
 
         # nested routes: one_to_many relations with their child FK resolved
-        nested_routes = self._build_nested_routes(entity, all_entities)
+        nested_routes = self._build_nested_routes(entity, all_entities, auth_entity_name)
+
+        # business rules: denied endpoints and LLM constraint hints (set by BusinessRulesParser)
+        endpoint_deny: list[dict] = entity.get("endpoint_deny", [])
+        llm_constraints: list[str] = entity.get("llm_constraints", [])
+
+        # primary parent: determines the canonical create endpoint for this entity
+        primary_parent = self._get_primary_parent_name(entity, all_entities, auth_entity_name)
 
         # many_to_one relations on this entity (for findManyByFK generation in child repo)
         parent_fk_relations = [
             r for r in entity.get("relations", []) if r["type"] == "many_to_one" and r.get("fk_field")
+        ]
+
+        # Filter out routes denied by business rules and suppress direct POST for entities
+        # that have a primary parent (canonical create is the nested route under that parent)
+        allowed_routes = [
+            r for r in self._infer_routes(entity)
+            if not self._is_route_denied(r, endpoint_deny)
+            and not (r["method"] == "POST" and primary_parent is not None)
         ]
 
         files = [
@@ -142,7 +157,7 @@ class Planner:
                 "template": "express/routes.ts.j2",
                 "context": {
                     "entity": entity,
-                    "routes": self._infer_routes(entity),
+                    "routes": allowed_routes,
                     "owner_fk_field": owner_fk_field,
                     "nested_routes": nested_routes,
                     "auth_entity_name": auth_entity_name,
@@ -154,7 +169,7 @@ class Planner:
                 "template": "express/controller.ts.j2",
                 "context": {
                     "entity": entity,
-                    "routes": self._infer_routes(entity),
+                    "routes": allowed_routes,
                     "owner_fk_field": owner_fk_field,
                     "nested_routes": nested_routes,
                     "auth_entity_name": auth_entity_name,
@@ -177,6 +192,9 @@ class Planner:
                     "entity": entity,
                     "scalar_fields": scalar_fields,
                     "owner_fk_field": owner_fk_field,
+                    "parent_fk_fields": self._get_parent_fk_fields(entity, auth_entity_name),
+                    # llm_constraints from business rules file prepended to entity llm_hints for LLM context
+                    "llm_constraints": llm_constraints,
                 },
                 "needs_llm": True,
                 "llm_task": "validation_logic",
@@ -286,10 +304,65 @@ class Planner:
                 return rel.get("fk_field")
         return None
 
-    def _build_nested_routes(self, entity: dict, all_entities: list[dict]) -> list[dict]:
+    def _get_primary_parent_name(
+        self, entity: dict, all_entities: list[dict], auth_entity_name: str | None
+    ) -> str | None:
+        """
+        Returns the name of this entity's primary parent — the single entity whose nested route
+        is the canonical write (create) path for this entity.
+
+        Priority:
+        1. Explicit override from business rules YAML: entity["primary_parent"]
+        2. First non-auth many_to_one FK (e.g. Comment's postId → Post wins over authorId → User)
+        3. Auth entity FK (e.g. Post's authorId → User when User is the only parent)
+        4. None — no parent, entity gets a direct POST route
+
+        This drives two decisions in the planner:
+        - Suppresses the direct POST /entity route when a primary parent exists
+        - Marks exactly one nested route as is_primary_parent=True (the rest expose GET only)
+        """
+        # Explicit override via business rules
+        if entity.get("primary_parent"):
+            return entity["primary_parent"]
+        # First non-auth many_to_one FK
+        for rel in entity.get("relations", []):
+            if rel["type"] == "many_to_one" and rel["related_entity"] != auth_entity_name and rel.get("fk_field"):
+                return rel["related_entity"]
+        # Auth entity FK
+        if auth_entity_name and self._get_owner_fk_field(entity, auth_entity_name):
+            return auth_entity_name
+        return None
+
+    def _get_parent_fk_fields(self, entity: dict, auth_entity_name: str | None) -> list[str]:
+        """
+        Returns FK scalar field names on this entity that point to non-auth parent entities.
+        E.g. for Comment with relations to User (owner/auth) and Post (parent), returns ['postId'].
+        These FKs are injected from URL params in nested routes, so they need a separate
+        CreateNestedSchema that excludes them.
+        """
+        return [
+            rel["fk_field"]
+            for rel in entity.get("relations", [])
+            if rel["type"] == "many_to_one"
+            and rel["related_entity"] != auth_entity_name
+            and rel.get("fk_field")
+        ]
+
+    def _build_nested_routes(
+        self, entity: dict, all_entities: list[dict], auth_entity_name: str | None = None
+    ) -> list[dict]:
         """
         For each one_to_many relation on this entity, build a nested route descriptor.
         E.g. User has posts Post[] → nested route for /users/:id/posts
+
+        Each descriptor includes:
+        - fk_field: the FK on the child pointing back to this parent (injected from URL)
+        - child_owner_fk_field: the FK on the child pointing to the auth entity, if different
+          from fk_field (needs to be additionally injected from JWT in the nested create handler)
+        - has_parent_fk_schema: True if the child entity has a CreateNestedSchema (i.e. it has
+          non-auth parent FKs that should be excluded in nested-route creates)
+        - use_nested_schema: True if THIS nested route's fk_field is a non-auth parent FK,
+          meaning the nested create handler should use CreateNestedSchema instead of CreateSchema
         """
         nested = []
         for rel in entity.get("relations", []):
@@ -304,12 +377,53 @@ class Planner:
             if not child_entity or not fk_field:
                 continue  # skip if FK can't be resolved
 
+            # Child's owner FK (points to auth entity). If it equals fk_field, no extra injection
+            # needed (e.g. POST /users/:id/posts — fk_field=authorId IS the owner FK).
+            # If different (e.g. POST /posts/:id/comments — fk_field=postId, owner=authorId),
+            # the nested create must ALSO inject the owner FK from JWT.
+            child_owner_fk = self._get_owner_fk_field(child_entity, auth_entity_name)
+            child_owner_fk_field = child_owner_fk if child_owner_fk != fk_field else None
+
+            # Non-auth parent FKs on the child entity
+            child_parent_fk_fields = self._get_parent_fk_fields(child_entity, auth_entity_name)
+            has_parent_fk_schema = len(child_parent_fk_fields) > 0
+
+            # Use CreateNested only when THIS route's fk_field is a non-auth parent FK
+            # (i.e. the schema for this nested create must exclude the parent FK injected from URL)
+            use_nested_schema = fk_field in child_parent_fk_fields
+
+            # is_primary_parent: True only when THIS entity (the loop parent) is the child's
+            # primary parent. Only the primary parent's nested route exposes POST (create).
+            # All other parents expose GET (filtered list) only.
+            primary_parent_name = self._get_primary_parent_name(child_entity, all_entities, auth_entity_name)
+            is_primary_parent = (entity["name"] == primary_parent_name)
+
             nested.append({
-                "relation_name": rel["name"],           # e.g. "posts"
-                "related_entity": child_entity_name,    # e.g. "Post"
-                "related_entity_lower": child_entity["name_lower"],   # e.g. "post"
-                "related_entity_plural": child_entity["name_plural"],  # e.g. "posts"
-                "fk_field": fk_field,                   # e.g. "authorId"
+                "relation_name": rel["name"],                          # e.g. "comments"
+                "related_entity": child_entity_name,                   # e.g. "Comment"
+                "related_entity_lower": child_entity["name_lower"],    # e.g. "comment"
+                "related_entity_plural": child_entity["name_plural"],  # e.g. "comments"
+                "fk_field": fk_field,                                  # e.g. "postId"
+                "child_owner_fk_field": child_owner_fk_field,          # e.g. "authorId" or None
+                "has_parent_fk_schema": has_parent_fk_schema,          # e.g. True
+                "use_nested_schema": use_nested_schema,                # e.g. True
+                "is_primary_parent": is_primary_parent,               # e.g. True for Post→Comment
             })
 
         return nested
+
+    def _is_route_denied(self, route: dict, endpoint_deny: list[dict]) -> bool:
+        """
+        Returns True if the given route should be suppressed based on the entity's
+        endpoint_deny rules from the business rules file.
+
+        Matching is case-insensitive on method and uses simple path prefix/equality on path.
+        E.g. deny {method: "POST", path: "/users/:id/users"} suppresses the create route
+        when the path matches.
+        """
+        for deny_rule in endpoint_deny:
+            rule_method = deny_rule.get("method", "").upper()
+            rule_path = deny_rule.get("path", "")
+            if route.get("method", "").upper() == rule_method and route.get("path", "") == rule_path:
+                return True
+        return False

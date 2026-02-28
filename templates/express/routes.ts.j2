@@ -26,29 +26,18 @@ router.{{ route.method | lower }}('{{ route.path | replace('/' + entity.name_plu
 {% for nested in nested_routes %}
 
 // --- Nested routes: {{ nested.related_entity_plural }} under {{ entity.name }} ---
-// List all {{ nested.related_entity_plural }} for a {{ entity.name_lower }}
+// List all {{ nested.related_entity_plural }} for a {{ entity.name_lower }} (always available)
 router.get('/:id/{{ nested.relation_name }}', controller.get{{ nested.related_entity }}sFor{{ entity.name }}.bind(controller));
-{% if auth_entity_name and entity.is_auth_entity %}
-// Create a {{ nested.related_entity_lower }} (auth user ID taken from token, not URL)
+{% if nested.is_primary_parent %}
+// Create a {{ nested.related_entity_lower }} — canonical create route (primary parent: {{ entity.name }})
+{% if entity.is_auth_entity %}
+// Parent ID is taken from the auth token, not the URL
 router.post('/{{ nested.relation_name }}', authenticate, controller.create{{ nested.related_entity }}For{{ entity.name }}.bind(controller));
-// Update a {{ nested.related_entity_lower }} (auth user ID taken from token, not URL)
-router.put('/{{ nested.relation_name }}/:childId', authenticate, controller.update{{ nested.related_entity }}For{{ entity.name }}.bind(controller));
-// Delete a {{ nested.related_entity_lower }} (auth user ID taken from token, not URL)
-router.delete('/{{ nested.relation_name }}/:childId', authenticate, controller.delete{{ nested.related_entity }}For{{ entity.name }}.bind(controller));
 {% elif auth_entity_name %}
-// Create a {{ nested.related_entity_lower }} under a {{ entity.name_lower }} (requires authentication)
 router.post('/:id/{{ nested.relation_name }}', authenticate, controller.create{{ nested.related_entity }}For{{ entity.name }}.bind(controller));
-// Update a {{ nested.related_entity_lower }} under a {{ entity.name_lower }} (requires authentication)
-router.put('/:id/{{ nested.relation_name }}/:childId', authenticate, controller.update{{ nested.related_entity }}For{{ entity.name }}.bind(controller));
-// Delete a {{ nested.related_entity_lower }} under a {{ entity.name_lower }} (requires authentication)
-router.delete('/:id/{{ nested.relation_name }}/:childId', authenticate, controller.delete{{ nested.related_entity }}For{{ entity.name }}.bind(controller));
 {% else %}
-// Create a {{ nested.related_entity_lower }} under a {{ entity.name_lower }}
 router.post('/:id/{{ nested.relation_name }}', controller.create{{ nested.related_entity }}For{{ entity.name }}.bind(controller));
-// Update a {{ nested.related_entity_lower }} under a {{ entity.name_lower }}
-router.put('/:id/{{ nested.relation_name }}/:childId', controller.update{{ nested.related_entity }}For{{ entity.name }}.bind(controller));
-// Delete a {{ nested.related_entity_lower }} under a {{ entity.name_lower }}
-router.delete('/:id/{{ nested.relation_name }}/:childId', controller.delete{{ nested.related_entity }}For{{ entity.name }}.bind(controller));
+{% endif %}
 {% endif %}
 {% endfor %}
 

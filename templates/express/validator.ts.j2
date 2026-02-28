@@ -3,11 +3,21 @@ import { ValidationError } from '../lib/errors.js';
 import { {{ entity.name }}CreateInput, {{ entity.name }}UpdateInput } from '../types/{{ entity.name_lower }}.types.js';
 
 /* LLM_SECTION_START */
-// TODO: define zod schemas for {{ entity.name }} create and update
+// TODO: define Zod schemas for {{ entity.name }} create and update
 {% if owner_fk_field %}
-// SERVER-INJECTED: {{ owner_fk_field }} is set from req.user.id in the controller — exclude it from {{ entity.name_lower }}CreateSchema and {{ entity.name_lower }}UpdateSchema
+// SERVER-INJECTED (always): {{ owner_fk_field }} is set from req.user.id — exclude from ALL schemas
 {% endif %}
+{% for fk in parent_fk_fields %}
+// PARENT-FK: {{ fk }} is required in the request body for direct POST /{{ entity.name_plural }},
+//            but injected from URL params in nested routes — exclude it from {{ entity.name_lower }}CreateNestedSchema
+{% endfor %}
+{% for constraint in llm_constraints %}
+// BUSINESS RULE: {{ constraint }}
+{% endfor %}
 const {{ entity.name_lower }}CreateSchema = z.object({});
+{% if parent_fk_fields %}
+const {{ entity.name_lower }}CreateNestedSchema = z.object({});
+{% endif %}
 const {{ entity.name_lower }}UpdateSchema = z.object({});
 /* LLM_SECTION_END */
 
@@ -33,6 +43,16 @@ export function validate{{ entity.name }}Create(body: unknown): {{ entity.name }
   }
   return result.data as {{ entity.name }}CreateInput;
 }
+{% if parent_fk_fields %}
+
+export function validate{{ entity.name }}CreateNested(body: unknown): {{ entity.name }}CreateInput {
+  const result = {{ entity.name_lower }}CreateNestedSchema.safeParse(body);
+  if (!result.success) {
+    throw new ValidationError(formatErrors(result.error.errors));
+  }
+  return result.data as {{ entity.name }}CreateInput;
+}
+{% endif %}
 
 export function validate{{ entity.name }}Update(body: unknown): {{ entity.name }}UpdateInput {
   const result = {{ entity.name_lower }}UpdateSchema.safeParse(body);

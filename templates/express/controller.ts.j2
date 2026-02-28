@@ -5,7 +5,7 @@ import { parsePagination, buildPaginatedResponse } from '../lib/pagination.js';
 import { NotFoundError, AppError } from '../lib/errors.js';
 {% for nested in nested_routes %}
 import { {{ nested.related_entity }}Repository } from '../repositories/{{ nested.related_entity_lower }}.repository.js';
-import { validate{{ nested.related_entity }}Create, validate{{ nested.related_entity }}Update } from '../validators/{{ nested.related_entity_lower }}.validator.js';
+import { validate{{ nested.related_entity }}Create{% if nested.has_parent_fk_schema %}, validate{{ nested.related_entity }}CreateNested{% endif %}, validate{{ nested.related_entity }}Update } from '../validators/{{ nested.related_entity_lower }}.validator.js';
 {% endfor %}
 
 export class {{ entity.name }}Controller {
@@ -131,64 +131,25 @@ export class {{ entity.name }}Controller {
 {% else %}
       const parentId = this._parseId(req.params.id);
 {% endif %}
+{% if nested.use_nested_schema %}
+      // Use the nested schema: parent FK ({{ nested.fk_field }}) is injected from URL, not expected in body
+      const data = validate{{ nested.related_entity }}CreateNested(req.body);
+{% else %}
       const data = validate{{ nested.related_entity }}Create(req.body);
+{% endif %}
       // Inject the parent FK; ignore any {{ nested.fk_field }} provided in the body
+{% if nested.child_owner_fk_field %}
+      // Also inject the owner FK ({{ nested.child_owner_fk_field }}) from the authenticated user's token
+      const record = await this.{{ nested.related_entity_lower }}Repository.create({ ...data, {{ nested.fk_field }}: parentId, {{ nested.child_owner_fk_field }}: req.user!.id });
+{% else %}
       const record = await this.{{ nested.related_entity_lower }}Repository.create({ ...data, {{ nested.fk_field }}: parentId });
+{% endif %}
       res.status(201).json(record);
     } catch (err) {
       next(err);
     }
   }
 
-  async update{{ nested.related_entity }}For{{ entity.name }}(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-{% if entity.is_auth_entity %}
-      // Parent ID comes from the authenticated user's token, not the URL
-      const parentId = req.user!.id;
-{% else %}
-      const parentId = this._parseId(req.params.id);
-{% endif %}
-      const childId = this._parseId(req.params.childId);
-      const existing = await this.{{ nested.related_entity_lower }}Repository.findById(childId);
-      if (!existing) {
-        throw new NotFoundError('{{ nested.related_entity }}', childId);
-      }
-      if (existing.{{ nested.fk_field }} !== parentId) {
-        throw new AppError(404, '{{ nested.related_entity }} not found under this {{ entity.name }}');
-      }
-      const data = validate{{ nested.related_entity }}Update(req.body);
-      const record = await this.{{ nested.related_entity_lower }}Repository.update(childId, data);
-      if (!record) {
-        throw new NotFoundError('{{ nested.related_entity }}', childId);
-      }
-      res.json(record);
-    } catch (err) {
-      next(err);
-    }
-  }
-
-  async delete{{ nested.related_entity }}For{{ entity.name }}(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-{% if entity.is_auth_entity %}
-      // Parent ID comes from the authenticated user's token, not the URL
-      const parentId = req.user!.id;
-{% else %}
-      const parentId = this._parseId(req.params.id);
-{% endif %}
-      const childId = this._parseId(req.params.childId);
-      const existing = await this.{{ nested.related_entity_lower }}Repository.findById(childId);
-      if (!existing) {
-        throw new NotFoundError('{{ nested.related_entity }}', childId);
-      }
-      if (existing.{{ nested.fk_field }} !== parentId) {
-        throw new AppError(404, '{{ nested.related_entity }} not found under this {{ entity.name }}');
-      }
-      await this.{{ nested.related_entity_lower }}Repository.delete(childId);
-      res.status(204).send();
-    } catch (err) {
-      next(err);
-    }
-  }
 {% endfor %}
 
   private _parseId(raw: string): number {
