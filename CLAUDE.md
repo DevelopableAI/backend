@@ -2,7 +2,7 @@
 
 ## Project Vision
 
-**Developable** is an AI-native backend engineering platform that generates and evolves production-ready systems with built-in invariants: transactional safety, observability, security by design, and comprehensive test coverage — not just endpoints.
+**Developable** an **AI-native backend engineering platform** that generates and evolves production-ready systems with built-in invariants: transactional safety, observability, security by design, and comprehensive test coverage—not just endpoints.
 
 **Input:** Creators provide a domain model (Prisma schema with annotations for business rules, auth boundaries, and data sensitivity) rather than natural language.
 
