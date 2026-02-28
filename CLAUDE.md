@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**Developable** is an AI-powered backend code generator. It takes a database entity schema and business requirements as input and produces a complete, production-ready REST API (FastAPI or Express.js) using a multi-agent, human-in-the-loop workflow.
+**Developable** an **AI-native backend engineering platform** that generates and evolves production-ready systems with built-in invariants: transactional safety, observability, security by design, and comprehensive test coverage—not just endpoints.
 
 The system is itself a FastAPI application that orchestrates multiple Claude-powered agents to analyze, propose, and generate code.
 
