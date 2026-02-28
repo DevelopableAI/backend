@@ -1,9 +1,12 @@
-Generate two Zod schemas for this entity: one for CREATE and one for UPDATE.
+Generate Zod schemas for this entity: one for CREATE (direct route), one for nested CREATE (if applicable), and one for UPDATE.
 
 Rules:
 - For CREATE: required fields are required. Optional fields and fields with defaults are optional.
 - For UPDATE: all fields are optional (partial update pattern).
-- SERVER-INJECTED fields: if you see a comment like "SERVER-INJECTED: fieldName is set from req.user.id", omit that field entirely from both the create and update schemas — it is injected by the controller and must never be accepted from user input.
+- SERVER-INJECTED fields: if you see a comment like "SERVER-INJECTED (always): fieldName ...", omit that field entirely from ALL schemas — it is injected by the controller and must never be accepted from user input.
+- PARENT-FK fields: if you see a comment like "PARENT-FK: fieldName is required in the request body for direct POST ..." then:
+  - Include fieldName as required in ${entityNameLower}CreateSchema (direct route needs it from the body)
+  - Exclude fieldName from ${entityNameLower}CreateNestedSchema (injected from URL param in nested routes)
 - Apply sensible constraints based on field names and types:
   - email → z.string().email({ message: 'Please provide a valid email address' })
       NOTE: do NOT add .min(1) or .nonempty() to email fields — .email() already rejects empty strings
@@ -20,5 +23,7 @@ Rules:
 - Use .trim() on string inputs where appropriate.
 - Do not add .optional() to the update schema fields individually — wrap the whole object with .partial() instead.
 
-Output only the two const declarations (createSchema and updateSchema), nothing else.
-The variable names must follow this pattern: `${entityNameLower}CreateSchema` and `${entityNameLower}UpdateSchema`.
+Output only the schema const declarations, nothing else. Use exactly these variable names:
+- `${entityNameLower}CreateSchema` — always required
+- `${entityNameLower}CreateNestedSchema` — only when PARENT-FK comments are present; must exclude all PARENT-FK fields
+- `${entityNameLower}UpdateSchema` — always required
