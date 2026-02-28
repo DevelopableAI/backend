@@ -37,3 +37,13 @@
 - ❌  POST /api/posts with Unicode/emoji → 201 → expected HTTP 201, got 400 | body: {"error":"authorId: Required"}
 - 🚀  GET /api/posts/9007199254740992⚠️   Integer overflow in ID → unexpected HTTP 500
 - 🚀  GET /api/posts/1; DROP TABLE posts --⚠️   SQL injection in path segment → unexpected HTTP 200
+
+# 02/28/2026 [Problems solved]
+- All issues above solved.
+- Removed some invalid scenarios for the blog app API testing
+
+# 02/28/2026 [Improvements to make]
+- Noticed an issue with templates being too brittle in the sense that there should be a deciding algorithm/program that understands the schema structurally and semantically to determine the endpoints that are required, and those that are not. It also helps determining all mandatory foreign keys (input for the API) to CRUD on an entity and ensuring that each endpoint concerning the operations on this entity get those foreign key in some form or other on the request.
+- Example: A comment requires the post ID and user ID. However, the `POST /api/posts/:id/comments` endpoint only looks for the post ID in the URL params and conveniently forgets to add validation for presence of userID (indicated as authorId in Comment model).
+- Solution is to have a validator (like the senior backend engineer tries to validate his own code through templated test cases and structural representation of the prisma schema like say a tree structure or a graph structure of all data models.) 
+- If we take the wrong path (like injecting an LLM call), this might cost us a lot in tokens and defeat the purpose of this work. 
