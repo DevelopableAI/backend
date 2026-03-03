@@ -49,8 +49,10 @@ def run(ctx: TestContext) -> None:
 #   - Assert: resp.status_code == 201, response has "token" and "{{ auth_entity.name_lower }}" fields
 #   - Store: ctx.state["{{ auth_entity.name_lower }}1_token"] = data.get("token", "")
 #   - Store: ctx.state["{{ auth_entity.name_lower }}1_id"] = data.get("{{ auth_entity.name_lower }}", {}).get("id")
-#   - Check: sensitive fields are NOT in the response body (use ctx.no_sensitive_field_in and ctx.warn)
-#   - Check: JWT payload does NOT contain sensitive fields (use ctx.decode_jwt and ctx.warn)
+{% for sf in sensitive_fields %}
+#   - Check: ctx.no_sensitive_field_in(data, "{{ sf.name }}", "register response") — pass "{{ sf.name }}" as a STRING, call ctx.warn() if it returns False
+#   - Check JWT: payload = ctx.decode_jwt(ctx.state["{{ auth_entity.name_lower }}1_token"]); ctx.no_sensitive_field_in(payload, "{{ sf.name }}", "JWT payload") — call ctx.warn() if False
+{% endfor %}
 # For user2: store token and id similarly
 # For user3: store token and id similarly (this user is deleted in cleanup)
 {% if optional_scalar_fields %}

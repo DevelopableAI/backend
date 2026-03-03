@@ -181,8 +181,13 @@ class TestContext:
             return None
 
     @staticmethod
-    def no_sensitive_field_in(obj: Any, field_name: str = "password", context: str = "response") -> bool:
-        """Recursively verify a sensitive field does not appear in any value."""
+    def no_sensitive_field_in(obj: Any, field_name = "password", context: str = "response") -> bool:
+        """Recursively verify a sensitive field does not appear in any value.
+
+        field_name may be a string or a list of strings (all must be absent).
+        """
+        if isinstance(field_name, list):
+            return all(TestContext.no_sensitive_field_in(obj, f, context) for f in field_name)
         if isinstance(obj, dict):
             if field_name in obj:
                 return False

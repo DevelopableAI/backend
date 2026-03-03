@@ -14,6 +14,7 @@ Rules:
 - Wrap each creation in `if ctx.assert_status(resp, 201, ...):` before accessing data
 - Variable names for state are already declared above the LLM section — use them directly
 - IMPORTANT: Use the `body=` keyword argument (NOT `json=`) for request bodies in ctx.req()
+- IMPORTANT: When calling ctx.no_sensitive_field_in(), pass the field name as a STRING (e.g. "password"), never as a list
 - IMPORTANT: Output code at 0 indentation (NO leading spaces on the outermost level). Nested blocks (if-bodies, etc.) must use 4-space relative indent. The system handles placement indentation automatically.
 
 Output only the Python code for the seed creation calls, starting immediately with `resp = ctx.req(...)` at column 0.
