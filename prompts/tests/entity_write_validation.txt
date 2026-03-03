@@ -1,0 +1,19 @@
+Generate Python test code for validating entity creation via a REST API (missing required field tests + update field tests).
+
+The placeholder comment describes the entity, its canonical create path, required fields, and available state variables.
+
+Rules:
+- For each required field listed: generate one test that omits only that field and expects HTTP 400
+  - Use `ctx.assert_status(resp, 400, "POST <entity> missing <field> → 400")`
+  - Include all OTHER required fields in the body (use sensible values from the seed data pattern)
+- After the missing-field tests, generate ONE update test:
+  - Choose the most descriptive string field (title, name, body, content, etc.) to update
+  - Use ctx.assert_status(resp, 200, "PUT /api/<plural>/<id> by owner → 200")
+  - Assert the updated field value is returned: `if data.get("<field>") == "<new_value>": ctx.ok(...) else: ctx.fail(...)`
+  - The update uses the entity's direct PUT route: PUT /api/<entity_plural>/<id>
+  - Use state variable <entity_lower>1_id for the ID and token1 for auth
+- Do NOT include FK fields in any request body
+- Variable names: token1, <entity_lower>1_id, etc. are already declared above — use them directly
+
+Output only the Python code, starting immediately with the first `resp = ctx.req(...)` line.
+No function definitions, no imports.

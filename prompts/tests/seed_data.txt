@@ -1,0 +1,18 @@
+Generate Python seed data creation code for an integration test section.
+
+The placeholder comment describes the entity, its canonical create path, required/optional fields,
+and the state keys to populate. Read it carefully.
+
+Rules:
+- Create exactly 3 instances of the entity (entity1 for token1, entity2 for token2, entity3 for token1 with optional fields filled)
+- Use realistic, human-readable values (e.g. "Hello World", "My first post", "Alice Tester")
+- Do NOT include FK fields in the body — they are injected by the server from the JWT or URL
+- Use ctx.assert_status(resp, 201, "Seed: Create <entity><n>") for each seed call
+- Store IDs: ctx.state["<entity_lower>1_id"] = data.get("id"), etc.
+- If owner_fk_field is mentioned: assert data.get(owner_fk_field) == <auth_var>_id and call ctx.ok() or ctx.fail() with a message
+- If parent_fk_field is mentioned: assert data.get(parent_fk_field) == <parent_var>_id and call ctx.ok() or ctx.fail()
+- Wrap each creation in `if ctx.assert_status(resp, 201, ...):` before accessing data
+- Variable names for state are already declared above the LLM section — use them directly
+
+Output only the Python code for the seed creation calls, starting immediately with the first `resp = ctx.req(...)` line.
+No function definitions, no imports, no section headers.

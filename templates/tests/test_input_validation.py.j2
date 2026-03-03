@@ -1,0 +1,201 @@
+"""
+Section {{ section_num }} — Input validation and edge cases.
+
+Uses {{ entity.name }} as the primary test entity.
+Requires ctx.state: {{ auth_entity.name_lower if auth_entity else 'user' }}1_token.
+Populates ctx.state: long_title_{{ entity.name_lower }}_id, xss_{{ entity.name_lower }}_id, unicode_{{ entity.name_lower }}_id
+                     (kept for cleanup).
+"""
+
+import requests as _req
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · INPUT VALIDATION & EDGE CASES")
+
+    token1 = ctx.state.get("{{ auth_entity.name_lower if auth_entity else 'user' }}1_token")
+{% if owner_fk_field %}
+    {{ auth_entity.name_lower if auth_entity else 'user' }}1_id = ctx.state.get("{{ auth_entity.name_lower if auth_entity else 'user' }}1_id")
+{% endif %}
+
+{% set string_fields = required_scalar_fields | selectattr("ts_type", "equalto", "string") | list %}
+{% set first_str = string_fields[0] if string_fields else required_scalar_fields[0] if required_scalar_fields else None %}
+
+{% if first_str %}
+    # {{ section_num }}-1  Very long {{ first_str.name }} (300 chars) — should be rejected or truncated
+    long_value = "A" * 300
+    if token1:
+        resp = ctx.req("POST", "{{ canonical_create_path }}", token=token1,
+                       body={
+                           "{{ first_str.name }}": long_value,
+{% for f in required_scalar_fields if f.name != first_str.name %}
+                           "{{ f.name }}": "Normal content",
+{% endfor %}
+                       })
+        if resp.status_code in (400, 422):
+            ctx.ok(f"POST {{ entity.name_lower }} {{ first_str.name }}=300 chars → HTTP {resp.status_code} (rejected)")
+        elif resp.status_code == 201:
+            ctx.warn(
+                "POST {{ entity.name_lower }} accepted 300-char {{ first_str.name }} — "
+                "consider .max(255) in the Zod '{{ first_str.name }}' schema"
+            )
+            ctx.state["long_title_{{ entity.name_lower }}_id"] = ctx.safe_json(resp).get("id")
+
+{% if string_fields | length > 1 %}
+    # {{ section_num }}-2  Very long {{ string_fields[1].name }} (15 000 chars)
+    long_content = "C" * 15_000
+    if token1:
+        resp = ctx.req("POST", "{{ canonical_create_path }}", token=token1,
+                       body={
+                           "{{ string_fields[1].name }}": long_content,
+{% for f in required_scalar_fields if f.name != string_fields[1].name %}
+                           "{{ f.name }}": "Long content test",
+{% endfor %}
+                       })
+        if resp.status_code in (400, 422):
+            ctx.ok(f"POST {{ entity.name_lower }} {{ string_fields[1].name }}=15000 chars → HTTP {resp.status_code} (rejected)")
+        elif resp.status_code == 201:
+            ctx.warn(
+                "POST {{ entity.name_lower }} accepted 15 000-char {{ string_fields[1].name }} — "
+                "consider .max(10000) in the Zod schema"
+            )
+            ctx.state["long_content_{{ entity.name_lower }}_id"] = ctx.safe_json(resp).get("id")
+{% endif %}
+
+    # {{ section_num }}-3  XSS payload in content — stored verbatim (escaping is frontend responsibility)
+    xss_payload = '<script>alert("xss")</script>'
+    if token1:
+        resp = ctx.req("POST", "{{ canonical_create_path }}", token=token1,
+                       body={
+                           "{{ first_str.name }}": "XSS Test",
+{% if string_fields | length > 1 %}
+                           "{{ string_fields[1].name }}": xss_payload,
+{% else %}
+                           "{{ first_str.name }}": xss_payload,
+{% endif %}
+{% for f in required_scalar_fields if f.name != first_str.name and (string_fields | length <= 1 or f.name != string_fields[1].name) %}
+                           "{{ f.name }}": "Normal value",
+{% endfor %}
+                       })
+        if resp.status_code == 201:
+            ctx.warn(
+                "XSS payload stored verbatim in DB — ensure HTML escaping is applied "
+                "at render time (frontend responsibility)."
+            )
+            ctx.ok("API stored content without modification (escaping is frontend concern)")
+            ctx.state["xss_{{ entity.name_lower }}_id"] = ctx.safe_json(resp).get("id")
+        else:
+            ctx.ok(f"XSS payload rejected with HTTP {resp.status_code}")
+{% endif %}
+
+    # {{ section_num }}-4  SQL injection in query param — server must not crash
+    resp = ctx.req("GET", "/api/{{ entity.name_plural }}", params={"page": "1; DROP TABLE {{ entity.name_plural }}; --"})
+    if resp.status_code == 200:
+        ctx.ok("SQL injection in ?page param → 200 (gracefully handled / Prisma parameterised)")
+    elif resp.status_code == 400:
+        ctx.ok("SQL injection in ?page param → 400 (rejected by validation)")
+    else:
+        ctx.warn(f"SQL injection in page param → unexpected HTTP {resp.status_code}")
+
+    # {{ section_num }}-5  SQL injection in path segment → 400 or 404
+    resp = ctx.req("GET", "/api/{{ entity.name_plural }}/1; DROP TABLE {{ entity.name_plural }} --")
+    if resp.status_code in (400, 404):
+        ctx.ok(f"SQL injection in path segment → HTTP {resp.status_code} (handled)")
+    else:
+        ctx.warn(f"SQL injection in path segment → unexpected HTTP {resp.status_code}")
+
+{% if first_str %}
+    # {{ section_num }}-6  Unicode / emoji — should round-trip correctly
+    if token1:
+        resp = ctx.req("POST", "{{ canonical_create_path }}", token=token1,
+                       body={
+                           "{{ first_str.name }}": "Unicode Test 🌍",
+{% if string_fields | length > 1 %}
+                           "{{ string_fields[1].name }}": "Emoji content: 🚀✅❌⚠️",
+{% endif %}
+{% for f in required_scalar_fields if f.name != first_str.name and (string_fields | length <= 1 or f.name != string_fields[1].name) %}
+                           "{{ f.name }}": "Normal value",
+{% endfor %}
+                       })
+        if ctx.assert_status(resp, 201, "POST {{ entity.name_lower }} with Unicode/emoji → 201"):
+            data = ctx.safe_json(resp)
+            content_val = data.get("{{ string_fields[1].name if string_fields | length > 1 else first_str.name }}", "")
+            if "🚀" in content_val or "🌍" in content_val:
+                ctx.ok("Unicode/emoji stored and returned correctly")
+            else:
+                ctx.fail("Emoji not present in returned response")
+            ctx.state["unicode_{{ entity.name_lower }}_id"] = data.get("id")
+
+    # {{ section_num }}-7  Empty string {{ first_str.name }} → 400 (validation)
+    if token1:
+        resp = ctx.req("POST", "{{ canonical_create_path }}", token=token1,
+                       body={
+                           "{{ first_str.name }}": "",
+{% for f in required_scalar_fields if f.name != first_str.name %}
+                           "{{ f.name }}": "Content with empty {{ first_str.name }}",
+{% endfor %}
+                       })
+        if resp.status_code == 400:
+            ctx.ok("POST {{ entity.name_lower }} with empty string {{ first_str.name }} → 400 (validation)")
+        elif resp.status_code == 201:
+            ctx.warn(
+                "POST {{ entity.name_lower }} accepted empty string {{ first_str.name }} — "
+                "consider .min(1) in the Zod '{{ first_str.name }}' schema"
+            )
+{% endif %}
+
+    # {{ section_num }}-8  Non-numeric pagination params → fall back to defaults
+    resp = ctx.req("GET", "/api/{{ entity.name_plural }}", params={"page": "abc", "limit": "xyz"})
+    if ctx.assert_status(resp, 200, "GET /api/{{ entity.name_plural }}?page=abc&limit=xyz → 200 (defaults)"):
+        meta = ctx.safe_json(resp).get("meta", {})
+        if meta.get("page") == 1 and meta.get("limit") == 20:
+            ctx.ok("Non-numeric pagination params fall back to defaults page=1 limit=20")
+        else:
+            ctx.warn(f"Non-numeric pagination produced unexpected meta: {meta}")
+
+    # {{ section_num }}-9  Integer overflow in ID
+    big_id = 2 ** 53
+    resp = ctx.req("GET", f"/api/{{ entity.name_plural }}/{big_id}")
+    if resp.status_code in (400, 404):
+        ctx.ok(f"GET /api/{{ entity.name_plural }}/{big_id} (integer overflow) → HTTP {resp.status_code} (handled)")
+    else:
+        ctx.warn(f"Integer overflow in ID → unexpected HTTP {resp.status_code}")
+
+    # {{ section_num }}-10  Content-Type: text/plain body → 400 or 415
+    if token1:
+        url = f"{ctx.base_url}{{ canonical_create_path }}"
+        print(f"  🚀  POST {{ canonical_create_path }} (Content-Type: text/plain)")
+        try:
+            resp = _req.post(
+                url,
+                headers={"Authorization": f"Bearer {token1}", "Content-Type": "text/plain"},
+                data='{"{{ (first_str.name if first_str else "field") }}":"value"}',
+                timeout=10,
+            )
+            if resp.status_code in (400, 415):
+                ctx.ok(f"POST with Content-Type: text/plain → HTTP {resp.status_code} (non-JSON body rejected)")
+            else:
+                ctx.warn(
+                    f"POST with Content-Type: text/plain → HTTP {resp.status_code} "
+                    "— Express json() middleware may have silently ignored the body"
+                )
+        except Exception as exc:
+            ctx.fail(f"Request failed: {exc}")
+
+    # {{ section_num }}-11  No body at all → 400
+    if token1:
+        url = f"{ctx.base_url}{{ canonical_create_path }}"
+        print("  🚀  POST {{ canonical_create_path }} (no body at all)")
+        try:
+            resp = _req.post(
+                url,
+                headers={"Authorization": f"Bearer {token1}", "Content-Type": "application/json"},
+                timeout=10,
+            )
+            if resp.status_code in (400, 422):
+                ctx.ok(f"POST with no body → HTTP {resp.status_code} (validation rejected)")
+            else:
+                ctx.warn(f"POST with no body → HTTP {resp.status_code}")
+        except Exception as exc:
+            ctx.fail(f"Request failed: {exc}")

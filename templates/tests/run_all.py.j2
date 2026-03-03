@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-run_all.py — Blog API test suite runner.
+run_all.py — API test suite runner.
 
-Executes all 18 test sections (00–17) sequentially, sharing a single
-TestContext so that state (auth tokens, created IDs) flows naturally
-from each section to the next.
+Executes all test sections sequentially, sharing a single TestContext so that
+state (auth tokens, created IDs) flows naturally from each section to the next.
 
 Usage:
   python run_all.py [base_url]
@@ -22,50 +21,20 @@ Legend:
 import sys
 import os
 
-# Allow imports from the tests/ directory itself
+# Allow imports from this directory
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import TestContext, section
 
-import test_00_health
-import test_01_register
-import test_02_login
-import test_03_users_get
-import test_04_users_write
-import test_05_posts_seed_get
-import test_06_posts_write
-import test_07_comments_seed_get
-import test_08_comments_write
-import test_09_nested_users_get
-import test_10_nested_users_posts
-import test_11_nested_users_comments
-import test_12_nested_posts_comments
-import test_13_token_security
-import test_14_input_validation
-import test_15_response_structure
-import test_16_security_audit
-import test_17_cleanup
+{% for name in module_names %}
+import {{ name }}
+{% endfor %}
 
 
 SECTIONS = [
-    test_00_health,
-    test_01_register,
-    test_02_login,
-    test_03_users_get,
-    test_04_users_write,
-    test_05_posts_seed_get,
-    test_06_posts_write,
-    test_07_comments_seed_get,
-    test_08_comments_write,
-    test_09_nested_users_get,
-    test_10_nested_users_posts,
-    test_11_nested_users_comments,
-    test_12_nested_posts_comments,
-    test_13_token_security,
-    test_14_input_validation,
-    test_15_response_structure,
-    test_16_security_audit,
-    test_17_cleanup,
+{% for name in module_names %}
+    {{ name }},
+{% endfor %}
 ]
 
 
@@ -77,9 +46,9 @@ def main() -> None:
     )
 
     print("╔══════════════════════════════════════════════════════════════╗")
-    print("║        Developable — Comprehensive Test Suite                  ║")
+    print("║          Developable — Comprehensive Test Suite              ║")
     print("╚══════════════════════════════════════════════════════════════╝")
-    print(f"  Target : {base_url}")
+    print(f"  Target  : {base_url}")
     print(f"  Sections: {len(SECTIONS)}")
 
     ctx = TestContext(base_url)
@@ -88,7 +57,6 @@ def main() -> None:
         try:
             module.run(ctx)
         except SystemExit:
-            # Propagate connection failures that call sys.exit()
             raise
         except Exception as exc:
             ctx.fail(f"Unhandled exception in {module.__name__}: {exc}")

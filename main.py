@@ -6,6 +6,7 @@ from core.parser import PrismaParser
 from core.planner import Planner
 from core.assembler import Assembler
 from core.rules_parser import BusinessRulesParser
+from core.test_planner import TestPlanner
 
 
 def collect_env_values(env_vars: list[str]) -> dict[str, str]:
@@ -35,6 +36,12 @@ def main():
     parser.add_argument("--out", default="./output", help="Output directory (default: ./output)")
     parser.add_argument("--no-llm", action="store_true", help="Skip LLM calls, use placeholder logic only")
     parser.add_argument("--rules", default=None, help="Path to a schema.rules.yaml file with business logic constraints")
+    parser.add_argument(
+        "--tests-out",
+        default=None,
+        metavar="DIR",
+        help="If set, generate integration test suite into this directory",
+    )
     args = parser.parse_args()
 
     schema_path = Path(args.schema)
@@ -72,6 +79,22 @@ def main():
     print("  npm install")
     print("  npx prisma migrate dev")
     print("  npm run dev")
+
+    # ── Test suite generation ─────────────────────────────────────────────────
+    if args.tests_out:
+        tests_dir = Path(args.tests_out)
+        print(f"\nGenerating test suite into {tests_dir}/...")
+
+        test_plan = TestPlanner().plan(spec, plan)
+        print(f"Planned {len(test_plan['files'])} test files")
+
+        test_assembler = Assembler(out_dir=tests_dir, use_llm=not args.no_llm)
+        test_assembler.assemble(spec, test_plan, env_values=None)
+
+        print(f"\nTest suite at {tests_dir}/")
+        print("Run tests:")
+        print(f"  pip install requests")
+        print(f"  python {tests_dir}/run_all.py [API_BASE_URL]")
 
 
 if __name__ == "__main__":

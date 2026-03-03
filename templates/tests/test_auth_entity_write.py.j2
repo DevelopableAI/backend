@@ -1,0 +1,96 @@
+"""
+Section {{ section_num }} — {{ auth_entity.name }}: authenticated write operations (PUT / DELETE).
+
+Requires ctx.state: {{ auth_entity.name_lower }}1_id, {{ auth_entity.name_lower }}1_token,
+                    {{ auth_entity.name_lower }}2_id, {{ auth_entity.name_lower }}2_token (section 1).
+"""
+
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · {{ auth_entity.name | upper }} — WRITE OPERATIONS (auth required)")
+
+    {{ auth_entity.name_lower }}1_id = ctx.state.get("{{ auth_entity.name_lower }}1_id")
+    {{ auth_entity.name_lower }}2_id = ctx.state.get("{{ auth_entity.name_lower }}2_id")
+    token1 = ctx.state.get("{{ auth_entity.name_lower }}1_token")
+    token2 = ctx.state.get("{{ auth_entity.name_lower }}2_token")
+
+{% set has_post = allowed_routes | selectattr("method", "equalto", "POST") | list | length > 0 %}
+{% set has_put = allowed_routes | selectattr("method", "equalto", "PUT") | list | length > 0 %}
+{% set has_delete = allowed_routes | selectattr("method", "equalto", "DELETE") | list | length > 0 %}
+
+{% if has_post %}
+    # {{ section_num }}-1  POST without auth → 401
+    resp = ctx.req("POST", "/api/{{ auth_entity.name_plural }}", body={
+{% if login_field is defined and login_field %}
+        "{{ login_field.name }}": ctx.unique_email("anon"),
+{% endif %}
+        "password": "NoToken!1",
+{% for f in required_scalar_fields %}
+        "{{ f.name }}": "Anon",
+{% endfor %}
+    })
+    ctx.assert_status(resp, 401, "POST /api/{{ auth_entity.name_plural }} without auth → 401", auth_fail=True)
+{% endif %}
+
+{% if has_put %}
+    # {{ section_num }}-2  PUT without auth → 401
+    if {{ auth_entity.name_lower }}1_id:
+        resp = ctx.req("PUT", "/api/{{ auth_entity.name_plural }}/" + str({{ auth_entity.name_lower }}1_id),
+                       body={"name": "No Token Edit"})
+        ctx.assert_status(resp, 401,
+                          f"PUT /api/{{ auth_entity.name_plural }}/{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}} without auth → 401",
+                          auth_fail=True)
+{% endif %}
+
+{% if has_delete %}
+    # {{ section_num }}-3  DELETE without auth → 401
+    if {{ auth_entity.name_lower }}1_id:
+        resp = ctx.req("DELETE", "/api/{{ auth_entity.name_plural }}/" + str({{ auth_entity.name_lower }}1_id))
+        ctx.assert_status(resp, 401,
+                          f"DELETE /api/{{ auth_entity.name_plural }}/{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}} without auth → 401",
+                          auth_fail=True)
+{% endif %}
+
+{% if has_put %}
+    # {{ section_num }}-4  PUT with valid auth — update own record
+{% set update_field = required_scalar_fields[0] if required_scalar_fields else None %}
+{% if update_field %}
+    if {{ auth_entity.name_lower }}1_id and token1:
+        resp = ctx.req("PUT", "/api/{{ auth_entity.name_plural }}/" + str({{ auth_entity.name_lower }}1_id),
+                       token=token1,
+                       body={"{{ update_field.name }}": "Updated {{ auth_entity.name }} Value"})
+        if ctx.assert_status(resp, 200, f"PUT /api/{{ auth_entity.name_plural }}/{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}} by self → 200"):
+            data = ctx.safe_json(resp)
+            if data.get("{{ update_field.name }}") == "Updated {{ auth_entity.name }} Value":
+                ctx.ok("{{ update_field.name }} update persisted correctly")
+            else:
+                ctx.fail(f"{{ update_field.name }} not updated: got {data.get('{{ update_field.name }}')!r}")
+{% for sf in sensitive_fields %}
+            if not ctx.no_sensitive_field_in(data, "{{ sf.name }}", "PUT /api/{{ auth_entity.name_plural }} response"):
+                ctx.warn("{{ sf.name | capitalize }} exposed in PUT /api/{{ auth_entity.name_plural }} response")
+{% endfor %}
+{% endif %}
+
+    # {{ section_num }}-5  Security note: auth entity has no owner_fk_field → no ownership guard
+    if {{ auth_entity.name_lower }}1_id and {{ auth_entity.name_lower }}2_id and token2:
+        resp = ctx.req("PUT", "/api/{{ auth_entity.name_plural }}/" + str({{ auth_entity.name_lower }}1_id),
+                       token=token2,
+                       body={"bio": "Attempted update by another user"})
+        if resp.status_code == 200:
+            ctx.warn(
+                f"SECURITY: {{ auth_entity.name_lower }}2 successfully updated {{ auth_entity.name_lower }}1's "
+                "profile. The {{ auth_entity.name }} entity is the auth principal; consider adding an "
+                "explicit ownership guard if cross-user mutation should be forbidden."
+            )
+        elif resp.status_code == 403:
+            ctx.ok("PUT /api/{{ auth_entity.name_plural }}/:id by non-owner correctly returns 403")
+
+    # {{ section_num }}-6  PUT non-existent → 403 (auth check runs first)
+    if token1:
+        resp = ctx.req("PUT", "/api/{{ auth_entity.name_plural }}/9999999", token=token1,
+                       body={"name": "Ghost"})
+        ctx.assert_status(resp, 403,
+                          "PUT /api/{{ auth_entity.name_plural }}/9999999 (authorization first) → 403")
+{% endif %}

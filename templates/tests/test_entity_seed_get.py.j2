@@ -1,0 +1,120 @@
+"""
+Section {{ section_num }} — {{ entity.name }}: seed data + unauthenticated GET operations.
+
+Creates {{ entity.name_plural }} that subsequent sections depend on.
+
+Populates ctx.state: {{ entity.name_lower }}1_id, {{ entity.name_lower }}2_id, {{ entity.name_lower }}3_id.
+Requires ctx.state:
+{% if auth_entity %}
+  {{ auth_entity.name_lower }}1_id, {{ auth_entity.name_lower }}1_token, {{ auth_entity.name_lower }}2_token, {{ auth_entity.name_lower }}2_id
+{% endif %}
+{% if primary_parent_entity and primary_parent_entity.name != (auth_entity.name if auth_entity else '') %}
+  {{ primary_parent_entity.name_lower }}1_id
+{% endif %}
+"""
+
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · {{ entity.name | upper }} — SEED & GET (unauthenticated reads)")
+
+{% if auth_entity %}
+    token1 = ctx.state.get("{{ auth_entity.name_lower }}1_token")
+    token2 = ctx.state.get("{{ auth_entity.name_lower }}2_token")
+    {{ auth_entity.name_lower }}1_id = ctx.state.get("{{ auth_entity.name_lower }}1_id")
+    {{ auth_entity.name_lower }}2_id = ctx.state.get("{{ auth_entity.name_lower }}2_id")
+{% endif %}
+{% if primary_parent_entity and primary_parent_entity.name != (auth_entity.name if auth_entity else '') %}
+    {{ primary_parent_entity.name_lower }}1_id = ctx.state.get("{{ primary_parent_entity.name_lower }}1_id")
+{% endif %}
+
+    # --- Seed: create {{ entity.name_plural }} ---
+
+/* LLM_SECTION_START */
+# Generate 3 seed calls for entity "{{ entity.name }}" using its canonical create path.
+#
+# Canonical create path: {{ canonical_create_path }}
+# Requires authentication: {{ requires_auth }}
+#
+# Required body fields (do NOT include FK fields — they are server-injected):
+{% for f in required_scalar_fields %}
+#   {{ f.name }}: {{ f.ts_type }} (required)
+{% endfor %}
+{% for f in optional_scalar_fields %}
+#   {{ f.name }}: {{ f.ts_type }} (optional)
+{% endfor %}
+#
+# Server-injected FK fields (omit from body):
+{% for fk in all_fk_fields %}
+#   {{ fk }}
+{% endfor %}
+#
+# State variables to populate:
+#   ctx.state["{{ entity.name_lower }}1_id"] — first created (use token1)
+#   ctx.state["{{ entity.name_lower }}2_id"] — second created (use token1, include optional fields)
+#   ctx.state["{{ entity.name_lower }}3_id"] — third created (use token2)
+#
+{% if owner_fk_field %}
+# After seed 1: assert data.get("{{ owner_fk_field }}") == {{ auth_entity.name_lower }}1_id
+#   ctx.ok("{{ owner_fk_field }} correctly injected from JWT") OR ctx.fail(...)
+{% endif %}
+{% if primary_parent_fk_field %}
+# After seed 1: assert data.get("{{ primary_parent_fk_field }}") == {{ primary_parent_entity.name_lower }}1_id
+#   ctx.ok("{{ primary_parent_fk_field }} correctly injected from URL param") OR ctx.fail(...)
+{% endif %}
+#
+# Available context variables (already declared above):
+{% if auth_entity %}
+#   token1, token2, {{ auth_entity.name_lower }}1_id, {{ auth_entity.name_lower }}2_id
+{% endif %}
+{% if primary_parent_entity and primary_parent_entity.name != (auth_entity.name if auth_entity else '') %}
+#   {{ primary_parent_entity.name_lower }}1_id
+{% endif %}
+/* LLM_SECTION_END */
+
+    # --- GET tests ---
+
+    # {{ section_num }}-1  Paginated list
+    resp = ctx.req("GET", "/api/{{ entity.name_plural }}")
+    if ctx.assert_status(resp, 200, "GET /api/{{ entity.name_plural }} → 200"):
+        ctx.assert_paginated(ctx.safe_json(resp), "GET /api/{{ entity.name_plural }}")
+
+    # {{ section_num }}-2  Pagination: page=2, limit=1
+    resp = ctx.req("GET", "/api/{{ entity.name_plural }}", params={"limit": 1, "page": 2})
+    if ctx.assert_status(resp, 200, "GET /api/{{ entity.name_plural }}?limit=1&page=2"):
+        meta = ctx.safe_json(resp).get("meta", {})
+        if meta.get("page") == 2 and meta.get("limit") == 1:
+            ctx.ok("Pagination page=2, limit=1 meta correct")
+        else:
+            ctx.fail(f"Unexpected meta: {meta}")
+        if meta.get("hasPrev") is True:
+            ctx.ok("meta.hasPrev=true on page 2")
+        else:
+            ctx.fail(f"Expected hasPrev=true on page 2, got {meta.get('hasPrev')}")
+
+    # {{ section_num }}-3  GET by ID
+    {{ entity.name_lower }}1_id = ctx.state.get("{{ entity.name_lower }}1_id")
+    if {{ entity.name_lower }}1_id:
+        resp = ctx.req("GET", "/api/{{ entity.name_plural }}/" + str({{ entity.name_lower }}1_id))
+        if ctx.assert_status(resp, 200, f"GET /api/{{ entity.name_plural }}/{{"{"}}{{ entity.name_lower }}1_id{{"}"}} → 200"):
+            data = ctx.safe_json(resp)
+            if data.get("id") == {{ entity.name_lower }}1_id:
+                ctx.ok("{{ entity.name }} id matches requested id")
+            else:
+                ctx.fail(f"{{ entity.name }} id mismatch: {data.get('id')} vs {{"{"}}{{ entity.name_lower }}1_id{{"}"}}")
+
+    # {{ section_num }}-4  Non-existent → 404
+    resp = ctx.req("GET", "/api/{{ entity.name_plural }}/9999999")
+    ctx.assert_status(resp, 404, "GET /api/{{ entity.name_plural }}/9999999 → 404")
+
+    # {{ section_num }}-5  Non-numeric ID → 400
+    resp = ctx.req("GET", "/api/{{ entity.name_plural }}/notanid")
+    ctx.assert_status(resp, 400, "GET /api/{{ entity.name_plural }}/notanid → 400 (invalid ID)")
+
+    # {{ section_num }}-6  Negative ID → 400 or 404
+    resp = ctx.req("GET", "/api/{{ entity.name_plural }}/-5")
+    if resp.status_code in (400, 404):
+        ctx.ok(f"GET /api/{{ entity.name_plural }}/-5 → HTTP {resp.status_code} (acceptable)")
+    else:
+        ctx.fail(f"GET /api/{{ entity.name_plural }}/-5 → unexpected HTTP {resp.status_code}")

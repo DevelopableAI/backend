@@ -181,14 +181,14 @@ class TestContext:
             return None
 
     @staticmethod
-    def no_password_in(obj: Any, context: str = "response") -> bool:
-        """Recursively verify 'password' does not appear in any value."""
+    def no_sensitive_field_in(obj: Any, field_name: str = "password", context: str = "response") -> bool:
+        """Recursively verify a sensitive field does not appear in any value."""
         if isinstance(obj, dict):
-            if "password" in obj:
+            if field_name in obj:
                 return False
-            return all(TestContext.no_password_in(v, context) for v in obj.values())
+            return all(TestContext.no_sensitive_field_in(v, field_name, context) for v in obj.values())
         if isinstance(obj, list):
-            return all(TestContext.no_password_in(item, context) for item in obj)
+            return all(TestContext.no_sensitive_field_in(item, field_name, context) for item in obj)
         return True
 
 
