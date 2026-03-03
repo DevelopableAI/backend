@@ -4,7 +4,10 @@ The placeholder comment describes the entity, its canonical create path, require
 and the state keys to populate. Read it carefully.
 
 Rules:
-- Create exactly 3 instances of the entity (entity1 for token1, entity2 for token2, entity3 for token1 with optional fields filled)
+- Create exactly 3 instances of the entity:
+    entity1: use token1 (owned by user1)
+    entity2: use token2 (owned by user2)
+    entity3: use token1 again (owned by user1, include optional fields if any)
   EXCEPTION: if the placeholder says to create only ONE instance and store as "nested_<entity>_id", follow those instructions exactly — do NOT create 3, do NOT write to entity1_id/entity2_id/entity3_id
 - Use realistic, human-readable values (e.g. "Hello World", "My first post", "Alice Tester")
 - Do NOT include FK fields in the body — they are injected by the server from the JWT or URL

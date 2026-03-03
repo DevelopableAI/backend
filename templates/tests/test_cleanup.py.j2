@@ -20,19 +20,25 @@ def run(ctx: TestContext) -> None:
             ctx.warn(f"Cleanup: no token for {label}, skipping")
             return
         resp = ctx.req("DELETE", path, token=token)
+        if resp.status_code == 403:
+            # First token didn't own this resource; try the other user's token
+{% if auth_entity %}
+            fallback = token2 if token is token1 else token1
+            if fallback:
+                resp = ctx.req("DELETE", path, token=fallback)
+{% endif %}
         if resp.status_code in (204, 404):
             ctx.ok(f"Cleanup: {label} removed (HTTP {resp.status_code})")
         elif resp.status_code == 403:
-            ctx.warn(f"Cleanup: {label} → 403 Forbidden (may need different token)")
+            ctx.warn(f"Cleanup: {label} → 403 Forbidden (neither token owns this resource)")
         else:
             ctx.warn(f"Cleanup: {label} → unexpected HTTP {resp.status_code}")
 
 {% for target in cleanup_targets %}
     # Cleanup {{ target.entity.name_plural }}
-    # state_id_keys order mirrors seed order: entity1→token1, entity2→token2, entity3→token1
     {{ target.entity.name_lower }}_cleanups = [
 {% for key in target.state_id_keys %}
-        (ctx.state.get("{{ key }}"), token{% if loop.index == 2 %}2{% else %}1{% endif %}, "{{ key }}"),
+        (ctx.state.get("{{ key }}"), token1, "{{ key }}"),
 {% endfor %}
 {% for key in target.extra_state_keys %}
         (ctx.state.get("{{ key }}"), token1, "{{ key }}"),
