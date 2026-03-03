@@ -13,6 +13,8 @@ Rules:
 - If parent_fk_field is mentioned: assert data.get(parent_fk_field) == <parent_var>_id and call ctx.ok() or ctx.fail()
 - Wrap each creation in `if ctx.assert_status(resp, 201, ...):` before accessing data
 - Variable names for state are already declared above the LLM section — use them directly
+- IMPORTANT: Use the `body=` keyword argument (NOT `json=`) for request bodies in ctx.req()
+- IMPORTANT: Indent all generated code with exactly 4 spaces — it goes inside a def run() function body
 
-Output only the Python code for the seed creation calls, starting immediately with the first `resp = ctx.req(...)` line.
+Output only the Python code for the seed creation calls, starting immediately with the first `    resp = ctx.req(...)` line (4-space indent).
 No function definitions, no imports, no section headers.

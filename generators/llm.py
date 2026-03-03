@@ -80,7 +80,26 @@ class LLMGenerator(BaseGenerator):
         )
 
         raw = response.content[0].text
-        return self._cleanup_markdown(raw).strip()
+        cleaned = self._cleanup_markdown(raw).strip()
+
+        # Python test sections live inside `def run(ctx):` — ensure 4-space indent.
+        # We do this server-side so the LLM doesn't need to be perfect about indentation.
+        if prompt_subdir == "tests":
+            lines = cleaned.splitlines()
+            # Detect existing leading indent on first non-empty line
+            first_indent = 0
+            for line in lines:
+                if line.strip():
+                    first_indent = len(line) - len(line.lstrip())
+                    break
+            if first_indent == 0:
+                # LLM produced top-level code; add 4-space indent to every non-empty line
+                cleaned = "\n".join(
+                    ("    " + line) if line.strip() else line
+                    for line in lines
+                )
+
+        return cleaned
 
     def _build_user_message(
         self,

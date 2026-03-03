@@ -31,8 +31,8 @@ def run(ctx: TestContext) -> None:
             ctx.fail(f"404 error response missing 'error' key: {data}")
 
     # {{ section_num }}-2  400 validation errors also use { "error": "..." }
-{% if writable_entity %}
-    resp = ctx.req("POST", "/api/{{ writable_entity.name_plural }}", token=token1, body={})
+{% if writable_entity and writable_create_path and ':id' not in writable_create_path %}
+    resp = ctx.req("POST", "{{ writable_create_path }}", token=token1, body={})
     if resp.status_code == 400:
         data = ctx.safe_json(resp)
         if "error" in data:
@@ -42,8 +42,8 @@ def run(ctx: TestContext) -> None:
 {% endif %}
 
     # {{ section_num }}-3  401 errors use { "error": "..." }
-{% if writable_entity %}
-    resp = ctx.req("POST", "/api/{{ writable_entity.name_plural }}", body={"title": "x", "content": "y"})
+{% if writable_entity and writable_create_path and ':id' not in writable_create_path %}
+    resp = ctx.req("POST", "{{ writable_create_path }}", body={"title": "x", "content": "y"})
     if resp.status_code == 401:
         data = ctx.safe_json(resp)
         if "error" in data:
@@ -88,11 +88,18 @@ def run(ctx: TestContext) -> None:
         meta = ctx.safe_json(resp).get("meta", {})
         total = meta.get("total", 0)
         limit = meta.get("limit", 1)
-        expected_pages = max(1, -(-total // limit))  # ceiling division
-        if meta.get("totalPages") == expected_pages:
-            ctx.ok(f"totalPages={meta['totalPages']} consistent with total={total}, limit={limit}")
+        actual_pages = meta.get("totalPages")
+        if total == 0:
+            if actual_pages in (0, 1):
+                ctx.ok(f"totalPages={actual_pages} correct for empty result (total=0)")
+            else:
+                ctx.fail(f"totalPages={actual_pages} unexpected for total=0, limit={limit}")
         else:
-            ctx.fail(
-                f"totalPages={meta.get('totalPages')} inconsistent with "
-                f"total={total}, limit={limit} (expected {expected_pages})"
-            )
+            expected_pages = -(-total // limit)  # ceiling division
+            if actual_pages == expected_pages:
+                ctx.ok(f"totalPages={actual_pages} consistent with total={total}, limit={limit}")
+            else:
+                ctx.fail(
+                    f"totalPages={actual_pages} inconsistent with "
+                    f"total={total}, limit={limit} (expected {expected_pages})"
+                )

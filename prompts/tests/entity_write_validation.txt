@@ -14,6 +14,8 @@ Rules:
   - Use state variable <entity_lower>1_id for the ID and token1 for auth
 - Do NOT include FK fields in any request body
 - Variable names: token1, <entity_lower>1_id, etc. are already declared above — use them directly
+- IMPORTANT: Use the `body=` keyword argument (NOT `json=`) for request bodies in ctx.req()
+- IMPORTANT: Indent all generated code with exactly 4 spaces — it goes inside a def run() function body
 
-Output only the Python code, starting immediately with the first `resp = ctx.req(...)` line.
+Output only the Python code, starting immediately with the first `    resp = ctx.req(...)` line (4-space indent).
 No function definitions, no imports.
