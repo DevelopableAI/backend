@@ -48,3 +48,9 @@
 - Solution is to have a validator (like the senior backend engineer tries to validate his own code through templated test cases and structural representation of the prisma schema like say a tree structure or a graph structure of all data models.) 
 - If we take the wrong path (like injecting an LLM call), this might cost us a lot in tokens and defeat the purpose of this work. 
 - A whole new feature which has been in the backlog in the long run is the acquiring of user logic behind the prisma schema he sent the generator. What do I mean by that? One of our test cases was to try to create another user from current user which does not make sense at all although technically possible given the prisma schema. So, the user business logic is an input we should plan on taking in for both the llm hints on the API code and on the templated test cases mentioned in the third point from the top.
+
+# 03/03/2026 [Solved issues]
+- Solved the foreign entity based endpoint naming and creationg issue.
+- Templated test cases created.
+- Debugging issues with templated tests
+
