@@ -15,7 +15,7 @@ Rules:
 - Do NOT include FK fields in any request body
 - Variable names: token1, <entity_lower>1_id, etc. are already declared above — use them directly
 - IMPORTANT: Use the `body=` keyword argument (NOT `json=`) for request bodies in ctx.req()
-- IMPORTANT: Indent all generated code with exactly 4 spaces — it goes inside a def run() function body
+- IMPORTANT: Output code at 0 indentation (NO leading spaces on the outermost level). Nested blocks (if-bodies, etc.) must use 4-space relative indent. The system handles placement indentation automatically.
 
-Output only the Python code, starting immediately with the first `    resp = ctx.req(...)` line (4-space indent).
+Output only the Python code, starting immediately with `resp = ctx.req(...)` at column 0.
 No function definitions, no imports.

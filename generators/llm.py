@@ -1,4 +1,5 @@
 import re
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -82,22 +83,15 @@ class LLMGenerator(BaseGenerator):
         raw = response.content[0].text
         cleaned = self._cleanup_markdown(raw).strip()
 
-        # Python test sections live inside `def run(ctx):` — ensure 4-space indent.
-        # We do this server-side so the LLM doesn't need to be perfect about indentation.
+        # Python test sections sit inside `def run(ctx):` — enforce 4-space indent.
+        # Dedent first (normalises whatever base indent the LLM used), then prepend
+        # 4 spaces to every non-empty line while keeping relative indentation intact.
         if prompt_subdir == "tests":
-            lines = cleaned.splitlines()
-            # Detect existing leading indent on first non-empty line
-            first_indent = 0
-            for line in lines:
-                if line.strip():
-                    first_indent = len(line) - len(line.lstrip())
-                    break
-            if first_indent == 0:
-                # LLM produced top-level code; add 4-space indent to every non-empty line
-                cleaned = "\n".join(
-                    ("    " + line) if line.strip() else line
-                    for line in lines
-                )
+            cleaned = textwrap.dedent(cleaned)
+            cleaned = "\n".join(
+                ("    " + line) if line.strip() else line
+                for line in cleaned.splitlines()
+            )
 
         return cleaned
 

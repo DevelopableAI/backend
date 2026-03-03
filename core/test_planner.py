@@ -460,7 +460,9 @@ class TestPlanner:
         """
         Determines the canonical create path for an entity.
 
-        Replicates Planner._get_primary_parent_name logic exactly:
+        Replicates Planner._get_primary_parent_name logic exactly, reading the
+        entity's own relations rather than its outgoing nested_routes (which point
+        to children, not parents):
           1. Explicit override via entity["primary_parent"]
           2. First non-auth many_to_one FK → parent with :id in URL
           3. Auth entity FK → nested under auth entity (no :id)
