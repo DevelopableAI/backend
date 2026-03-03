@@ -1,0 +1,131 @@
+"""
+Section {{ section_num }} — Security audit: sensitive field leakage.
+
+Checks that sensitive fields never appear in any response body or JWT payload,
+and that auth endpoints don't echo back plaintext credentials.
+
+Requires ctx.state: {{ auth_entity.name_lower }}1_id, {{ auth_entity.name_lower }}1_token.
+"""
+
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · SECURITY — SENSITIVE FIELDS AUDIT")
+
+    {{ auth_entity.name_lower }}1_id = ctx.state.get("{{ auth_entity.name_lower }}1_id")
+    token = ctx.state.get("{{ auth_entity.name_lower }}1_token", "")
+
+    # {{ section_num }}-1  GET /api/{{ auth_entity.name_plural }} list — no sensitive fields
+    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}")
+    if resp.status_code == 200:
+        items = ctx.safe_json(resp).get("data", [])
+{% for sf in sensitive_fields %}
+        if not ctx.no_sensitive_field_in(items, "{{ sf.name }}", "GET /api/{{ auth_entity.name_plural }} list"):
+            ctx.warn(
+                "SECURITY: '{{ sf.name }}' field is EXPOSED in GET /api/{{ auth_entity.name_plural }} list. "
+                "Ensure safeSelect excludes {{ sf.name }} from all read queries."
+            )
+        else:
+            ctx.ok("'{{ sf.name }}' field absent from all records in GET /api/{{ auth_entity.name_plural }}")
+{% endfor %}
+
+    # {{ section_num }}-2  GET /api/{{ auth_entity.name_plural }}/:id — no sensitive fields
+    if {{ auth_entity.name_lower }}1_id:
+        resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}/" + str({{ auth_entity.name_lower }}1_id))
+        if resp.status_code == 200:
+            data = ctx.safe_json(resp)
+{% for sf in sensitive_fields %}
+            if not ctx.no_sensitive_field_in(data, "{{ sf.name }}", f"GET /api/{{ auth_entity.name_plural }}/{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}}"):
+                ctx.warn(f"SECURITY: '{{ sf.name }}' exposed in GET /api/{{ auth_entity.name_plural }}/{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}}")
+            else:
+                ctx.ok(f"'{{ sf.name }}' absent from GET /api/{{ auth_entity.name_plural }}/{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}}")
+{% endfor %}
+
+    # {{ section_num }}-3  JWT payload — no sensitive fields
+    if token:
+        payload = ctx.decode_jwt(token)
+        if payload is None:
+            ctx.fail("Could not decode JWT payload for audit")
+        else:
+{% for sf in sensitive_fields %}
+            if "{{ sf.name }}" in payload:
+                ctx.warn(
+                    "SECURITY CRITICAL: JWT payload contains '{{ sf.name }}' field. "
+                    "Tokens are base64-decodable by anyone."
+                )
+            else:
+                ctx.ok("JWT payload does NOT contain '{{ sf.name }}' field")
+{% endfor %}
+
+    # {{ section_num }}-4  JWT expiry present
+    if token:
+        payload = ctx.decode_jwt(token)
+        if payload and "exp" not in payload:
+            ctx.warn("JWT has no 'exp' claim — tokens never expire (session cannot be revoked)")
+        elif payload:
+            ctx.ok("JWT 'exp' claim present")
+
+    # {{ section_num }}-5  Fresh register — plaintext sensitive field must not appear in response
+    audit_{{ login_field.name if login_field else 'email' }} = ctx.unique_email("audit_sec")
+    resp = ctx.req("POST", "/auth/register", body={
+{% if login_field %}
+        "{{ login_field.name }}": audit_{{ login_field.name if login_field else 'email' }},
+{% endif %}
+{% for sf in sensitive_fields %}
+        "{{ sf.name }}": "AuditPass!99x",
+{% endfor %}
+{% for f in auth_entity.fields if not f.is_relation and not f.is_id and not f.is_sensitive and f.prisma_type not in ('DateTime',) and not f.is_optional and not f.default %}
+        "{{ f.name }}": "Audit User",
+{% endfor %}
+    })
+    if resp.status_code == 201:
+        raw_body = resp.text
+{% for sf in sensitive_fields %}
+        if "AuditPass!99x" in raw_body:
+            ctx.warn(
+                "SECURITY CRITICAL: Plaintext '{{ sf.name }}' 'AuditPass!99x' found verbatim "
+                "in /auth/register response body!"
+            )
+        elif '"{{ sf.name }}"' in raw_body:
+            ctx.warn("SECURITY: '{{ sf.name }}' key present in /auth/register response JSON")
+        else:
+            ctx.ok("Plaintext '{{ sf.name }}' does NOT appear in /auth/register response body")
+{% endfor %}
+
+    # {{ section_num }}-6  Login response must not contain sensitive fields
+    if ctx.state.get("{{ login_field.name if login_field else 'email' }}1"):
+        resp = ctx.req("POST", "/auth/login", body={
+            "{{ login_field.name if login_field else 'email' }}": ctx.state["{{ login_field.name if login_field else 'email' }}1"],
+{% for sf in sensitive_fields %}
+            "{{ sf.name }}": "SecurePass1!",
+{% endfor %}
+        })
+        if resp.status_code == 200:
+            raw_body = resp.text
+{% for sf in sensitive_fields %}
+            if "SecurePass1!" in raw_body:
+                ctx.warn("SECURITY CRITICAL: Plaintext '{{ sf.name }}' found in /auth/login response!")
+            elif '"{{ sf.name }}"' in raw_body:
+                ctx.warn("SECURITY: '{{ sf.name }}' key present in /auth/login response JSON")
+            else:
+                ctx.ok("Plaintext '{{ sf.name }}' does NOT appear in /auth/login response")
+{% endfor %}
+
+    # {{ section_num }}-7  Helmet security headers should be present
+    resp = ctx.req("GET", "/health")
+    if resp.status_code == 200:
+        security_headers = [
+            "x-content-type-options",
+            "x-frame-options",
+            "strict-transport-security",
+        ]
+        present = [h for h in security_headers if h in resp.headers]
+        missing = [h for h in security_headers if h not in resp.headers]
+        if present:
+            ctx.ok(f"Helmet security headers present: {present}")
+        if missing:
+            ctx.warn(
+                f"Helmet security headers missing: {missing}. "
+                "Ensure helmet() middleware is registered before routes."
+            )

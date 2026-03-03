@@ -1,0 +1,100 @@
+"""
+Section {{ section_num }} — {{ auth_entity.name }}: unauthenticated GET operations.
+
+Requires ctx.state: {{ auth_entity.name_lower }}1_id (from section 1).
+"""
+
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · {{ auth_entity.name | upper }} — GET (unauthenticated reads)")
+
+    {{ auth_entity.name_lower }}1_id = ctx.state.get("{{ auth_entity.name_lower }}1_id")
+
+    # {{ section_num }}-1  Paginated list
+    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}")
+    if ctx.assert_status(resp, 200, "GET /api/{{ auth_entity.name_plural }} → 200"):
+        data = ctx.safe_json(resp)
+        ctx.assert_paginated(data, "GET /api/{{ auth_entity.name_plural }}")
+        items = data.get("data", [])
+{% for sf in sensitive_fields %}
+        if not ctx.no_sensitive_field_in(items, "{{ sf.name }}", "GET /api/{{ auth_entity.name_plural }} list"):
+            ctx.warn("{{ sf.name | capitalize }} field exposed in GET /api/{{ auth_entity.name_plural }} list response")
+        else:
+            ctx.ok("{{ sf.name | capitalize }} field absent from all records in list response")
+{% endfor %}
+
+    # {{ section_num }}-2  Pagination: limit=1
+    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}", params={"page": 1, "limit": 1})
+    if ctx.assert_status(resp, 200, "GET /api/{{ auth_entity.name_plural }}?page=1&limit=1"):
+        meta = ctx.safe_json(resp).get("meta", {})
+        if meta.get("limit") == 1:
+            ctx.ok("Pagination limit=1 respected in meta")
+        else:
+            ctx.fail(f"Expected meta.limit=1, got {meta.get('limit')}")
+
+    # {{ section_num }}-3  page=0 normalised to page 1
+    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}", params={"page": 0})
+    if ctx.assert_status(resp, 200, "GET /api/{{ auth_entity.name_plural }}?page=0 → normalised"):
+        meta = ctx.safe_json(resp).get("meta", {})
+        if meta.get("page", 0) >= 1:
+            ctx.ok(f"page=0 normalised to page={meta.get('page')}")
+        else:
+            ctx.fail(f"page=0 not normalised correctly: {meta}")
+
+    # {{ section_num }}-4  limit=9999 capped at 100
+    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}", params={"limit": 9999})
+    if ctx.assert_status(resp, 200, "GET /api/{{ auth_entity.name_plural }}?limit=9999 → capped"):
+        meta = ctx.safe_json(resp).get("meta", {})
+        if meta.get("limit", 0) <= 100:
+            ctx.ok(f"limit capped at {meta.get('limit')}")
+        else:
+            ctx.fail(f"limit not capped: meta.limit={meta.get('limit')}")
+
+    # {{ section_num }}-5  Very high page → empty data array
+    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}", params={"page": 99999})
+    if ctx.assert_status(resp, 200, "GET /api/{{ auth_entity.name_plural }}?page=99999 → empty"):
+        data = ctx.safe_json(resp).get("data", None)
+        if isinstance(data, list) and len(data) == 0:
+            ctx.ok("High page number returns empty data array")
+        elif data is not None:
+            ctx.fail(f"Expected empty data on high page, got {len(data)} items")
+
+    # {{ section_num }}-6  Get by ID
+    if {{ auth_entity.name_lower }}1_id:
+        resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}/" + str({{ auth_entity.name_lower }}1_id))
+        if ctx.assert_status(resp, 200, f"GET /api/{{ auth_entity.name_plural }}/{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}} → 200"):
+            data = ctx.safe_json(resp)
+            if data.get("id") == {{ auth_entity.name_lower }}1_id:
+                ctx.ok("{{ auth_entity.name }} id matches requested id")
+            else:
+                ctx.fail(f"{{ auth_entity.name }} id mismatch: expected {{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}}, got {data.get('id')}")
+{% for sf in sensitive_fields %}
+            if not ctx.no_sensitive_field_in(data, "{{ sf.name }}", f"GET /api/{{ auth_entity.name_plural }}/{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}}"):
+                ctx.warn("{{ sf.name | capitalize }} field exposed in single-record response")
+            else:
+                ctx.ok("{{ sf.name | capitalize }} field absent from single-record response")
+{% endfor %}
+
+    # {{ section_num }}-7  Non-existent → 404
+    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}/9999999")
+    ctx.assert_status(resp, 404, "GET /api/{{ auth_entity.name_plural }}/9999999 → 404")
+
+    # {{ section_num }}-8  Non-numeric ID → 400
+    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}/abc")
+    ctx.assert_status(resp, 400, "GET /api/{{ auth_entity.name_plural }}/abc → 400 (invalid ID)")
+
+    # {{ section_num }}-9  Negative ID → 400 or 404
+    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}/-1")
+    if resp.status_code in (400, 404):
+        ctx.ok(f"GET /api/{{ auth_entity.name_plural }}/-1 → HTTP {resp.status_code} (acceptable)")
+    else:
+        ctx.fail(f"GET /api/{{ auth_entity.name_plural }}/-1 → unexpected HTTP {resp.status_code}")
+
+    # {{ section_num }}-10  Float ID → 400 or 404
+    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}/1.5")
+    if resp.status_code in (400, 404):
+        ctx.ok(f"GET /api/{{ auth_entity.name_plural }}/1.5 → HTTP {resp.status_code} (acceptable)")
+    else:
+        ctx.fail(f"GET /api/{{ auth_entity.name_plural }}/1.5 → unexpected HTTP {resp.status_code}")

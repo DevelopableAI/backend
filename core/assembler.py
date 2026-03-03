@@ -40,13 +40,17 @@ class Assembler:
 
         # if LLM is needed and enabled, fill the LLM sections
         if file_plan.get("needs_llm") and self.use_llm:
-            entity = file_plan["context"].get("entity")
+            # llm_entity overrides the context entity (used by test modules that target
+            # a specific entity different from the template's primary context)
+            entity = file_plan.get("llm_entity") or file_plan["context"].get("entity")
             task = file_plan.get("llm_task", "")
+            prompt_subdir = file_plan.get("prompt_subdir", "express")
             content = self.llm_gen.fill(
                 content=content,
                 task=task,
                 entity=entity,
                 spec=spec,
+                prompt_subdir=prompt_subdir,
             )
 
         return content

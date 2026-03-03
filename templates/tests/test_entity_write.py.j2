@@ -1,0 +1,145 @@
+"""
+Section {{ section_num }} — {{ entity.name }}: authenticated write operations (PUT / DELETE).
+
+Requires ctx.state:
+{% if auth_entity %}
+  {{ auth_entity.name_lower }}1_id, {{ auth_entity.name_lower }}1_token, {{ auth_entity.name_lower }}2_token
+{% endif %}
+  {{ entity.name_lower }}1_id, {{ entity.name_lower }}2_id, {{ entity.name_lower }}3_id (from seed section)
+"""
+
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · {{ entity.name | upper }} — WRITE OPERATIONS")
+
+{% if auth_entity %}
+    {{ auth_entity.name_lower }}1_id = ctx.state.get("{{ auth_entity.name_lower }}1_id")
+    {{ auth_entity.name_lower }}2_id = ctx.state.get("{{ auth_entity.name_lower }}2_id")
+    token1 = ctx.state.get("{{ auth_entity.name_lower }}1_token")
+    token2 = ctx.state.get("{{ auth_entity.name_lower }}2_token")
+{% endif %}
+    {{ entity.name_lower }}1_id = ctx.state.get("{{ entity.name_lower }}1_id")
+    {{ entity.name_lower }}2_id = ctx.state.get("{{ entity.name_lower }}2_id")
+    {{ entity.name_lower }}3_id = ctx.state.get("{{ entity.name_lower }}3_id")
+
+    # {{ section_num }}-1  POST (canonical create path) without auth → 401
+{% if auth_entity %}
+    resp = ctx.req("POST", "{{ canonical_create_path }}", body={
+{% for f in required_scalar_fields %}
+        "{{ f.name }}": "Anon Test",
+{% endfor %}
+    })
+    ctx.assert_status(resp, 401,
+                      "POST {{ canonical_create_path }} without auth → 401",
+                      auth_fail=True)
+{% endif %}
+
+    # {{ section_num }}-2  POST with auth, empty body → 400
+{% if auth_entity %}
+    if token1:
+        resp = ctx.req("POST", "{{ canonical_create_path }}", token=token1, body={})
+        ctx.assert_status(resp, 400, "POST {{ canonical_create_path }} empty body → 400")
+{% endif %}
+
+/* LLM_SECTION_START */
+# Generate required-field validation tests for entity "{{ entity.name }}".
+# Canonical create path: {{ canonical_create_path }}
+# Requires authentication: {{ requires_auth }}
+#
+# Required scalar fields (excluding server-injected FK fields):
+{% for f in required_scalar_fields %}
+#   {{ f.name }}: {{ f.ts_type }} (required)
+{% endfor %}
+#
+# For EACH required field, generate one test:
+#   - Omit only that field from the body
+#   - Include all other required fields with sensible values
+#   - Expect HTTP 400: ctx.assert_status(resp, 400, "POST {{ entity.name_lower }} missing <field> → 400")
+#   - Wrap in `if token1:` guard
+#
+# Then generate ONE ownership spoofing test for the owner FK (if present):
+{% if owner_fk_field %}
+#   - Include "{{ owner_fk_field }}": <user2_id> in the body while using token1
+#   - If response is 201 and data.get("{{ owner_fk_field }}") == {{ auth_entity.name_lower }}1_id: ctx.ok("spoofing prevented")
+#   - If response is 201 and data.get("{{ owner_fk_field }}") == {{ auth_entity.name_lower }}2_id: ctx.warn("SECURITY: ownership spoofing succeeded")
+#   - Store the created entity id in ctx.state["spoofed_{{ entity.name_lower }}_id"] for cleanup
+{% endif %}
+#
+# Then generate ONE update field test (happy path):
+#   - Use direct PUT route: PUT /api/{{ entity.name_plural }}/<id>
+#   - Use {{ entity.name_lower }}1_id and token1
+#   - Pick the most descriptive string field to update
+#   - Assert the updated value is returned
+#
+# Available variables (already declared above):
+#   token1, token2
+{% if auth_entity %}
+#   {{ auth_entity.name_lower }}1_id, {{ auth_entity.name_lower }}2_id
+{% endif %}
+#   {{ entity.name_lower }}1_id, {{ entity.name_lower }}2_id, {{ entity.name_lower }}3_id
+/* LLM_SECTION_END */
+
+    # {{ section_num }}-auth  PUT without auth → 401
+    if {{ entity.name_lower }}1_id:
+        resp = ctx.req("PUT", "/api/{{ entity.name_plural }}/" + str({{ entity.name_lower }}1_id),
+                       body={"title": "Anon edit attempt"})
+        ctx.assert_status(resp, 401,
+                          f"PUT /api/{{ entity.name_plural }}/{{"{"}}{{ entity.name_lower }}1_id{{"}"}} without auth → 401",
+                          auth_fail=True)
+
+{% if owner_fk_field %}
+    # {{ section_num }}-owner  PUT by non-owner → 403
+    if {{ entity.name_lower }}1_id and token2:
+        resp = ctx.req("PUT", "/api/{{ entity.name_plural }}/" + str({{ entity.name_lower }}1_id),
+                       token=token2,
+                       body={"title": "Hijack attempt"})
+        ctx.assert_status(resp, 403,
+                          f"PUT /api/{{ entity.name_plural }}/{{"{"}}{{ entity.name_lower }}1_id{{"}"}} by non-owner → 403",
+                          auth_fail=True)
+{% endif %}
+
+    # {{ section_num }}-notfound  PUT non-existent → 404
+{% if auth_entity %}
+    if token1:
+        resp = ctx.req("PUT", "/api/{{ entity.name_plural }}/9999999", token=token1,
+                       body={"title": "Ghost update"})
+        ctx.assert_status(resp, 404, "PUT /api/{{ entity.name_plural }}/9999999 (non-existent) → 404")
+{% endif %}
+
+    # {{ section_num }}-delete-noauth  DELETE without auth → 401
+    if {{ entity.name_lower }}2_id:
+        resp = ctx.req("DELETE", "/api/{{ entity.name_plural }}/" + str({{ entity.name_lower }}2_id))
+        ctx.assert_status(resp, 401,
+                          f"DELETE /api/{{ entity.name_plural }}/{{"{"}}{{ entity.name_lower }}2_id{{"}"}} without auth → 401",
+                          auth_fail=True)
+
+{% if owner_fk_field %}
+    # {{ section_num }}-delete-nonowner  DELETE by non-owner → 403
+    if {{ entity.name_lower }}2_id and token2:
+        resp = ctx.req("DELETE", "/api/{{ entity.name_plural }}/" + str({{ entity.name_lower }}2_id),
+                       token=token2)
+        ctx.assert_status(resp, 403,
+                          f"DELETE /api/{{ entity.name_plural }}/{{"{"}}{{ entity.name_lower }}2_id{{"}"}} by non-owner → 403",
+                          auth_fail=True)
+{% endif %}
+
+    # {{ section_num }}-delete-owner  DELETE by owner → 204
+{% if auth_entity %}
+    if {{ entity.name_lower }}2_id and token1:
+        resp = ctx.req("DELETE", "/api/{{ entity.name_plural }}/" + str({{ entity.name_lower }}2_id), token=token1)
+        if ctx.assert_status(resp, 204, f"DELETE /api/{{ entity.name_plural }}/{{"{"}}{{ entity.name_lower }}2_id{{"}"}} by owner → 204"):
+            ctx.state["{{ entity.name_lower }}2_deleted"] = True
+
+    # {{ section_num }}-get-deleted  GET after delete → 404
+    if {{ entity.name_lower }}2_id and ctx.state.get("{{ entity.name_lower }}2_deleted"):
+        resp = ctx.req("GET", "/api/{{ entity.name_plural }}/" + str({{ entity.name_lower }}2_id))
+        ctx.assert_status(resp, 404,
+                          f"GET /api/{{ entity.name_plural }}/{{"{"}}{{ entity.name_lower }}2_id{{"}"}} after deletion → 404")
+
+    # {{ section_num }}-delete-notfound  DELETE non-existent → 404
+    if token1:
+        resp = ctx.req("DELETE", "/api/{{ entity.name_plural }}/9999999", token=token1)
+        ctx.assert_status(resp, 404, "DELETE /api/{{ entity.name_plural }}/9999999 (non-existent) → 404")
+{% endif %}

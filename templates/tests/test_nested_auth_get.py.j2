@@ -1,0 +1,74 @@
+"""
+Section {{ section_num }} — Nested routes: GET /api/{{ auth_entity.name_plural }}/:id/<child_plural>.
+
+Tests all nested GET routes under {{ auth_entity.name }} — each returns a paginated,
+FK-scoped list of child resources.
+
+Requires ctx.state: {{ auth_entity.name_lower }}1_id
+{% for nr in nested_routes %}
+  and {{ nr.related_entity_lower }}1_id (from {{ nr.related_entity_plural }} seed section)
+{% endfor %}
+"""
+
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · NESTED ROUTES — GET /api/{{ auth_entity.name_plural }}/:id/<child>")
+
+    {{ auth_entity.name_lower }}1_id = ctx.state.get("{{ auth_entity.name_lower }}1_id")
+
+{% for nr in nested_routes %}
+    # ── GET /api/{{ auth_entity.name_plural }}/:id/{{ nr.relation_name }} ──────────────────────────────────
+
+    # {{ section_num }}-{{ loop.index * 2 - 1 }}  Paginated, scoped to {{ auth_entity.name_lower }}
+    if {{ auth_entity.name_lower }}1_id:
+        resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}/" + str({{ auth_entity.name_lower }}1_id) + "/{{ nr.relation_name }}")
+        if ctx.assert_status(resp, 200,
+                             f"GET /api/{{ auth_entity.name_plural }}/{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}}/{{ nr.relation_name }} → 200"):
+            data = ctx.safe_json(resp)
+            ctx.assert_paginated(data, f"GET /api/{{ auth_entity.name_plural }}/{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}}/{{ nr.relation_name }}")
+            items = data.get("data", [])
+            wrong = [item for item in items if item.get("{{ nr.fk_field }}") != {{ auth_entity.name_lower }}1_id]
+            if wrong:
+                ctx.fail(
+                    f"GET /api/{{ auth_entity.name_plural }}/{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}}/{{ nr.relation_name }} "
+                    f"returned items with wrong {{ nr.fk_field }}: {[i.get('{{ nr.fk_field }}') for i in wrong]}"
+                )
+            else:
+                ctx.ok(f"All {{ nr.relation_name }} correctly scoped to {{ auth_entity.name_lower }}1")
+
+    # {{ section_num }}-{{ loop.index * 2 }}  Pagination limit=1 on nested {{ nr.relation_name }}
+    if {{ auth_entity.name_lower }}1_id:
+        resp = ctx.req("GET",
+                       "/api/{{ auth_entity.name_plural }}/" + str({{ auth_entity.name_lower }}1_id) + "/{{ nr.relation_name }}",
+                       params={"limit": 1})
+        if ctx.assert_status(resp, 200,
+                             f"GET /api/{{ auth_entity.name_plural }}/{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}}/{{ nr.relation_name }}?limit=1"):
+            meta = ctx.safe_json(resp).get("meta", {})
+            if meta.get("limit") == 1:
+                ctx.ok("limit=1 respected on nested {{ auth_entity.name_lower }}/{{ nr.relation_name }}")
+            else:
+                ctx.fail(f"Expected limit=1, got {meta.get('limit')}")
+
+{% endfor %}
+
+    # Non-existent {{ auth_entity.name_lower }} → empty paginated list (not 404)
+{% for nr in nested_routes %}
+    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}/9999999/{{ nr.relation_name }}")
+    if ctx.assert_status(resp, 200,
+                         "GET /api/{{ auth_entity.name_plural }}/9999999/{{ nr.relation_name }} → 200 empty"):
+        total = ctx.safe_json(resp).get("meta", {}).get("total", -1)
+        if total == 0:
+            ctx.ok("Non-existent {{ auth_entity.name_lower }}'s {{ nr.relation_name }} returns total=0")
+        else:
+            ctx.fail(f"Expected total=0 for non-existent {{ auth_entity.name_lower }}, got {total}")
+
+{% endfor %}
+
+    # Invalid {{ auth_entity.name_lower }} ID format → 400
+{% for nr in nested_routes %}
+    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}/abc/{{ nr.relation_name }}")
+    ctx.assert_status(resp, 400,
+                      "GET /api/{{ auth_entity.name_plural }}/abc/{{ nr.relation_name }} → 400 (invalid ID)")
+{% endfor %}

@@ -1,0 +1,130 @@
+"""
+Section {{ section_num }} — Nested routes: POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }}
+(canonical create for {{ child_entity.name }}).
+
+POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }} is the canonical create endpoint for
+{{ child_entity.name }} — {{ auth_entity.name }} is the primary parent. The parent ID ({{ nested_route.fk_field }})
+is injected from the auth token, not from the URL.
+
+PUT and DELETE use the direct /api/{{ child_entity.name_plural }}/:id routes.
+
+Populates ctx.state: nested_{{ child_entity.name_lower }}_id.
+Requires ctx.state: {{ auth_entity.name_lower }}1_id, {{ auth_entity.name_lower }}1_token, {{ auth_entity.name_lower }}2_token.
+"""
+
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · NESTED — POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }} + direct PUT/DELETE")
+
+    {{ auth_entity.name_lower }}1_id = ctx.state.get("{{ auth_entity.name_lower }}1_id")
+    token1 = ctx.state.get("{{ auth_entity.name_lower }}1_token")
+    token2 = ctx.state.get("{{ auth_entity.name_lower }}2_token")
+
+    # {{ section_num }}-1  POST without auth → 401
+    resp = ctx.req("POST", "/api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }}",
+                   body={
+{% for f in child_required_scalar_fields %}
+                       "{{ f.name }}": "Anon test",
+{% endfor %}
+                   })
+    ctx.assert_status(resp, 401,
+                      "POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }} without auth → 401",
+                      auth_fail=True)
+
+    # {{ section_num }}-2  POST with auth — {{ nested_route.fk_field }} injected from token
+    nested_child_id = None
+    if token1:
+/* LLM_SECTION_START */
+# Generate ONE successful POST call to: POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }}
+# This is the canonical create for "{{ child_entity.name }}".
+# The {{ nested_route.fk_field }} is injected from the JWT — do NOT include it in the body.
+#
+# Required body fields:
+{% for f in child_required_scalar_fields %}
+#   {{ f.name }}: {{ f.ts_type }}
+{% endfor %}
+{% for f in child_optional_scalar_fields %}
+#   {{ f.name }}: {{ f.ts_type }} (optional)
+{% endfor %}
+#
+# After creating:
+#   - ctx.assert_status(resp, 201, "POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }} with auth → 201")
+#   - Store: nested_child_id = data.get("id"); ctx.state["nested_{{ child_entity.name_lower }}_id"] = nested_child_id
+#   - Assert: data.get("{{ nested_route.fk_field }}") == {{ auth_entity.name_lower }}1_id → ctx.ok("{{ nested_route.fk_field }} set from token") OR ctx.fail(...)
+#
+# Output only the code inside the `if token1:` block (it's already indented with 8 spaces).
+/* LLM_SECTION_END */
+
+    # {{ section_num }}-3  POST missing required fields → 400
+    if token1:
+{% for f in child_required_scalar_fields %}
+        resp = ctx.req("POST", "/api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }}",
+                       token=token1,
+                       body={
+{% for other in child_required_scalar_fields if other.name != f.name %}
+                           "{{ other.name }}": "Missing field test",
+{% endfor %}
+                       })
+        ctx.assert_status(resp, 400,
+                          "POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }} missing {{ f.name }} → 400")
+{% endfor %}
+
+    # {{ section_num }}-4  PUT by owner → 200 (direct route)
+    nested_child_id = ctx.state.get("nested_{{ child_entity.name_lower }}_id")
+    if nested_child_id and token1:
+        resp = ctx.req("PUT", "/api/{{ child_entity.name_plural }}/" + str(nested_child_id),
+                       token=token1,
+                       body={
+{% for f in child_required_scalar_fields %}
+                           "{{ f.name }}": "Updated via direct PUT",
+{% endfor %}
+                       })
+        if ctx.assert_status(resp, 200,
+                             f"PUT /api/{{ child_entity.name_plural }}/{{"{"}}nested_child_id{{"}"}} by owner → 200"):
+            data = ctx.safe_json(resp)
+{% if child_required_scalar_fields %}
+            if data.get("{{ child_required_scalar_fields[0].name }}") == "Updated via direct PUT":
+                ctx.ok("{{ child_required_scalar_fields[0].name }} update via direct PUT persisted correctly")
+            else:
+                ctx.fail(f"{{ child_required_scalar_fields[0].name }} not updated: {data.get('{{ child_required_scalar_fields[0].name }}')!r}")
+{% endif %}
+
+    # {{ section_num }}-5  PUT by different user → 403 or 404
+    if nested_child_id and token2:
+        resp = ctx.req("PUT", "/api/{{ child_entity.name_plural }}/" + str(nested_child_id),
+                       token=token2,
+                       body={
+{% for f in child_required_scalar_fields %}
+                           "{{ f.name }}": "Hijack attempt",
+{% endfor %}
+                       })
+        if resp.status_code in (403, 404):
+            ctx.ok(f"PUT /api/{{ child_entity.name_plural }}/{{"{"}}nested_child_id{{"}"}} by non-owner → HTTP {resp.status_code} (correct)")
+        else:
+            ctx.auth(f"PUT /api/{{ child_entity.name_plural }}/{{"{"}}nested_child_id{{"}"}} by non-owner → unexpected HTTP {resp.status_code}")
+
+    # {{ section_num }}-6  DELETE without auth → 401
+    if nested_child_id:
+        resp = ctx.req("DELETE", "/api/{{ child_entity.name_plural }}/" + str(nested_child_id))
+        ctx.assert_status(resp, 401,
+                          f"DELETE /api/{{ child_entity.name_plural }}/{{"{"}}nested_child_id{{"}"}} no auth → 401",
+                          auth_fail=True)
+
+    # {{ section_num }}-7  DELETE by different user → 403 or 404
+    if nested_child_id and token2:
+        resp = ctx.req("DELETE", "/api/{{ child_entity.name_plural }}/" + str(nested_child_id),
+                       token=token2)
+        if resp.status_code in (403, 404):
+            ctx.ok(f"DELETE /api/{{ child_entity.name_plural }}/{{"{"}}nested_child_id{{"}"}} by non-owner → HTTP {resp.status_code} (correct)")
+        else:
+            ctx.auth(f"DELETE /api/{{ child_entity.name_plural }}/{{"{"}}nested_child_id{{"}"}} by non-owner → unexpected HTTP {resp.status_code}")
+
+    # {{ section_num }}-8  DELETE by owner → 204
+    if nested_child_id and token1:
+        resp = ctx.req("DELETE", "/api/{{ child_entity.name_plural }}/" + str(nested_child_id),
+                       token=token1)
+        if ctx.assert_status(resp, 204,
+                             f"DELETE /api/{{ child_entity.name_plural }}/{{"{"}}nested_child_id{{"}"}} by owner → 204"):
+            ctx.state.pop("nested_{{ child_entity.name_lower }}_id", None)

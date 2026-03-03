@@ -1,0 +1,98 @@
+"""
+Section {{ section_num }} — Response structure integrity.
+
+Verifies consistent error envelope, 201 resource body, 204 empty body,
+and pagination meta across all list endpoints.
+
+Requires ctx.state: {{ auth_entity.name_lower if auth_entity else 'user' }}1_token
+{% if writable_entity %}
+                    {{ writable_entity.name_lower }}1_id (from {{ writable_entity.name_plural }} seed section)
+{% endif %}
+"""
+
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · RESPONSE STRUCTURE INTEGRITY")
+
+    token1 = ctx.state.get("{{ auth_entity.name_lower if auth_entity else 'user' }}1_token")
+{% if writable_entity %}
+    {{ writable_entity.name_lower }}1_id = ctx.state.get("{{ writable_entity.name_lower }}1_id")
+{% endif %}
+
+    # {{ section_num }}-1  404 errors use { "error": "..." } envelope
+    resp = ctx.req("GET", "/api/{{ entities[0].name_plural }}/9999999")
+    if resp.status_code == 404:
+        data = ctx.safe_json(resp)
+        if "error" in data:
+            ctx.ok("404 error response uses { error: '...' } envelope")
+        else:
+            ctx.fail(f"404 error response missing 'error' key: {data}")
+
+    # {{ section_num }}-2  400 validation errors also use { "error": "..." }
+{% if writable_entity %}
+    resp = ctx.req("POST", "/api/{{ writable_entity.name_plural }}", token=token1, body={})
+    if resp.status_code == 400:
+        data = ctx.safe_json(resp)
+        if "error" in data:
+            ctx.ok("400 validation error uses { error: '...' } envelope")
+        else:
+            ctx.fail(f"400 validation error missing 'error' key: {data}")
+{% endif %}
+
+    # {{ section_num }}-3  401 errors use { "error": "..." }
+{% if writable_entity %}
+    resp = ctx.req("POST", "/api/{{ writable_entity.name_plural }}", body={"title": "x", "content": "y"})
+    if resp.status_code == 401:
+        data = ctx.safe_json(resp)
+        if "error" in data:
+            ctx.ok("401 error response uses { error: '...' } envelope")
+        else:
+            ctx.fail(f"401 response missing 'error' key: {data}")
+{% endif %}
+
+    # {{ section_num }}-4  All list endpoints carry hasNext and hasPrev in meta
+{% for entity in entities %}
+    resp = ctx.req("GET", "/api/{{ entity.name_plural }}")
+    if resp.status_code == 200:
+        meta = ctx.safe_json(resp).get("meta", {})
+        if "hasNext" in meta and "hasPrev" in meta:
+            ctx.ok("GET /api/{{ entity.name_plural }}: meta.hasNext and meta.hasPrev present")
+        else:
+            ctx.fail(f"GET /api/{{ entity.name_plural }}: meta missing hasNext/hasPrev — got {meta}")
+{% endfor %}
+
+    # {{ section_num }}-5  200 responses return JSON (Content-Type: application/json)
+    resp = ctx.req("GET", "/api/{{ entities[0].name_plural }}")
+    ct = resp.headers.get("Content-Type", "")
+    if "application/json" in ct:
+        ctx.ok(f"GET /api/{{ entities[0].name_plural }} Content-Type is application/json")
+    else:
+        ctx.warn(f"GET /api/{{ entities[0].name_plural }} unexpected Content-Type: {ct!r}")
+
+    # {{ section_num }}-6  hasNext / hasPrev values are boolean, not strings
+    resp = ctx.req("GET", "/api/{{ entities[0].name_plural }}", params={"page": 1})
+    if resp.status_code == 200:
+        meta = ctx.safe_json(resp).get("meta", {})
+        for key in ("hasNext", "hasPrev"):
+            val = meta.get(key)
+            if isinstance(val, bool):
+                ctx.ok(f"meta.{key} is a boolean: {val}")
+            else:
+                ctx.fail(f"meta.{key} is not a boolean: {val!r} ({type(val).__name__})")
+
+    # {{ section_num }}-7  totalPages is consistent with total and limit
+    resp = ctx.req("GET", "/api/{{ entities[0].name_plural }}", params={"limit": 1})
+    if resp.status_code == 200:
+        meta = ctx.safe_json(resp).get("meta", {})
+        total = meta.get("total", 0)
+        limit = meta.get("limit", 1)
+        expected_pages = max(1, -(-total // limit))  # ceiling division
+        if meta.get("totalPages") == expected_pages:
+            ctx.ok(f"totalPages={meta['totalPages']} consistent with total={total}, limit={limit}")
+        else:
+            ctx.fail(
+                f"totalPages={meta.get('totalPages')} inconsistent with "
+                f"total={total}, limit={limit} (expected {expected_pages})"
+            )
