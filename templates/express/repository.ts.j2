@@ -103,9 +103,20 @@ export class {{ entity.name }}Repository {
   }
 
   async delete(id: number): Promise<void> {
+{% set id_field = entity.fields | selectattr('is_id') | first %}
+{% if child_cascade_deletes %}
+    // Delete child records first to avoid FK constraint violations, then delete this entity.
+    await prisma.$transaction([
+{% for child in child_cascade_deletes %}
+      prisma.{{ child.child_name_lower }}.deleteMany({ where: { {{ child.fk_field }}: id } }),
+{% endfor %}
+      prisma.{{ entity.name_lower }}.delete({ where: { {{ id_field.name if id_field else 'id' }}: id } }),
+    ]);
+{% else %}
     await prisma.{{ entity.name_lower }}.delete({
-      where: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: id },
+      where: { {{ id_field.name if id_field else 'id' }}: id },
     });
+{% endif %}
   }
 {% for rel in parent_fk_relations %}
 

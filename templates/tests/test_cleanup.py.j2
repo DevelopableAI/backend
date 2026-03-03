@@ -29,9 +29,10 @@ def run(ctx: TestContext) -> None:
 
 {% for target in cleanup_targets %}
     # Cleanup {{ target.entity.name_plural }}
+    # state_id_keys order mirrors seed order: entity1→token1, entity2→token2, entity3→token1
     {{ target.entity.name_lower }}_cleanups = [
 {% for key in target.state_id_keys %}
-        (ctx.state.get("{{ key }}"), token1, "{{ key }}"),
+        (ctx.state.get("{{ key }}"), token{% if loop.index == 2 %}2{% else %}1{% endif %}, "{{ key }}"),
 {% endfor %}
 {% for key in target.extra_state_keys %}
         (ctx.state.get("{{ key }}"), token1, "{{ key }}"),

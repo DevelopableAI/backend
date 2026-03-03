@@ -143,6 +143,22 @@ class Planner:
             r for r in entity.get("relations", []) if r["type"] == "many_to_one" and r.get("fk_field")
         ]
 
+        # child_cascade_deletes: other entities that FK-reference this entity and must be
+        # deleted first (in a transaction) before this entity can be deleted.
+        # For each sibling entity, find many_to_one relations pointing at this entity.
+        child_cascade_deletes = []
+        for sibling in all_entities:
+            if sibling["name"] == entity["name"]:
+                continue
+            for rel in sibling.get("relations", []):
+                if (rel["type"] == "many_to_one"
+                        and rel.get("fk_field")
+                        and rel.get("related_entity") == entity["name"]):
+                    child_cascade_deletes.append({
+                        "child_name_lower": sibling["name_lower"],
+                        "fk_field": rel["fk_field"],
+                    })
+
         # Filter out routes denied by business rules and suppress direct POST for entities
         # that have a primary parent (canonical create is the nested route under that parent)
         allowed_routes = [
@@ -182,6 +198,7 @@ class Planner:
                 "context": {
                     "entity": entity,
                     "parent_fk_relations": parent_fk_relations,
+                    "child_cascade_deletes": child_cascade_deletes,
                 },
                 "needs_llm": False,
             },
