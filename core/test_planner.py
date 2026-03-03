@@ -47,7 +47,15 @@ class TestPlanner:
             auth_rctx = entity_route_ctx.get(auth_entity["name"], {})
             sensitive_fields = [f for f in auth_entity["fields"] if f.get("is_sensitive")]
             login_field = self._find_login_field(auth_entity)
-            required_scalar, optional_scalar = self._split_scalar_fields(auth_entity, auth_entity_name)
+            # Exclude login_field and sensitive fields from required_scalar_fields —
+            # the register template already handles them in dedicated loops, so
+            # including them here causes duplicate dict keys in rendered test bodies.
+            auth_scalar_exclude = {f["name"] for f in sensitive_fields}
+            if login_field:
+                auth_scalar_exclude.add(login_field["name"])
+            required_scalar, optional_scalar = self._split_scalar_fields(
+                auth_entity, auth_entity_name, exclude_names=auth_scalar_exclude
+            )
 
             # 01 Register
             modules.append({
@@ -410,20 +418,22 @@ class TestPlanner:
         return result
 
     def _split_scalar_fields(
-        self, entity: dict, auth_entity_name: str | None
+        self, entity: dict, auth_entity_name: str | None, exclude_names: set[str] | None = None
     ) -> tuple[list[dict], list[dict]]:
         """
         Split entity scalar fields into (required, optional).
-        Excludes: relation fields, ID fields, FK fields (injected server-side).
+        Excludes: relation fields, ID fields, FK fields (injected server-side),
+        DateTime fields, and any names in exclude_names.
         """
         fk_field_names = {
             rel["fk_field"]
             for rel in entity.get("relations", [])
             if rel.get("fk_field") and rel["type"] == "many_to_one"
         }
+        excluded = fk_field_names | (exclude_names or set())
         scalar_non_fk = [
             f for f in entity["fields"]
-            if not f["is_relation"] and not f["is_id"] and f["name"] not in fk_field_names
+            if not f["is_relation"] and not f["is_id"] and f["name"] not in excluded
             # also skip auto-managed timestamp fields
             and f.get("prisma_type") not in ("DateTime",)
         ]
