@@ -19,6 +19,7 @@ def run(ctx: TestContext) -> None:
     section("{{ section_num }} · NESTED — POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }} + direct PUT/DELETE")
 
     {{ auth_entity.name_lower }}1_id = ctx.state.get("{{ auth_entity.name_lower }}1_id")
+    {{ auth_entity.name_lower }}2_id = ctx.state.get("{{ auth_entity.name_lower }}2_id")
     token1 = ctx.state.get("{{ auth_entity.name_lower }}1_token")
     token2 = ctx.state.get("{{ auth_entity.name_lower }}2_token")
 
@@ -35,10 +36,9 @@ def run(ctx: TestContext) -> None:
 
     # {{ section_num }}-2  POST with auth — {{ nested_route.fk_field }} injected from token
     nested_child_id = None
-    if token1:
 /* LLM_SECTION_START */
-# Generate ONE successful POST call to: POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }}
-# This is the canonical create for "{{ child_entity.name }}".
+# Seed: create 3 {{ child_entity.name }} instances via POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }}.
+# token1 ({{ auth_entity.name_lower }}1_id) and token2 ({{ auth_entity.name_lower }}2_id) are available in scope.
 # The {{ nested_route.fk_field }} is injected from the JWT — do NOT include it in the body.
 #
 # Required body fields:
@@ -49,12 +49,17 @@ def run(ctx: TestContext) -> None:
 #   {{ f.name }}: {{ f.ts_type }} (optional)
 {% endfor %}
 #
-# After creating:
-#   - ctx.assert_status(resp, 201, "POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }} with auth → 201")
-#   - Store: nested_child_id = data.get("id"); ctx.state["nested_{{ child_entity.name_lower }}_id"] = nested_child_id
-#   - Assert: data.get("{{ nested_route.fk_field }}") == {{ auth_entity.name_lower }}1_id → ctx.ok("{{ nested_route.fk_field }} set from token") OR ctx.fail(...)
-#
-# Output only the code inside the `if token1:` block (it's already indented with 8 spaces).
+# Create instance 1 with token1:
+#   - Wrap in `if token1:` (at 0 indent; the block body at 4 indent)
+#   - ctx.assert_status(resp, 201, "Seed: Create {{ child_entity.name }}1")
+#   - Store: ctx.state["{{ child_entity.name_lower }}1_id"] = data.get("id")
+#   - Store: ctx.state["nested_{{ child_entity.name_lower }}_id"] = data.get("id")
+#   - Assert: data.get("{{ nested_route.fk_field }}") == {{ auth_entity.name_lower }}1_id → ctx.ok/ctx.fail
+# Create instance 2 with token2:
+#   - Store: ctx.state["{{ child_entity.name_lower }}2_id"] = data.get("id")
+#   - Assert: data.get("{{ nested_route.fk_field }}") == {{ auth_entity.name_lower }}2_id → ctx.ok/ctx.fail
+# Create instance 3 with token1, include optional fields if any.
+#   - Store: ctx.state["{{ child_entity.name_lower }}3_id"] = data.get("id")
 /* LLM_SECTION_END */
 
     # {{ section_num }}-3  POST missing required fields → 400
