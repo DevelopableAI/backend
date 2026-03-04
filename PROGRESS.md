@@ -54,3 +54,7 @@
 - Templated test cases created.
 - Debugging issues with templated tests
 
+# 03/03/2026 [Further progres]
+- Solved all issues with templated tests and verified it is working with test_schema.
+- Identified and solved issues related to entity relationships in delete operations.
+- Used figma AI to develop a website for the package.
