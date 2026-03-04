@@ -91,7 +91,6 @@ def run(ctx: TestContext) -> None:
 
     # {{ section_num }}-6  POST with auth — {{ nested_route.fk_field }} injected from URL
     parent_nested_child_id = None
-    if {{ parent_entity.name_lower }}1_id and token1:
 /* LLM_SECTION_START */
 # Generate ONE successful nested POST call.
 # Endpoint: POST /api/{{ parent_entity.name_plural }}/<parent_id>/{{ nested_route.relation_name }}
@@ -108,14 +107,13 @@ def run(ctx: TestContext) -> None:
 #   {{ f.name }}: {{ f.ts_type }} (optional)
 {% endfor %}
 #
+# Wrap in `if {{ parent_entity.name_lower }}1_id and token1:` (4-space indent; block body at 8-space indent).
 # After success:
 #   - Store: parent_nested_child_id = data.get("id"); ctx.state["parent_nested_{{ child_entity.name_lower }}_id"] = parent_nested_child_id
 #   - Assert: data.get("{{ nested_route.fk_field }}") == {{ parent_entity.name_lower }}1_id → ctx.ok/ctx.fail
 {% if child_owner_fk_field %}
 #   - Assert: data.get("{{ child_owner_fk_field }}") == {{ auth_entity.name_lower }}1_id → ctx.ok/ctx.fail
 {% endif %}
-#
-# Output only the code inside the `if {{ parent_entity.name_lower }}1_id and token1:` block (8-space indent).
 /* LLM_SECTION_END */
 
 {% if child_owner_fk_field %}
