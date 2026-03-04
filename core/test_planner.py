@@ -47,7 +47,15 @@ class TestPlanner:
             auth_rctx = entity_route_ctx.get(auth_entity["name"], {})
             sensitive_fields = [f for f in auth_entity["fields"] if f.get("is_sensitive")]
             login_field = self._find_login_field(auth_entity)
-            required_scalar, optional_scalar = self._split_scalar_fields(auth_entity, auth_entity_name)
+            # Exclude login_field and sensitive fields from required_scalar_fields —
+            # the register template already handles them in dedicated loops, so
+            # including them here causes duplicate dict keys in rendered test bodies.
+            auth_scalar_exclude = {f["name"] for f in sensitive_fields}
+            if login_field:
+                auth_scalar_exclude.add(login_field["name"])
+            required_scalar, optional_scalar = self._split_scalar_fields(
+                auth_entity, auth_entity_name, exclude_names=auth_scalar_exclude
+            )
 
             # 01 Register
             modules.append({
@@ -127,7 +135,7 @@ class TestPlanner:
 
             # Primary parent determines the canonical create path
             primary_parent_entity, primary_parent_fk_field, canonical_create_path, requires_auth = (
-                self._resolve_canonical_create(entity, entities, auth_entity, nested_routes, auth_entity_name)
+                self._resolve_canonical_create(entity, entities, auth_entity, auth_entity_name)
             )
 
             # seed_get
@@ -290,8 +298,7 @@ class TestPlanner:
             first_owner_fk = first_rctx.get("owner_fk_field")
             first_req_scalar, _ = self._split_scalar_fields(first_entity, auth_entity_name)
             first_primary, _, first_create_path, first_req_auth = self._resolve_canonical_create(
-                first_entity, entities, auth_entity,
-                first_rctx.get("nested_routes", []), auth_entity_name
+                first_entity, entities, auth_entity, auth_entity_name
             )
 
             modules.append({
@@ -313,6 +320,11 @@ class TestPlanner:
 
         # ── Response structure (all entities) ─────────────────────────────────
         writable_entity = non_auth_entities[0] if non_auth_entities else None
+        writable_create_path = None
+        if writable_entity:
+            _, _, writable_create_path, _ = self._resolve_canonical_create(
+                writable_entity, entities, auth_entity, auth_entity_name
+            )
         modules.append({
             "path": f"test_{num:02d}_response_structure.py",
             "template": "tests/test_response_structure.py.j2",
@@ -322,6 +334,7 @@ class TestPlanner:
                 "auth_entity": auth_entity,
                 "auth_entity_name": auth_entity_name,
                 "writable_entity": writable_entity,
+                "writable_create_path": writable_create_path,
             },
             "needs_llm": False,
         })
@@ -405,20 +418,22 @@ class TestPlanner:
         return result
 
     def _split_scalar_fields(
-        self, entity: dict, auth_entity_name: str | None
+        self, entity: dict, auth_entity_name: str | None, exclude_names: set[str] | None = None
     ) -> tuple[list[dict], list[dict]]:
         """
         Split entity scalar fields into (required, optional).
-        Excludes: relation fields, ID fields, FK fields (injected server-side).
+        Excludes: relation fields, ID fields, FK fields (injected server-side),
+        DateTime fields, and any names in exclude_names.
         """
         fk_field_names = {
             rel["fk_field"]
             for rel in entity.get("relations", [])
             if rel.get("fk_field") and rel["type"] == "many_to_one"
         }
+        excluded = fk_field_names | (exclude_names or set())
         scalar_non_fk = [
             f for f in entity["fields"]
-            if not f["is_relation"] and not f["is_id"] and f["name"] not in fk_field_names
+            if not f["is_relation"] and not f["is_id"] and f["name"] not in excluded
             # also skip auto-managed timestamp fields
             and f.get("prisma_type") not in ("DateTime",)
         ]
@@ -450,67 +465,62 @@ class TestPlanner:
         entity: dict,
         all_entities: list[dict],
         auth_entity: dict | None,
-        nested_routes: list[dict],
         auth_entity_name: str | None,
     ) -> tuple[dict | None, str | None, str, bool]:
         """
         Determines the canonical create path for an entity.
 
+        Replicates Planner._get_primary_parent_name logic exactly, reading the
+        entity's own relations rather than its outgoing nested_routes (which point
+        to children, not parents):
+          1. Explicit override via entity["primary_parent"]
+          2. First non-auth many_to_one FK → parent with :id in URL
+          3. Auth entity FK → nested under auth entity (no :id)
+          4. No parent → direct POST
+
         Returns: (primary_parent_entity, primary_parent_fk_field, create_path, requires_auth)
-
-        For entities whose primary parent IS the auth entity:
-            POST /api/{auth_plural}/{child_plural}  (no :id since auth is from JWT)
-        For entities whose primary parent is a NON-auth entity:
-            POST /api/{parent_plural}/:id/{child_plural}  (parent ID in URL)
-        For entities with no primary parent:
-            POST /api/{entity_plural}
         """
-        auth_entity_name_str = auth_entity_name or ""
+        # 1. Explicit override from business rules
+        if entity.get("primary_parent"):
+            parent_name = entity["primary_parent"]
+            parent_entity = next((e for e in all_entities if e["name"] == parent_name), None)
+            if parent_entity:
+                fk = self._get_fk_to_parent(entity, parent_name)
+                if parent_entity.get("is_auth_entity"):
+                    path = f"/api/{parent_entity['name_plural']}/{entity['name_plural']}"
+                    return parent_entity, fk, path, True
+                path = f"/api/{parent_entity['name_plural']}/:id/{entity['name_plural']}"
+                return parent_entity, fk, path, bool(auth_entity_name)
 
-        # Find the primary parent nested route (the one with is_primary_parent=True)
-        primary_nr = next((nr for nr in nested_routes if nr.get("is_primary_parent")), None)
+        # 2. First non-auth many_to_one FK
+        for rel in entity.get("relations", []):
+            if (rel["type"] == "many_to_one"
+                    and rel["related_entity"] != auth_entity_name
+                    and rel.get("fk_field")):
+                parent_name = rel["related_entity"]
+                parent_entity = next((e for e in all_entities if e["name"] == parent_name), None)
+                if parent_entity:
+                    path = f"/api/{parent_entity['name_plural']}/:id/{entity['name_plural']}"
+                    return parent_entity, rel["fk_field"], path, bool(auth_entity_name)
 
-        if primary_nr is None:
-            # No primary parent → direct POST route
-            return None, None, f"/api/{entity['name_plural']}", bool(auth_entity_name)
+        # 3. Auth entity FK
+        for rel in entity.get("relations", []):
+            if (rel["type"] == "many_to_one"
+                    and rel["related_entity"] == auth_entity_name
+                    and rel.get("fk_field")):
+                if auth_entity:
+                    path = f"/api/{auth_entity['name_plural']}/{entity['name_plural']}"
+                    return auth_entity, rel["fk_field"], path, True
 
-        # Find which entity this nested route belongs to (the parent)
-        parent_entity = None
-        for e in all_entities:
-            if e.get("is_auth_entity"):
-                # Check if this auth entity has a nested route for our entity
-                for rel in e.get("relations", []):
-                    if (rel["type"] == "one_to_many" and
-                            rel["related_entity"] == entity["name"]):
-                        if primary_nr.get("fk_field") and primary_nr["fk_field"] in [
-                            r["fk_field"] for r in entity.get("relations", [])
-                            if r.get("fk_field") and r["related_entity"] == e["name"]
-                        ]:
-                            parent_entity = e
-                            break
-            if not parent_entity:
-                for rel in e.get("relations", []):
-                    if (rel["type"] == "one_to_many" and
-                            rel["related_entity"] == entity["name"] and
-                            not e.get("is_auth_entity")):
-                        parent_entity = e
-                        break
-
-        # Determine primary parent FK field (the FK on child pointing to parent)
-        parent_fk = primary_nr.get("fk_field")
-
-        if parent_entity and parent_entity.get("is_auth_entity"):
-            # Primary parent is auth entity → no :id in path
-            path = f"/api/{parent_entity['name_plural']}/{entity['name_plural']}"
-            return parent_entity, parent_fk, path, True
-
-        if parent_entity:
-            # Primary parent is a non-auth entity → :id in path
-            path = f"/api/{parent_entity['name_plural']}/:id/{entity['name_plural']}"
-            return parent_entity, parent_fk, path, bool(auth_entity_name)
-
-        # Fallback: direct POST
+        # 4. No parent → direct POST
         return None, None, f"/api/{entity['name_plural']}", bool(auth_entity_name)
+
+    def _get_fk_to_parent(self, entity: dict, parent_name: str) -> str | None:
+        """Get FK field name on entity pointing to the named parent entity."""
+        for rel in entity.get("relations", []):
+            if rel["type"] == "many_to_one" and rel["related_entity"] == parent_name:
+                return rel.get("fk_field")
+        return None
 
     def _find_write_endpoint(
         self,

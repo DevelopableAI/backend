@@ -4,7 +4,11 @@ The placeholder comment describes the entity, its canonical create path, require
 and the state keys to populate. Read it carefully.
 
 Rules:
-- Create exactly 3 instances of the entity (entity1 for token1, entity2 for token2, entity3 for token1 with optional fields filled)
+- Create exactly 3 instances of the entity:
+    entity1: use token1 (owned by user1)
+    entity2: use token2 (owned by user2)
+    entity3: use token1 again (owned by user1, include optional fields if any)
+  EXCEPTION: if the placeholder says to create only ONE instance and store as "nested_<entity>_id", follow those instructions exactly — do NOT create 3, do NOT write to entity1_id/entity2_id/entity3_id
 - Use realistic, human-readable values (e.g. "Hello World", "My first post", "Alice Tester")
 - Do NOT include FK fields in the body — they are injected by the server from the JWT or URL
 - Use ctx.assert_status(resp, 201, "Seed: Create <entity><n>") for each seed call
@@ -13,6 +17,9 @@ Rules:
 - If parent_fk_field is mentioned: assert data.get(parent_fk_field) == <parent_var>_id and call ctx.ok() or ctx.fail()
 - Wrap each creation in `if ctx.assert_status(resp, 201, ...):` before accessing data
 - Variable names for state are already declared above the LLM section — use them directly
+- IMPORTANT: Use the `body=` keyword argument (NOT `json=`) for request bodies in ctx.req()
+- IMPORTANT: When calling ctx.no_sensitive_field_in(), pass the field name as a STRING (e.g. "password"), never as a list
+- IMPORTANT: Output code at 0 indentation (NO leading spaces on the outermost level). Nested blocks (if-bodies, etc.) must use 4-space relative indent. The system handles placement indentation automatically.
 
-Output only the Python code for the seed creation calls, starting immediately with the first `resp = ctx.req(...)` line.
+Output only the Python code for the seed creation calls, starting immediately with `resp = ctx.req(...)` at column 0.
 No function definitions, no imports, no section headers.

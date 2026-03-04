@@ -1,4 +1,5 @@
 import re
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -80,7 +81,19 @@ class LLMGenerator(BaseGenerator):
         )
 
         raw = response.content[0].text
-        return self._cleanup_markdown(raw).strip()
+        cleaned = self._cleanup_markdown(raw).strip()
+
+        # Python test sections sit inside `def run(ctx):` — enforce 4-space indent.
+        # Dedent first (normalises whatever base indent the LLM used), then prepend
+        # 4 spaces to every non-empty line while keeping relative indentation intact.
+        if prompt_subdir == "tests":
+            cleaned = textwrap.dedent(cleaned)
+            cleaned = "\n".join(
+                ("    " + line) if line.strip() else line
+                for line in cleaned.splitlines()
+            )
+
+        return cleaned
 
     def _build_user_message(
         self,
