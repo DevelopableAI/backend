@@ -295,12 +295,22 @@ class Planner:
         """
         Returns the scalar FK field name on this entity that points to the auth entity.
         E.g. for Post with `author User @relation(fields: [authorId], ...)`, returns 'authorId'.
+
+        Optional FK fields (e.g. `assigneeId Int?`) are skipped — they cannot serve as
+        mandatory ownership anchors because they may be null, which would break ownership checks.
         """
         if not auth_entity_name:
             return None
         for rel in entity.get("relations", []):
             if rel["related_entity"] == auth_entity_name and rel["type"] == "many_to_one":
-                return rel.get("fk_field")
+                fk_name = rel.get("fk_field")
+                if fk_name:
+                    fk_field_def = next(
+                        (f for f in entity["fields"] if f["name"] == fk_name), None
+                    )
+                    if fk_field_def and fk_field_def.get("is_optional"):
+                        continue
+                return fk_name
         return None
 
     def _get_child_fk_field(

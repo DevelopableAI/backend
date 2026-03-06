@@ -1,0 +1,88 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// @auth_entity
+// @llm Users belong to organizations via memberships; they can manage tasks assigned to them
+model User {
+  id          Int          @id @default(autoincrement())
+  email       String       @unique
+  username    String       @unique
+  password    String       // @llm sensitive
+  displayName String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @default(now())
+  memberships Membership[]
+  tasks       Task[]
+  comments    TaskComment[]
+}
+
+// @llm Organizations are standalone entities; anyone authenticated can create one
+model Organization {
+  id          Int          @id @default(autoincrement())
+  name        String       @unique
+  slug        String       @unique
+  description String?
+  website     String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @default(now())
+  memberships Membership[]
+  projects    Project[]
+}
+
+// @llm Membership links a User to an Organization with a role; role must be one of: owner, admin, member
+model Membership {
+  id             Int          @id @default(autoincrement())
+  role           String       @default("member")
+  userId         Int
+  user           User         @relation(fields: [userId], references: [id])
+  organizationId Int
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+}
+
+// @llm Projects belong to an Organization; name must be unique within the organization
+model Project {
+  id             Int          @id @default(autoincrement())
+  name           String
+  description    String?
+  archived       Boolean      @default(false)
+  organizationId Int
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  tasks          Task[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @default(now())
+}
+
+// @llm Tasks belong to a Project and may optionally be assigned to a User; status must be one of: todo, in_progress, done; priority must be 1-5
+model Task {
+  id          Int           @id @default(autoincrement())
+  title       String
+  description String?
+  status      String        @default("todo")
+  priority    Int           @default(1)
+  projectId   Int
+  project     Project       @relation(fields: [projectId], references: [id])
+  assigneeId  Int?
+  assignee    User?         @relation(fields: [assigneeId], references: [id])
+  comments    TaskComment[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @default(now())
+}
+
+// @llm TaskComments belong to a Task and an author (User); body must be non-empty
+model TaskComment {
+  id        Int      @id @default(autoincrement())
+  body      String
+  authorId  Int
+  author    User     @relation(fields: [authorId], references: [id])
+  taskId    Int
+  task      Task     @relation(fields: [taskId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}

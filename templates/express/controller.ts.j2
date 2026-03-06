@@ -116,7 +116,7 @@ export class {{ entity.name }}Controller {
     try {
       const parentId = this._parseId(req.params.id);
       const pagination = parsePagination(req);
-      const { data, total } = await this.{{ nested.related_entity_lower }}Repository.findManyBy{{ nested.fk_field | capitalize }}(parentId, pagination);
+      const { data, total } = await this.{{ nested.related_entity_lower }}Repository.findManyBy{{ nested.fk_field[0] | upper ~ nested.fk_field[1:] }}(parentId, pagination);
       res.json(buildPaginatedResponse(data, total, pagination));
     } catch (err) {
       next(err);
