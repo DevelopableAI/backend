@@ -78,13 +78,27 @@ def run(ctx: TestContext) -> None:
 #   {{ entity.name_lower }}1_id, {{ entity.name_lower }}2_id, {{ entity.name_lower }}3_id
 /* LLM_SECTION_END */
 
-{% set _str_fields = (required_scalar_fields + optional_scalar_fields) | selectattr("ts_type", "equalto", "string") | list %}
-{% set _num_fields = (required_scalar_fields + optional_scalar_fields) | selectattr("ts_type", "equalto", "number") | list %}
-{% set _update_field = _str_fields[0] if _str_fields else (_num_fields[0] if _num_fields else None) %}
+{#- Field selection priority for the PUT happy-path update:
+    1. Required string (non-enum) — safest free-form value
+    2. Required number — always accepts a plain integer
+    3. Required enum — use first known valid enum value
+    4. Optional string / number / enum (same priority order)
+   This avoids accidentally using a field whose LLM-generated Zod validator
+   enforces enum or other constraints that the template doesn't know about. -#}
+{% set _req_str  = required_scalar_fields | selectattr("ts_type", "equalto", "string") | rejectattr("is_enum", "equalto", true) | list %}
+{% set _req_num  = required_scalar_fields | selectattr("ts_type", "equalto", "number") | list %}
+{% set _req_enum = required_scalar_fields | selectattr("is_enum",  "equalto", true)    | list %}
+{% set _opt_str  = optional_scalar_fields | selectattr("ts_type", "equalto", "string") | rejectattr("is_enum", "equalto", true) | list %}
+{% set _opt_num  = optional_scalar_fields | selectattr("ts_type", "equalto", "number") | list %}
+{% set _opt_enum = optional_scalar_fields | selectattr("is_enum",  "equalto", true)    | list %}
+{% set _ranked   = _req_str + _req_num + _req_enum + _opt_str + _opt_num + _opt_enum %}
+{% set _update_field = _ranked[0] if _ranked else None %}
 {% if _update_field %}
     # {{ section_num }}-update  PUT happy path → 200
     if {{ entity.name_lower }}1_id and token1:
-{% if _update_field.ts_type == "string" %}
+{% if _update_field.is_enum %}
+        _update_val: str | int = "{{ _update_field.enum_values[0] }}"
+{% elif _update_field.ts_type == "string" %}
         _update_val: str | int = "Updated {{ entity.name }}"
 {% else %}
         _update_val: str | int = 42
