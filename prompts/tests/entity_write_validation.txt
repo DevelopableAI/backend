@@ -1,21 +1,21 @@
-Generate Python test code for validating entity creation via a REST API (missing required field tests + update field tests).
+Generate Python test code for validating entity creation via a REST API (missing required field tests only).
 
 The placeholder comment describes the entity, its canonical create path, required fields, and available state variables.
 
 Rules:
-- For each required field listed: generate one test that omits only that field and expects HTTP 400
+- If the required fields list is EMPTY, output exactly one line: `# (no required fields to validate)`
+  Do NOT output any other code, guards, or tests.
+- Otherwise, for EACH required field listed: generate one test that omits only that field and expects HTTP 400
   - Use `ctx.assert_status(resp, 400, "POST <entity> missing <field> → 400")`
   - Include all OTHER required fields in the body (use sensible values from the seed data pattern)
-- After the missing-field tests, generate ONE update test:
-  - Choose the most descriptive string field (title, name, body, content, etc.) to update
-  - Use ctx.assert_status(resp, 200, "PUT /api/<plural>/<id> by owner → 200")
-  - Assert the updated field value is returned: `if data.get("<field>") == "<new_value>": ctx.ok(...) else: ctx.fail(...)`
-  - The update uses the entity's direct PUT route: PUT /api/<entity_plural>/<id>
-  - Use state variable <entity_lower>1_id for the ID and token1 for auth
+  - Wrap each test in an `if token1:` guard with a fully-formed body inside — never emit a bare `if token1:` with no body
+- After the missing-field tests, generate ONE ownership spoofing test if the owner FK is listed in the placeholder:
+  - Include the owner FK field with user2_id in the body while using token1
+  - Use `ctx.assert_status` and store the created id in `ctx.state["spoofed_<entity_lower>_id"]`
+- Do NOT generate a PUT/update test — that is handled by the template separately
 - Do NOT include FK fields in any request body
-- Variable names: token1, <entity_lower>1_id, etc. are already declared above — use them directly
+- Variable names: token1, token2, <entity_lower>1_id, <entity_lower>2_id, etc. are already declared — use them exactly as listed in the placeholder. Do NOT invent new variable names like nested_*_id.
 - IMPORTANT: Use the `body=` keyword argument (NOT `json=`) for request bodies in ctx.req()
 - IMPORTANT: Output code at 0 indentation (NO leading spaces on the outermost level). Nested blocks (if-bodies, etc.) must use 4-space relative indent. The system handles placement indentation automatically.
 
-Output only the Python code, starting immediately with `resp = ctx.req(...)` at column 0.
-No function definitions, no imports.
+Output only the Python code. No function definitions, no imports.

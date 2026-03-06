@@ -36,8 +36,8 @@ def run(ctx: TestContext) -> None:
                       auth_fail=True)
 {% endif %}
 
+{% if auth_entity and required_scalar_fields %}
     # {{ section_num }}-2  POST with auth, empty body → 400
-{% if auth_entity %}
     if token1:
         resp = ctx.req("POST", "{{ canonical_create_path }}", token=token1, body={})
         ctx.assert_status(resp, 400, "POST {{ canonical_create_path }} empty body → 400")
@@ -53,7 +53,10 @@ def run(ctx: TestContext) -> None:
 #   {{ f.name }}: {{ f.ts_type }} (required)
 {% endfor %}
 #
-# For EACH required field, generate one test:
+# If the required fields list above is EMPTY, output only this single comment line and nothing else:
+#   # (no required fields to validate)
+#
+# Otherwise, for EACH required field, generate one test:
 #   - Omit only that field from the body
 #   - Include all other required fields with sensible values
 #   - Expect HTTP 400: ctx.assert_status(resp, 400, "POST {{ entity.name_lower }} missing <field> → 400")
@@ -67,12 +70,6 @@ def run(ctx: TestContext) -> None:
 #   - Store the created entity id in ctx.state["spoofed_{{ entity.name_lower }}_id"] for cleanup
 {% endif %}
 #
-# Then generate ONE update field test (happy path):
-#   - Use direct PUT route: PUT /api/{{ entity.name_plural }}/<id>
-#   - Use {{ entity.name_lower }}1_id and token1
-#   - Pick the most descriptive string field to update
-#   - Assert the updated value is returned
-#
 # Available variables (already declared above):
 #   token1, token2
 {% if auth_entity %}
@@ -80,6 +77,31 @@ def run(ctx: TestContext) -> None:
 {% endif %}
 #   {{ entity.name_lower }}1_id, {{ entity.name_lower }}2_id, {{ entity.name_lower }}3_id
 /* LLM_SECTION_END */
+
+{% set _str_fields = (required_scalar_fields + optional_scalar_fields) | selectattr("ts_type", "equalto", "string") | list %}
+{% set _num_fields = (required_scalar_fields + optional_scalar_fields) | selectattr("ts_type", "equalto", "number") | list %}
+{% set _update_field = _str_fields[0] if _str_fields else (_num_fields[0] if _num_fields else None) %}
+{% if _update_field %}
+    # {{ section_num }}-update  PUT happy path → 200
+    if {{ entity.name_lower }}1_id and token1:
+{% if _update_field.ts_type == "string" %}
+        _update_val: str | int = "Updated {{ entity.name }}"
+{% else %}
+        _update_val: str | int = 42
+{% endif %}
+        resp = ctx.req("PUT", "/api/{{ entity.name_plural }}/" + str({{ entity.name_lower }}1_id),
+                       token=token1,
+                       body={"{{ _update_field.name }}": _update_val})
+        if ctx.assert_status(resp, 200,
+                             f"PUT /api/{{ entity.name_plural }}/{{"{"}}{{ entity.name_lower }}1_id{{"}"}} by owner → 200"):
+            data = ctx.safe_json(resp)
+            if data.get("{{ _update_field.name }}") == _update_val:
+                ctx.ok("Updated '{{ _update_field.name }}' returned correctly")
+            else:
+                ctx.fail("Updated '{{ _update_field.name }}' mismatch in response")
+{% else %}
+    # {{ section_num }}-update  No updatable scalar fields — skipping happy-path PUT test
+{% endif %}
 
     # {{ section_num }}-auth  PUT without auth → 401
     if {{ entity.name_lower }}1_id:
