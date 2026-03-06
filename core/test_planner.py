@@ -500,7 +500,11 @@ class TestPlanner:
                 parent_name = rel["related_entity"]
                 parent_entity = next((e for e in all_entities if e["name"] == parent_name), None)
                 if parent_entity:
-                    path = f"/api/{parent_entity['name_plural']}/:id/{entity['name_plural']}"
+                    # Use the parent's relation_name (Prisma field name, e.g. "items") —
+                    # the Express router uses nested_route.relation_name for the URL segment,
+                    # NOT the child entity's plural name (e.g. "orderItems").
+                    rel_name = self._get_parent_relation_name(parent_entity, entity["name"])
+                    path = f"/api/{parent_entity['name_plural']}/:id/{rel_name}"
                     return parent_entity, rel["fk_field"], path, bool(auth_entity_name)
 
         # 3. Auth entity FK
@@ -509,11 +513,28 @@ class TestPlanner:
                     and rel["related_entity"] == auth_entity_name
                     and rel.get("fk_field")):
                 if auth_entity:
-                    path = f"/api/{auth_entity['name_plural']}/{entity['name_plural']}"
+                    rel_name = self._get_parent_relation_name(auth_entity, entity["name"])
+                    path = f"/api/{auth_entity['name_plural']}/{rel_name}"
                     return auth_entity, rel["fk_field"], path, True
 
         # 4. No parent → direct POST
         return None, None, f"/api/{entity['name_plural']}", bool(auth_entity_name)
+
+    def _get_parent_relation_name(self, parent_entity: dict, child_entity_name: str) -> str:
+        """
+        Returns the Prisma relation field name on parent_entity for its one_to_many
+        relation to child_entity_name.  E.g. for Order with `items OrderItem[]`, returns "items".
+
+        The Express router uses nested_route.relation_name (the Prisma field name) as the
+        URL segment, not the child entity's plural name.  This ensures the canonical create
+        path built here matches the actual generated route.
+        """
+        for rel in parent_entity.get("relations", []):
+            if rel["type"] == "one_to_many" and rel["related_entity"] == child_entity_name:
+                return rel["name"]
+        # Fallback (shouldn't happen): use child plural to match legacy behaviour
+        name = child_entity_name[0].lower() + child_entity_name[1:]
+        return name + "s"
 
     def _get_fk_to_parent(self, entity: dict, parent_name: str) -> str | None:
         """Get FK field name on entity pointing to the named parent entity."""

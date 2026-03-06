@@ -19,7 +19,15 @@ Rules:
 - Variable names for state are already declared above the LLM section — use them directly
 - IMPORTANT: Use the `body=` keyword argument (NOT `json=`) for request bodies in ctx.req()
 - IMPORTANT: When calling ctx.no_sensitive_field_in(), pass the field name as a STRING (e.g. "password"), never as a list
-- IMPORTANT: Output code at 0 indentation (NO leading spaces on the outermost level). Nested blocks (if-bodies, etc.) must use 4-space relative indent. The system handles placement indentation automatically.
+- CRITICAL INDENTATION: Every outermost statement — including `resp =`, `if ...:`, comments, and `ctx.state[...]` — MUST start at column 0 (zero leading spaces). Only code nested INSIDE an `if` or `for` block uses 4-space relative indent.
+  WRONG (do NOT do this):
+      resp = ctx.req(...)       ← 4 leading spaces on an outermost statement
+      if ctx.assert_status(...):
+          data = ...
+  RIGHT:
+  resp = ctx.req(...)            ← 0 leading spaces
+  if ctx.assert_status(...):
+      data = ...                 ← 4 spaces, nested inside the if
 
 Output only the Python code for the seed creation calls, starting immediately with `resp = ctx.req(...)` at column 0.
 No function definitions, no imports, no section headers.

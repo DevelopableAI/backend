@@ -61,6 +61,7 @@ def run(ctx: TestContext) -> None:
 #   - Assert: data.get("{{ nested_route.fk_field }}") == {{ auth_entity.name_lower }}1_id → ctx.ok/ctx.fail
 /* LLM_SECTION_END */
 
+{% if child_required_scalar_fields %}
     # {{ section_num }}-3  POST missing required fields → 400
     if token1:
 {% for f in child_required_scalar_fields %}
@@ -74,6 +75,7 @@ def run(ctx: TestContext) -> None:
         ctx.assert_status(resp, 400,
                           "POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }} missing {{ f.name }} → 400")
 {% endfor %}
+{% endif %}
 
     # {{ section_num }}-4  PUT by owner → 200 (direct route)
     nested_child_id = ctx.state.get("nested_{{ child_entity.name_lower }}_id")
@@ -82,17 +84,23 @@ def run(ctx: TestContext) -> None:
                        token=token1,
                        body={
 {% for f in child_required_scalar_fields %}
+{% if f.is_enum %}
+                           "{{ f.name }}": "{{ f.enum_values[0] }}",
+{% else %}
                            "{{ f.name }}": "Updated via direct PUT",
+{% endif %}
 {% endfor %}
                        })
         if ctx.assert_status(resp, 200,
                              f"PUT /api/{{ child_entity.name_plural }}/{{"{"}}nested_child_id{{"}"}} by owner → 200"):
             data = ctx.safe_json(resp)
 {% if child_required_scalar_fields %}
-            if data.get("{{ child_required_scalar_fields[0].name }}") == "Updated via direct PUT":
-                ctx.ok("{{ child_required_scalar_fields[0].name }} update via direct PUT persisted correctly")
+{% set _f0 = child_required_scalar_fields[0] %}
+{% set _expected = _f0.enum_values[0] if _f0.is_enum else "Updated via direct PUT" %}
+            if data.get("{{ _f0.name }}") == "{{ _expected }}":
+                ctx.ok("{{ _f0.name }} update via direct PUT persisted correctly")
             else:
-                ctx.fail(f"{{ child_required_scalar_fields[0].name }} not updated: {data.get('{{ child_required_scalar_fields[0].name }}')!r}")
+                ctx.fail(f"{{ _f0.name }} not updated: {data.get('{{ _f0.name }}')!r}")
 {% endif %}
 
     # {{ section_num }}-5  PUT by different user → 403 or 404

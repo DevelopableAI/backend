@@ -71,6 +71,7 @@ class PrismaParser:
             "env_vars": self._extract_env_vars(text),
             "schema_path": str(path),
             "auth_entity_name": None,
+            "enums": self._extract_enums(text),
         }
 
         for model_block, llm_hints, is_auth_entity_marker in self._extract_model_blocks(text):
@@ -86,10 +87,39 @@ class PrismaParser:
 
             entity["relations"] = self._resolve_relations(entity, known_entities)
 
-        # third pass: detect auth entity (has email field + at least one sensitive field)
+        # third pass: mark enum fields using parsed enum definitions
+        enum_map = spec["enums"]
+        for entity in spec["entities"]:
+            for field in entity["fields"]:
+                if field["prisma_type"] in enum_map:
+                    field["is_enum"] = True
+                    field["enum_values"] = enum_map[field["prisma_type"]]
+                    # Enum values serialize as plain strings in JSON — treat ts_type as string
+                    field["ts_type"] = "string"
+
+        # fourth pass: detect auth entity (has email field + at least one sensitive field)
         self._detect_auth_entity(spec)
 
         return spec
+
+    def _extract_enums(self, text: str) -> dict[str, list[str]]:
+        """
+        Parse all `enum Name { VALUE ... }` blocks from the schema.
+        Returns a mapping: enum_name -> [value1, value2, ...].
+        Used to mark fields whose prisma_type is an enum so templates can
+        generate valid enum values in test bodies instead of arbitrary strings.
+        """
+        enums: dict[str, list[str]] = {}
+        for match in re.finditer(r"enum\s+(\w+)\s*\{([^}]+)\}", text):
+            name = match.group(1)
+            values = [
+                v.strip()
+                for v in match.group(2).splitlines()
+                if v.strip() and not v.strip().startswith("//")
+            ]
+            if values:
+                enums[name] = values
+        return enums
 
     def _extract_env_vars(self, text: str) -> list[str]:
         """Extract all env variable names referenced via env("VAR_NAME") in the schema."""
@@ -230,6 +260,8 @@ class PrismaParser:
             "is_unique": is_unique,
             "is_relation": False,
             "is_sensitive": is_sensitive,
+            "is_enum": False,        # set to True in the enum pass if prisma_type is an enum
+            "enum_values": [],       # populated in the enum pass
             "default": default_val,
             "annotations": annotations,
         }

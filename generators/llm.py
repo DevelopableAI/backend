@@ -84,10 +84,32 @@ class LLMGenerator(BaseGenerator):
         cleaned = self._cleanup_markdown(raw).strip()
 
         # Python test sections sit inside `def run(ctx):` — enforce 4-space indent.
-        # Dedent first (normalises whatever base indent the LLM used), then prepend
-        # 4 spaces to every non-empty line while keeping relative indentation intact.
+        # Step 1: textwrap.dedent strips the *common* leading whitespace.
+        #   This works perfectly when the LLM uses consistent 0-based indentation.
+        # Step 2: detect the "function-body-as-base" failure mode — the LLM puts
+        #   comments at col 0 (anchoring the common prefix to 0 so dedent is a noop)
+        #   while placing all code lines at col 4 (treating the function body as col 0).
+        #   We detect this by checking if ALL non-empty, non-comment lines start with
+        #   at least one space after dedent. If so, strip that minimum code-line indent
+        #   from every non-empty line before applying the 4-space function-body offset.
         if prompt_subdir == "tests":
             cleaned = textwrap.dedent(cleaned)
+            code_lines = [
+                l for l in cleaned.splitlines()
+                if l.strip() and not l.lstrip().startswith("#")
+            ]
+            if code_lines:
+                min_code_indent = min(len(l) - len(l.lstrip()) for l in code_lines)
+                if min_code_indent > 0:
+                    normalized = []
+                    for l in cleaned.splitlines():
+                        if not l.strip():
+                            normalized.append(l)
+                        elif len(l) - len(l.lstrip()) >= min_code_indent:
+                            normalized.append(l[min_code_indent:])
+                        else:
+                            normalized.append(l)  # comment/line below the min — keep as-is
+                    cleaned = "\n".join(normalized)
             cleaned = "\n".join(
                 ("    " + line) if line.strip() else line
                 for line in cleaned.splitlines()
