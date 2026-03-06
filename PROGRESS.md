@@ -71,3 +71,4 @@
     - Test scripts might have indentation issue. The last API and test suite generated after fix did not have indentation issues. But, still something to watch out for and find definitive solution
 - Formulated reasoning for first issue might be that the test planner only knows the routes of the API, schema and rules yaml. Some part of the error can be mitigated if test_planner receives the zod validation schema for POST/PUT requests.
 - In test_planner line 300 (under plan method), the 'first_primary' variable is not used. Why? Could that be the reason for error? We need to find out.
+- Verify this and see if the total test cases count is different as we pass more test cases. If true, then we need to change the console output in test cases to show non-executed test cases.
