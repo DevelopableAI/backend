@@ -61,6 +61,7 @@ def run(ctx: TestContext) -> None:
 #   - Assert: data.get("{{ nested_route.fk_field }}") == {{ auth_entity.name_lower }}1_id → ctx.ok/ctx.fail
 /* LLM_SECTION_END */
 
+{% if child_required_scalar_fields %}
     # {{ section_num }}-3  POST missing required fields → 400
     if token1:
 {% for f in child_required_scalar_fields %}
@@ -74,6 +75,7 @@ def run(ctx: TestContext) -> None:
         ctx.assert_status(resp, 400,
                           "POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }} missing {{ f.name }} → 400")
 {% endfor %}
+{% endif %}
 
     # {{ section_num }}-4  PUT by owner → 200 (direct route)
     nested_child_id = ctx.state.get("nested_{{ child_entity.name_lower }}_id")
