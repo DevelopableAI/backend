@@ -58,3 +58,16 @@
 - Solved all issues with templated tests and verified it is working with test_schema.
 - Identified and solved issues related to entity relationships in delete operations.
 - Used figma AI to develop a website for the package.
+
+# 03/04/2026 
+- Deployed the website for the package
+    - Includes purchase of namecheap domain
+    - Setting up terraform for deployment of website
+    - Setting up github actions
+
+# 03/05/2026
+- Identified following issues templated tests:
+    - Test case API calls not sensitive to request body format expected in API, hence having unrealistic expectation and declaring functional API as defective.
+    - Test scripts might have indentation issue. The last API and test suite generated after fix did not have indentation issues. But, still something to watch out for and find definitive solution
+- Formulated reasoning for first issue might be that the test planner only knows the routes of the API, schema and rules yaml. Some part of the error can be mitigated if test_planner receives the zod validation schema for POST/PUT requests.
+- In test_planner line 300 (under plan method), the 'first_primary' variable is not used. Why? Could that be the reason for error? We need to find out.
