@@ -16,6 +16,12 @@ Rules:
 - Do NOT include FK fields in any request body
 - Variable names: token1, token2, <entity_lower>1_id, <entity_lower>2_id, etc. are already declared — use them exactly as listed in the placeholder. Do NOT invent new variable names like nested_*_id.
 - IMPORTANT: Use the `body=` keyword argument (NOT `json=`) for request bodies in ctx.req()
-- IMPORTANT: Output code at 0 indentation (NO leading spaces on the outermost level). Nested blocks (if-bodies, etc.) must use 4-space relative indent. The system handles placement indentation automatically.
+- CRITICAL INDENTATION: Every outermost statement — including `if token1:`, `resp =`, comments, and `ctx.state[...]` — MUST start at column 0 (zero leading spaces). Only code nested INSIDE an `if` or `for` block uses 4-space relative indent.
+  WRONG (do NOT do this):
+      if token1:                 ← 4 leading spaces on an outermost statement
+          resp = ctx.req(...)
+  RIGHT:
+  if token1:                     ← 0 leading spaces
+      resp = ctx.req(...)        ← 4 spaces, nested inside the if
 
 Output only the Python code. No function definitions, no imports.
