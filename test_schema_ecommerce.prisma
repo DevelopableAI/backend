@@ -1,0 +1,77 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// @auth_entity
+// @llm Sellers can only manage their own products; buyers can only view/manage their own orders
+model User {
+  id        Int       @id @default(autoincrement())
+  email     String    @unique
+  name      String
+  password  String    // @llm sensitive
+  bio       String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @default(now())
+  products  Product[]
+  orders    Order[]
+  reviews   Review[]
+}
+
+// @llm Only the seller (author) can create, edit, or delete a product
+model Product {
+  id          Int         @id @default(autoincrement())
+  title       String
+  description String
+  price       Float
+  stock       Int         @default(0)
+  published   Boolean     @default(false)
+  metadata    Json?
+  sellerId    Int
+  seller      User        @relation(fields: [sellerId], references: [id])
+  orderItems  OrderItem[]
+  reviews     Review[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @default(now())
+}
+
+// @llm Orders are created by buyers; status transitions: pending → confirmed → shipped → delivered
+model Order {
+  id        Int         @id @default(autoincrement())
+  status    String      @default("pending")
+  total     Float       @default(0)
+  notes     String?
+  buyerId   Int
+  buyer     User        @relation(fields: [buyerId], references: [id])
+  items     OrderItem[]
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @default(now())
+}
+
+// @llm OrderItem belongs to both an Order and a Product; quantity must be at least 1; unitPrice must be positive
+model OrderItem {
+  id        Int     @id @default(autoincrement())
+  quantity  Int
+  unitPrice Float
+  orderId   Int
+  order     Order   @relation(fields: [orderId], references: [id])
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+}
+
+// @llm Reviews belong to both an author (User) and a product; rating must be between 1 and 5
+model Review {
+  id        Int      @id @default(autoincrement())
+  rating    Int
+  body      String
+  authorId  Int
+  author    User     @relation(fields: [authorId], references: [id])
+  productId Int
+  product   Product  @relation(fields: [productId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}

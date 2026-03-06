@@ -121,7 +121,7 @@ export class {{ entity.name }}Repository {
 {% for rel in parent_fk_relations %}
 
   // Find all {{ entity.name_plural }} belonging to a parent via {{ rel.fk_field }}
-  async findManyBy{{ rel.fk_field | capitalize }}(
+  async findManyBy{{ rel.fk_field[0] | upper ~ rel.fk_field[1:] }}(
     parentId: number,
     pagination: PaginationParams,
   ): Promise<{ data: any[]; total: number }> {
