@@ -1,3 +1,4 @@
+import ast
 import re
 import textwrap
 from pathlib import Path
@@ -83,39 +84,95 @@ class LLMGenerator(BaseGenerator):
         raw = response.content[0].text
         cleaned = self._cleanup_markdown(raw).strip()
 
-        # Python test sections sit inside `def run(ctx):` — enforce 4-space indent.
-        # Step 1: textwrap.dedent strips the *common* leading whitespace.
-        #   This works perfectly when the LLM uses consistent 0-based indentation.
-        # Step 2: detect the "function-body-as-base" failure mode — the LLM puts
-        #   comments at col 0 (anchoring the common prefix to 0 so dedent is a noop)
-        #   while placing all code lines at col 4 (treating the function body as col 0).
-        #   We detect this by checking if ALL non-empty, non-comment lines start with
-        #   at least one space after dedent. If so, strip that minimum code-line indent
-        #   from every non-empty line before applying the 4-space function-body offset.
         if prompt_subdir == "tests":
-            cleaned = textwrap.dedent(cleaned)
-            code_lines = [
-                l for l in cleaned.splitlines()
-                if l.strip() and not l.lstrip().startswith("#")
-            ]
-            if code_lines:
-                min_code_indent = min(len(l) - len(l.lstrip()) for l in code_lines)
-                if min_code_indent > 0:
-                    normalized = []
-                    for l in cleaned.splitlines():
-                        if not l.strip():
-                            normalized.append(l)
-                        elif len(l) - len(l.lstrip()) >= min_code_indent:
-                            normalized.append(l[min_code_indent:])
-                        else:
-                            normalized.append(l)  # comment/line below the min — keep as-is
-                    cleaned = "\n".join(normalized)
-            cleaned = "\n".join(
-                ("    " + line) if line.strip() else line
-                for line in cleaned.splitlines()
-            )
+            cleaned = self._normalize_test_indent(cleaned)
+
+            # Validate the indented code by parsing it as a Python function body.
+            # If ast.parse fails (IndentationError or SyntaxError), retry the LLM
+            # call once with an explicit correction instruction and re-normalize.
+            if not self._valid_python_section(cleaned):
+                print(
+                    f"  ⚠️  LLM output for task '{task}' failed syntax validation "
+                    f"(likely indentation). Retrying once..."
+                )
+                retry_message = (
+                    user_message
+                    + "\n\nYour previous response had Python indentation errors. "
+                    "Remember: every top-level statement must start at column 0 "
+                    "(zero leading spaces). Code nested inside `if`, `for`, or `with` "
+                    "blocks uses exactly 4 spaces. Do NOT add extra leading spaces to "
+                    "outermost statements."
+                )
+                retry_response = self.client.messages.create(
+                    model=config.MODEL,
+                    max_tokens=2048,
+                    temperature=config.TEMPERATURE_LLM,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": retry_message}],
+                )
+                retry_raw = retry_response.content[0].text
+                retry_cleaned = self._normalize_test_indent(
+                    self._cleanup_markdown(retry_raw).strip()
+                )
+                if self._valid_python_section(retry_cleaned):
+                    cleaned = retry_cleaned
+                else:
+                    print(
+                        f"  ⚠️  Retry also produced syntax issues for task '{task}'. "
+                        "Using original output — manual review may be needed."
+                    )
 
         return cleaned
+
+    def _normalize_test_indent(self, code: str) -> str:
+        """
+        Normalize LLM-generated Python test code to sit correctly inside a function body.
+
+        The LLM may emit code at col 0 (ideal), col 4 (treating itself as already inside
+        def run), or mixed. Strategy:
+
+        1. textwrap.dedent — strips the common leading prefix. Handles the uniform
+           col-4+ case perfectly.
+        2. "function-body-as-base" detection — if every non-blank, non-comment line
+           still starts with at least one space after dedent, the LLM anchored its
+           zero-level at col 4 but left comments at col 0. Strip that minimum indent
+           from code lines, keep comments as-is.
+        3. Apply 4-space prefix — shift everything into the function body.
+        """
+        dedented = textwrap.dedent(code)
+        code_lines = [
+            l for l in dedented.splitlines()
+            if l.strip() and not l.lstrip().startswith("#")
+        ]
+        if code_lines:
+            min_code_indent = min(len(l) - len(l.lstrip()) for l in code_lines)
+            if min_code_indent > 0:
+                result = []
+                for l in dedented.splitlines():
+                    if not l.strip():
+                        result.append(l)
+                    elif len(l) - len(l.lstrip()) >= min_code_indent:
+                        result.append(l[min_code_indent:])
+                    else:
+                        result.append(l)  # comment below the min indent — keep as-is
+                dedented = "\n".join(result)
+        return "\n".join(
+            ("    " + line) if line.strip() else line
+            for line in dedented.splitlines()
+        )
+
+    @staticmethod
+    def _valid_python_section(code: str) -> bool:
+        """
+        Return True if `code` is syntactically valid Python when placed inside a
+        function body. Uses ast.parse to catch IndentationError and SyntaxError.
+        The `pass` at the end ensures an empty code string is also accepted.
+        """
+        try:
+            ast.parse(f"def _section():\n{code}\n    pass\n")
+            return True
+        except SyntaxError:
+            return False
 
     def _build_user_message(
         self,
