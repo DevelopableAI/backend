@@ -297,8 +297,8 @@ class TestPlanner:
             first_rctx = entity_route_ctx.get(first_entity["name"], {})
             first_owner_fk = first_rctx.get("owner_fk_field")
             first_req_scalar, _ = self._split_scalar_fields(first_entity, auth_entity_name)
-            first_primary, _, first_create_path, first_req_auth = self._resolve_canonical_create(
-                first_entity, entities, auth_entity, auth_entity_name
+            first_primary_entity, _first_primary_fk, first_create_path, first_req_auth = (
+                self._resolve_canonical_create(first_entity, entities, auth_entity, auth_entity_name)
             )
 
             modules.append({
@@ -313,6 +313,7 @@ class TestPlanner:
                     "requires_auth": first_req_auth,
                     "required_scalar_fields": first_req_scalar,
                     "owner_fk_field": first_owner_fk,
+                    "primary_parent_entity": first_primary_entity,
                 },
                 "needs_llm": False,
             })

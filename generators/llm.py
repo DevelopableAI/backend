@@ -134,6 +134,11 @@ class LLMGenerator(BaseGenerator):
                 if not f["is_relation"]
             )
             hints = "\n".join(f"  - {h}" for h in entity.get("llm_hints", [])) or "  (none)"
+            constraints = entity.get("llm_constraints", [])
+            constraints_section = (
+                "\n            Business-rule constraints (from rules file):\n"
+                + "\n".join(f"            - {c}" for c in constraints)
+            ) if constraints else ""
             entity_section = f"""
             Entity: {entity['name']}
             Fields:
@@ -141,6 +146,7 @@ class LLMGenerator(BaseGenerator):
 
             Custom hints from schema:
             {hints}
+{constraints_section}
 """
         else:
             entity_section = ""
