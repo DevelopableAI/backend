@@ -411,7 +411,7 @@ class TestPlanner:
         result: dict[str, dict] = {}
         for file_plan in api_plan.get("files", []):
             tmpl = file_plan.get("template", "")
-            if tmpl == "express/routes.ts.j2":
+            if tmpl == "express/api/routes.ts.j2":
                 ctx = file_plan.get("context", {})
                 entity = ctx.get("entity")
                 if entity:

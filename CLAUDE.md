@@ -2,7 +2,7 @@
 
 ## Project Vision
 
-**Developable** an **AI-native backend engineering platform** that generates and evolves production-ready systems with built-in invariants: transactional safety, observability, security by design, and comprehensive test coverage—not just endpoints.
+**Developable** is an **AI-native backend engineering platform** that generates and evolves production-ready systems with built-in invariants: transactional safety, observability, security by design, and comprehensive test coverage—not just endpoints.
 
 **Input:** Creators provide a domain model (Prisma schema with annotations for business rules, auth boundaries, and data sensitivity) rather than natural language.
 
@@ -17,22 +17,64 @@
 
 ---
 
+## Backend Engineer Architecture
+
+The platform is modelled as a **Backend Engineer** (`main.py`) that coordinates specialised agents. Each agent has a single responsibility and communicates through well-defined interfaces (spec dict and plan dict).
+
+```
+                    ┌─────────────────────────────┐
+                    │     Backend Engineer         │
+                    │         main.py              │
+                    │  (orchestrates all agents)   │
+                    └────────────┬────────────────┘
+                                 │
+               ┌─────────────────┴──────────────────┐
+               │                                     │
+    ┌──────────▼──────────┐             ┌────────────▼────────────┐
+    │   Developer Agent   │             │     Tester Agent        │
+    │  agents/developer.py│             │  agents/tester.py       │
+    │                     │             │                         │
+    │  Planner + Assembler│  api_plan   │ TestPlanner + Assembler │
+    │  → Express API      ├────────────►│ → Python test suite     │
+    └─────────────────────┘             └─────────────────────────┘
+```
+
+**Agents planned but not yet implemented:**
+- **Version Control Agent** — manages git branching, commits, and pull requests
+- **Deployment Agent** — sets up and maintains CI/CD pipelines to deploy the backend artifact
+
+### Agent Responsibilities
+
+| Agent | File | Responsibility |
+|---|---|---|
+| Backend Engineer | `main.py` | CLI entry point; parses schema, loads rules, coordinates agents |
+| Developer | `agents/developer.py` | Generates Express + TypeScript API (Planner → Assembler) |
+| Tester | `agents/tester.py` | Generates Python integration test suite (TestPlanner → Assembler) |
+
+---
+
 ## Repository Structure
 
 ```
 backend/
-├── main.py                          # CLI entry point: parse → plan → assemble
-├── config.py                        # Paths, model name, LLM temperature, boilerplate list
+├── main.py                          # Backend Engineer: CLI orchestrator for all agents
+├── config.py                        # Paths, model name, LLM temperature
 ├── requirements.txt                 # Python dependencies
 ├── README.md                        # User-facing documentation
 ├── Dockerfile                       # Container for running the generator
 ├── PROGRESS.md                      # In-progress feature notes
 ├── test_schema.prisma               # Example schema used for local testing
 │
-├── core/
+├── agents/                          # Agent layer — each agent owns its generation domain
+│   ├── developer.py                 # Developer agent: Express API (wraps Planner + Assembler)
+│   └── tester.py                    # Tester agent: Python test suite (wraps TestPlanner + Assembler)
+│
+├── core/                            # Shared infrastructure used by agents
 │   ├── parser.py                    # PrismaParser: schema.prisma → structured spec dict
-│   ├── planner.py                   # Planner: spec → file plan (template + context + LLM task)
-│   └── assembler.py                 # Assembler: orchestrates TemplateGenerator + LLMGenerator
+│   ├── planner.py                   # Planner: spec → API file plan (used by Developer)
+│   ├── test_planner.py              # TestPlanner: spec + api_plan → test file plan (used by Tester)
+│   ├── assembler.py                 # Assembler: orchestrates TemplateGenerator + LLMGenerator
+│   └── rules_parser.py              # BusinessRulesParser: merges YAML constraints into spec
 │
 ├── generators/
 │   ├── base.py                      # BaseGenerator ABC + _cleanup_markdown utility
@@ -40,52 +82,59 @@ backend/
 │   └── llm.py                       # LLMGenerator: fills LLM_SECTION markers via Claude API
 │
 ├── templates/
-│   └── express/                     # Jinja2 templates for the Express + TypeScript output
-│       ├── app.ts.j2                # Express app setup, router mounting, error handler
-│       ├── server.ts.j2             # HTTP server bootstrap
-│       ├── package.json.j2          # npm manifest with all dependencies
-│       ├── tsconfig.json.j2         # TypeScript compiler config
-│       ├── controller.ts.j2         # CRUD + nested-route handlers, ID validation, ownership guards
-│       ├── routes.ts.j2             # Express Router wiring (auth middleware applied per method)
-│       ├── repository.ts.j2         # Prisma data-access layer (findMany, findById, create, update, delete)
-│       ├── validator.ts.j2          # Zod schema wrapper — boilerplate with LLM_SECTION for logic
-│       ├── types.ts.j2              # TypeScript input/output types derived from entity fields
-│       ├── auth.controller.ts.j2    # Register + login handlers, JWT signing, credential hashing
-│       ├── auth.routes.ts.j2        # /auth/register and /auth/login route declarations
-│       ├── auth.ts.j2               # JWT authenticate middleware (populates req.user)
-│       ├── errors.ts.j2             # AppError hierarchy + Express error-handler middleware
-│       ├── pagination.ts.j2         # parsePagination + buildPaginatedResponse helpers
-│       ├── prisma.ts.j2             # Singleton PrismaClient export
-│       ├── crypto.ts.j2             # bcrypt hashValue / compareValue helpers
-│       └── env.example.j2           # .env.example with all required environment variables
+│   └── express/
+│       └── api/                     # Jinja2 templates for Express + TypeScript REST API output
+│           ├── app.ts.j2            # Express app setup, router mounting, error handler
+│           ├── server.ts.j2         # HTTP server bootstrap
+│           ├── package.json.j2      # npm manifest with all dependencies
+│           ├── tsconfig.json.j2     # TypeScript compiler config
+│           ├── controller.ts.j2     # CRUD + nested-route handlers, ID validation, ownership guards
+│           ├── routes.ts.j2         # Express Router wiring (auth middleware applied per method)
+│           ├── repository.ts.j2     # Prisma data-access layer (findMany, findById, create, update, delete)
+│           ├── validator.ts.j2      # Zod schema wrapper — boilerplate with LLM_SECTION for logic
+│           ├── types.ts.j2          # TypeScript input/output types derived from entity fields
+│           ├── auth.controller.ts.j2 # Register + login handlers, JWT signing, credential hashing
+│           ├── auth.routes.ts.j2    # /auth/register and /auth/login route declarations
+│           ├── auth.ts.j2           # JWT authenticate middleware (populates req.user)
+│           ├── errors.ts.j2         # AppError hierarchy + Express error-handler middleware
+│           ├── pagination.ts.j2     # parsePagination + buildPaginatedResponse helpers
+│           ├── prisma.ts.j2         # Singleton PrismaClient export
+│           ├── crypto.ts.j2         # bcrypt hashValue / compareValue helpers
+│           └── env.example.j2       # .env.example with all required environment variables
+│   └── tests/                       # Jinja2 templates for the Python integration test suite
+│       ├── helpers.py.j2            # Shared HTTP client, auth helpers, state fixtures
+│       ├── run_all.py.j2            # Sequential test runner
+│       └── test_*.py.j2             # Per-feature test module templates
 │
 ├── prompts/
-│   ├── system.txt                   # System prompt: senior backend engineer persona
-│   └── express/
-│       └── validation_logic.txt     # Task prompt: Zod schema generation rules
+│   ├── system.txt                   # Default system prompt fallback
+│   ├── express/
+│   │   ├── system.txt               # System prompt: senior backend engineer persona
+│   │   └── validation_logic.txt     # Task prompt: Zod schema generation rules
+│   └── tests/
+│       ├── system.txt               # System prompt: test engineer persona
+│       └── *.txt                    # Task prompts for test section generation
 │
-└── tests/                           # Tests for the *generated* Express API (not the generator)
-    ├── helpers.py                   # Shared HTTP client, auth helpers, state fixtures
-    ├── run_all.py                   # Sequential test runner
-    ├── test_00_health.py            # Health check
-    ├── test_01_register.py          # User registration
-    ├── test_02_login.py             # Login + JWT issuance
-    ├── test_03_users_get.py         # User list + get-by-ID
-    ├── test_04_users_write.py       # User update + delete (ownership enforced)
-    ├── test_05_posts_seed_get.py    # Post creation seed + list/get
-    ├── test_06_posts_write.py       # Post update + delete (authorship enforced)
-    ├── test_07_comments_seed_get.py # Comment seed + list/get
-    ├── test_08_comments_write.py    # Comment update + delete
-    ├── test_09_nested_users_get.py  # GET /users/:id/posts, /users/:id/comments
-    ├── test_10_nested_users_posts.py   # POST /users/posts (auth token → parentId)
-    ├── test_11_nested_users_comments.py
-    ├── test_12_nested_posts_comments.py
-    ├── test_13_token_security.py    # Missing/invalid/expired JWT rejection
-    ├── test_14_input_validation.py  # Malformed bodies, invalid IDs, edge cases
-    ├── test_15_response_structure.py # Response shape contracts
-    ├── test_16_security_audit.py    # Ownership violations, SQL injection, overflow
-    └── test_17_cleanup.py           # Delete all seeded data
+└── tests/                           # Reference tests for a blog-schema generated API
+    ├── helpers.py
+    ├── run_all.py
+    └── test_*.py
 ```
+
+### Template Subdirectory Convention
+
+Templates under `templates/express/` are organised by **backend artifact type**. Currently only `api/` (REST API) exists. Future artifact types will add sibling directories:
+
+```
+templates/express/
+├── api/          # REST API (CRUD routes, controllers, repositories) — implemented
+├── cron/         # Scheduled jobs — planned
+├── batch/        # Batch processing workers — planned
+├── library/      # Reusable TypeScript library packages — planned
+└── auth-lib/     # Standalone authentication library — planned
+```
+
+Each artifact type has its own templates and a matching `prompts/express/<type>/` directory for LLM task prompts.
 
 ---
 
@@ -93,11 +142,11 @@ backend/
 
 | Layer | Technology |
 |---|---|
-| Generator language | Python 3.11+ |
+| Platform language | Python 3.11+ |
 | Templating | Jinja2 3.1.2 (`StrictUndefined`, `trim_blocks`, `lstrip_blocks`) |
 | AI model | Anthropic SDK (`anthropic>=0.49.0`), model `claude-sonnet-4-6` |
-| Data validation (generator) | Pydantic v2 |
-| Web framework (generator API) | FastAPI 0.104.1 + Uvicorn |
+| Data validation (platform) | Pydantic v2 |
+| Web framework (platform API) | FastAPI 0.104.1 + Uvicorn |
 | **Generated stack** | |
 | Language | TypeScript (ESM, Node 18+) |
 | Framework | Express.js |
@@ -113,11 +162,11 @@ backend/
 ANTHROPIC_API_KEY=sk-ant-...   # Required — Claude API key for LLM sections
 ```
 
-The `.env` file is git-ignored. The generator exits early if `ANTHROPIC_API_KEY` is missing.
+The `.env` file is git-ignored. The platform exits early if `ANTHROPIC_API_KEY` is missing.
 
 ---
 
-## Running the Generator
+## Running the Platform
 
 ```bash
 # Install dependencies
@@ -125,6 +174,9 @@ pip install -r requirements.txt
 
 # Generate a project from a Prisma schema
 python main.py path/to/schema.prisma --out ./output
+
+# Also generate the integration test suite
+python main.py path/to/schema.prisma --out ./output --tests-out ./tests
 
 # Skip LLM calls (uses placeholder Zod schemas — useful for fast iteration)
 python main.py path/to/schema.prisma --out ./output --no-llm
@@ -152,18 +204,26 @@ PrismaParser (core/parser.py)
      │  { entities[], datasource, auth_entity_name, env_vars }
      │
      ▼
-Planner (core/planner.py)
-     │  Produces a "plan" dict:
-     │  { files: [ { path, template, context, needs_llm, llm_task } ] }
+Backend Engineer (main.py)
      │
-     ▼
-Assembler (core/assembler.py)
+     ├─► Developer agent (agents/developer.py)
+     │        │
+     │        ├─ Planner (core/planner.py)
+     │        │    Produces an "api_plan" dict:
+     │        │    { files: [ { path, template, context, needs_llm, llm_task } ] }
+     │        │
+     │        └─ Assembler (core/assembler.py)
+     │               ├─ TemplateGenerator → Jinja2 render of the template with context
+     │               └─ LLMGenerator      → Fills /* LLM_SECTION_START */ … /* LLM_SECTION_END */
+     │                                      markers via Claude API
      │
-     ├─ TemplateGenerator  → Jinja2 render of the template with context
-     │
-     └─ LLMGenerator       → Finds /* LLM_SECTION_START */ … /* LLM_SECTION_END */
-                             markers, calls Claude with the task prompt + entity context,
-                             replaces each section with generated TypeScript
+     └─► Tester agent (agents/tester.py)  [optional, if --tests-out is set]
+              │
+              ├─ TestPlanner (core/test_planner.py)
+              │    Produces a "test_plan" dict based on spec + api_plan
+              │
+              └─ Assembler (core/assembler.py)
+                     Same Assembler, different templates and prompt_subdir="tests"
 ```
 
 ### LLM section mechanism
@@ -313,14 +373,14 @@ Key variables available in each template category:
 
 ---
 
-## Adding a New Template File
+## Adding a New Template File (Express API)
 
-1. Create `templates/express/<filename>.j2`
-2. In `Planner._plan_entity_files` or `_plan_project_files`, add a file plan entry:
+1. Create `templates/express/api/<filename>.j2`
+2. In `core/planner.py` (`Planner._plan_entity_files` or `_plan_project_files`), add a file plan entry:
    ```python
    {
        "path": "src/...",
-       "template": "express/<filename>.j2",
+       "template": "express/api/<filename>.j2",
        "context": { "entity": entity, ... },
        "needs_llm": False,   # True if it has LLM_SECTION markers
        "llm_task": "task_name",  # matches prompts/express/task_name.txt
@@ -340,12 +400,21 @@ Key variables available in each template category:
 3. Set `needs_llm: True` and `llm_task: "<task>"` in the file plan entry
 4. Pass any relevant context (e.g. `owner_fk_field`) through the file plan context, and reference it in the placeholder comment so the LLM sees it
 
+## Adding a New Express Artifact Type
+
+1. Create `templates/express/<artifact>/` with the new artifact's templates
+2. Add `prompts/express/<artifact>/` with corresponding prompt files (including `system.txt`)
+3. Create `agents/<artifact-agent>.py` with a new agent class following the Developer/Tester pattern
+4. Add a new `Planner` subclass in `core/` for the new artifact's file plan
+5. Wire the new agent into `main.py` with an appropriate CLI flag (e.g. `--cron-out`)
+
 ## Adding a New Target Framework
 
-1. Create `templates/<framework>/` with templates mirroring the express structure
+1. Create `templates/<framework>/api/` with templates mirroring the express/api structure
 2. Add `prompts/<framework>/` with corresponding prompt files
-3. Extend `Planner._plan_entity_files` to dispatch on `spec["target_framework"]`
-4. Update `PrismaParser` or `main.py` if the new framework requires additional spec fields
+3. Create `agents/<framework>_developer.py` with a new Developer variant
+4. Add a new Planner class in `core/` that dispatches to the new framework's templates
+5. Update `main.py` to accept a `--framework` flag and instantiate the right agent
 
 ---
 
@@ -357,3 +426,4 @@ Key variables available in each template category:
 4. **No test suite for the generator itself** — only the generated projects are tested; consider adding pytest tests for `PrismaParser`, `Planner`, and template rendering
 5. **Synchronous Anthropic client** — `LLMGenerator` uses the blocking SDK client; for parallel generation wrap calls with `asyncio.to_thread` or switch to `anthropic.AsyncAnthropic`
 6. **No rate limiting or audit logging in generated output** — planned as next invariant layer
+7. **Version Control and Deployment agents not yet implemented** — placeholders for future development

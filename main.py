@@ -3,10 +3,9 @@ import sys
 from pathlib import Path
 
 from core.parser import PrismaParser
-from core.planner import Planner
-from core.assembler import Assembler
 from core.rules_parser import BusinessRulesParser
-from core.test_planner import TestPlanner
+from agents.developer import Developer
+from agents.tester import Tester
 
 
 def collect_env_values(env_vars: list[str]) -> dict[str, str]:
@@ -31,9 +30,9 @@ def collect_env_values(env_vars: list[str]) -> dict[str, str]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate an Express + TypeScript API from a schema.prisma file")
+    parser = argparse.ArgumentParser(description="Developable Backend Engineer — generates production-ready backend services from a Prisma schema")
     parser.add_argument("schema", help="Path to schema.prisma")
-    parser.add_argument("--out", default="./output", help="Output directory (default: ./output)")
+    parser.add_argument("--out", default="./output", help="Output directory for the generated API (default: ./output)")
     parser.add_argument("--no-llm", action="store_true", help="Skip LLM calls, use placeholder logic only")
     parser.add_argument("--rules", default=None, help="Path to a schema.rules.yaml file with business logic constraints")
     parser.add_argument(
@@ -65,13 +64,10 @@ def main():
 
     env_values = collect_env_values(spec.get("env_vars", []))
 
-    print("\nPlanning file structure...")
-    plan = Planner().plan(spec)
-    print(f"Planned {len(plan['files'])} files across {len(spec['entities'])} entities")
-
-    print(f"Generating into {out_dir}/...")
-    assembler = Assembler(out_dir=out_dir, use_llm=not args.no_llm)
-    assembler.assemble(spec, plan, env_values=env_values)
+    # ── Developer agent: generate the Express API ─────────────────────────────
+    print(f"\n[Developer] Generating Express API into {out_dir}/...")
+    developer = Developer(out_dir=out_dir, use_llm=not args.no_llm)
+    api_plan = developer.generate(spec, env_values=env_values)
 
     print(f"\nDone. Your project is at {out_dir}/")
     print("Next steps:")
@@ -80,16 +76,12 @@ def main():
     print("  npx prisma migrate dev")
     print("  npm run dev")
 
-    # ── Test suite generation ─────────────────────────────────────────────────
+    # ── Tester agent: generate the integration test suite ─────────────────────
     if args.tests_out:
         tests_dir = Path(args.tests_out)
-        print(f"\nGenerating test suite into {tests_dir}/...")
-
-        test_plan = TestPlanner().plan(spec, plan)
-        print(f"Planned {len(test_plan['files'])} test files")
-
-        test_assembler = Assembler(out_dir=tests_dir, use_llm=not args.no_llm)
-        test_assembler.assemble(spec, test_plan, env_values=None)
+        print(f"\n[Tester] Generating integration test suite into {tests_dir}/...")
+        tester = Tester(tests_dir=tests_dir, use_llm=not args.no_llm)
+        tester.generate(spec, api_plan)
 
         print(f"\nTest suite at {tests_dir}/")
         print("Run tests:")
