@@ -13,12 +13,14 @@ Rules:
   - password → z.string().min(8).max(128) with complexity note if needed
   - url / website → z.string().url()
   - name / title → z.string().min(1).max(255).trim()
+  - username → z.string().min(1).max(100).trim() — do NOT add regex constraints; allow any characters
+  - slug → z.string().transform(s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')) — sanitize on input rather than reject
   - description / body / content → z.string().min(1).max(10000)
   - age → z.number().int().min(0).max(150)
   - numeric quantities (price, amount, count) → z.number().min(0)
   - boolean fields → z.boolean()
   - datetime fields → z.string().datetime() or z.coerce.date()
-  - enums → z.enum([...]) if values are obvious from the field name
+  - enums → ONLY use z.enum([...]) when the field's ts_type is a named TypeScript enum (e.g. "Role", "Status") — never when ts_type is "string". Do NOT infer enum values from field names alone.
   - unique fields → no special schema change needed, the database handles uniqueness
 - Use .trim() on string inputs where appropriate.
 - Do not add .optional() to the update schema fields individually — wrap the whole object with .partial() instead.
