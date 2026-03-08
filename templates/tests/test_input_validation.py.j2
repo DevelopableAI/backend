@@ -114,51 +114,28 @@ def run(ctx: TestContext) -> None:
         ctx.warn(f"SQL injection in path segment → unexpected HTTP {resp.status_code}")
 
 {% if first_str %}
-{# Determine which field will actually receive emoji content (mirrors the body-building logic below) #}
-{% set _restricted_first = 'slug' in first_str.name.lower() or 'url' in first_str.name.lower() or first_str.name.lower() == 'website' or 'username' in first_str.name.lower() or 'handle' in first_str.name.lower() %}
-{% if string_fields | length > 1 %}
-{% set _restricted_second = 'slug' in string_fields[1].name.lower() or 'url' in string_fields[1].name.lower() or string_fields[1].name.lower() == 'website' or 'username' in string_fields[1].name.lower() or 'handle' in string_fields[1].name.lower() %}
-{% else %}
-{% set _restricted_second = true %}
+{# Find the first string field across ALL string fields that is not format-restricted.
+   This is the field that will receive emoji in the body AND be verified in the check. #}
+{% set ns = namespace(emoji_check_field=None) %}
+{% for f in string_fields %}
+{% if ns.emoji_check_field is none and
+      'slug' not in f.name.lower() and
+      'url' not in f.name.lower() and
+      f.name.lower() != 'website' and
+      'username' not in f.name.lower() and
+      'handle' not in f.name.lower() %}
+{% set ns.emoji_check_field = f.name %}
 {% endif %}
-{# emoji_check_field = the first unrestricted field that will hold emoji in the body #}
-{% if not _restricted_first %}
-{% set emoji_check_field = first_str.name %}
-{% set emoji_chars = '"🌍"' %}
-{% elif string_fields | length > 1 and not _restricted_second %}
-{% set emoji_check_field = string_fields[1].name %}
-{% set emoji_chars = '"🚀"' %}
-{% else %}
-{% set emoji_check_field = None %}
-{% set emoji_chars = '""' %}
-{% endif %}
+{% endfor %}
     # {{ section_num }}-6  Unicode / emoji — should round-trip correctly
     if token1:
         resp = ctx.req("POST", _create_path, token=token1,
                        body={
-{# Use field-name-aware values so slug/url/username validators don't reject the body #}
-{% if 'slug' in first_str.name.lower() %}
-                           "{{ first_str.name }}": "unicode-test-slug",
-{% elif 'url' in first_str.name.lower() or first_str.name.lower() == 'website' %}
-                           "{{ first_str.name }}": "https://unicode-test.example.com",
-{% elif 'username' in first_str.name.lower() or 'handle' in first_str.name.lower() %}
-                           "{{ first_str.name }}": "unicode_test_user",
-{% else %}
-                           "{{ first_str.name }}": "Unicode Test 🌍",
-{% endif %}
-{% if string_fields | length > 1 %}
-{% if 'slug' in string_fields[1].name.lower() %}
-                           "{{ string_fields[1].name }}": "unicode-test-slug",
-{% elif 'url' in string_fields[1].name.lower() or string_fields[1].name.lower() == 'website' %}
-                           "{{ string_fields[1].name }}": "https://unicode-test.example.com",
-{% elif 'username' in string_fields[1].name.lower() or 'handle' in string_fields[1].name.lower() %}
-                           "{{ string_fields[1].name }}": "unicode_test_user",
-{% else %}
-                           "{{ string_fields[1].name }}": "Emoji content: 🚀✅❌⚠️",
-{% endif %}
-{% endif %}
-{% for f in required_scalar_fields if f.name != first_str.name and (string_fields | length <= 1 or f.name != string_fields[1].name) %}
-{% if 'slug' in f.name.lower() %}
+{# Each required field gets a format-safe value; the first unrestricted field gets emoji. #}
+{% for f in required_scalar_fields %}
+{% if f.name == ns.emoji_check_field %}
+                           "{{ f.name }}": "Unicode Test 🌍🚀",
+{% elif 'slug' in f.name.lower() %}
                            "{{ f.name }}": "unicode-test-slug",
 {% elif 'url' in f.name.lower() or f.name.lower() == 'website' %}
                            "{{ f.name }}": "https://unicode-test.example.com",
@@ -171,15 +148,11 @@ def run(ctx: TestContext) -> None:
                        })
         if ctx.assert_status(resp, 201, "POST {{ entity.name_lower }} with Unicode/emoji → 201"):
             data = ctx.safe_json(resp)
-{% if emoji_check_field %}
-            content_val = data.get("{{ emoji_check_field }}", "")
-            if {{ emoji_chars }} in content_val:
+            content_val = data.get("{{ ns.emoji_check_field }}", "")
+            if "🌍" in content_val or "🚀" in content_val:
                 ctx.ok("Unicode/emoji stored and returned correctly")
             else:
-                ctx.fail("Emoji not present in returned response")
-{% else %}
-            ctx.ok("Unicode/emoji accepted by API (no unrestricted string field to verify content)")
-{% endif %}
+                ctx.fail("Emoji not present in returned response (field: {{ ns.emoji_check_field }})")
             ctx.state["unicode_{{ entity.name_lower }}_id"] = data.get("id")
 
     # {{ section_num }}-7  Empty string {{ first_str.name }} → 400 (validation)
