@@ -209,7 +209,7 @@ class Planner:
                     "entity": entity,
                     "scalar_fields": scalar_fields,
                     "owner_fk_field": owner_fk_field,
-                    "parent_fk_fields": self._get_parent_fk_fields(entity, auth_entity_name),
+                    "parent_fk_fields": self._get_parent_fk_fields(entity, all_entities, auth_entity_name),
                     # llm_constraints from business rules file prepended to entity llm_hints for LLM context
                     "llm_constraints": llm_constraints,
                 },
@@ -360,20 +360,26 @@ class Planner:
             return auth_entity_name
         return None
 
-    def _get_parent_fk_fields(self, entity: dict, auth_entity_name: str | None) -> list[str]:
+    def _get_parent_fk_fields(
+        self, entity: dict, all_entities: list[dict], auth_entity_name: str | None
+    ) -> list[str]:
         """
-        Returns FK scalar field names on this entity that point to non-auth parent entities.
-        E.g. for Comment with relations to User (owner/auth) and Post (parent), returns ['postId'].
-        These FKs are injected from URL params in nested routes, so they need a separate
-        CreateNestedSchema that excludes them.
+        Returns ONLY the FK field pointing to this entity's PRIMARY parent.
+
+        The primary parent FK is the one injected from the URL param in nested create routes
+        (e.g. orderId on OrderItem when creating via POST /orders/:id/items).
+        Secondary non-auth parent FKs (e.g. productId on OrderItem pointing to Product)
+        must still come from the request body and must NOT be excluded from the nested schema.
         """
-        return [
-            rel["fk_field"]
-            for rel in entity.get("relations", [])
-            if rel["type"] == "many_to_one"
-            and rel["related_entity"] != auth_entity_name
-            and rel.get("fk_field")
-        ]
+        primary_parent_name = self._get_primary_parent_name(entity, all_entities, auth_entity_name)
+        if not primary_parent_name or primary_parent_name == auth_entity_name:
+            return []
+        for rel in entity.get("relations", []):
+            if (rel["type"] == "many_to_one"
+                    and rel["related_entity"] == primary_parent_name
+                    and rel.get("fk_field")):
+                return [rel["fk_field"]]
+        return []
 
     def _build_nested_routes(
         self, entity: dict, all_entities: list[dict], auth_entity_name: str | None = None
