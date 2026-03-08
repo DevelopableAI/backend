@@ -85,6 +85,20 @@ def run(ctx: TestContext) -> None:
     4. Optional string / number / enum (same priority order)
    This avoids accidentally using a field whose LLM-generated Zod validator
    enforces enum or other constraints that the template doesn't know about. -#}
+{#- Field names the validation LLM will infer as enums (per validation_logic.txt heuristics),
+    mapped to a safe value that would pass the inferred z.enum([...]) constraint. -#}
+{% set _enum_like_defaults = {
+    'role': 'admin',
+    'type': 'standard',
+    'status': 'active',
+    'category': 'general',
+    'state': 'active',
+    'kind': 'standard',
+    'mode': 'normal',
+    'tier': 'basic',
+    'level': 'beginner',
+    'priority': 'medium'
+} %}
 {% set _req_str  = required_scalar_fields | selectattr("ts_type", "equalto", "string") | rejectattr("is_enum", "equalto", true) | list %}
 {% set _req_num  = required_scalar_fields | selectattr("ts_type", "equalto", "number") | list %}
 {% set _req_enum = required_scalar_fields | selectattr("is_enum",  "equalto", true)    | list %}
@@ -98,6 +112,12 @@ def run(ctx: TestContext) -> None:
     if {{ entity.name_lower }}1_id and token1:
 {% if _update_field.is_enum %}
         _update_val: str | int = "{{ _update_field.enum_values[0] }}"
+{% elif _update_field.name in _enum_like_defaults %}
+        _update_val: str | int = "{{ _enum_like_defaults[_update_field.name] }}"
+{% elif 'slug' in _update_field.name.lower() %}
+        _update_val: str | int = "updated-{{ entity.name_lower }}"
+{% elif 'username' in _update_field.name.lower() or 'handle' in _update_field.name.lower() %}
+        _update_val: str | int = "updated_{{ entity.name_lower }}"
 {% elif _update_field.ts_type == "string" %}
         _update_val: str | int = "Updated {{ entity.name }}"
 {% else %}
