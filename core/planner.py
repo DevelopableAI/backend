@@ -39,19 +39,19 @@ class Planner:
         files = [
             {
                 "path": "package.json",
-                "template": "express/package.json.j2",
+                "template": "express/api/package.json.j2",
                 "context": {},
                 "needs_llm": False,
             },
             {
                 "path": "tsconfig.json",
-                "template": "express/tsconfig.json.j2",
+                "template": "express/api/tsconfig.json.j2",
                 "context": {},
                 "needs_llm": False,
             },
             {
                 "path": "src/app.ts",
-                "template": "express/app.ts.j2",
+                "template": "express/api/app.ts.j2",
                 "context": {
                     "entities": entities,
                     "auth_entity_name": auth_entity_name,
@@ -60,31 +60,31 @@ class Planner:
             },
             {
                 "path": "src/server.ts",
-                "template": "express/server.ts.j2",
+                "template": "express/api/server.ts.j2",
                 "context": {"auth_entity_name": auth_entity_name},
                 "needs_llm": False,
             },
             {
                 "path": "src/lib/prisma.ts",
-                "template": "express/prisma.ts.j2",
+                "template": "express/api/prisma.ts.j2",
                 "context": {},
                 "needs_llm": False,
             },
             {
                 "path": "src/lib/errors.ts",
-                "template": "express/errors.ts.j2",
+                "template": "express/api/errors.ts.j2",
                 "context": {},
                 "needs_llm": False,
             },
             {
                 "path": "src/lib/pagination.ts",
-                "template": "express/pagination.ts.j2",
+                "template": "express/api/pagination.ts.j2",
                 "context": {},
                 "needs_llm": False,
             },
             {
                 "path": ".env.example",
-                "template": "express/env.example.j2",
+                "template": "express/api/env.example.j2",
                 "context": {
                     "datasource": datasource,
                     "env_vars": spec.get("env_vars", []),
@@ -98,7 +98,7 @@ class Planner:
         if has_sensitive_fields:
             files.append({
                 "path": "src/lib/crypto.ts",
-                "template": "express/crypto.ts.j2",
+                "template": "express/api/crypto.ts.j2",
                 "context": {},
                 "needs_llm": False,
             })
@@ -108,7 +108,7 @@ class Planner:
             auth_entity = next((e for e in entities if e.get("is_auth_entity")), None)
             files.append({
                 "path": "src/lib/auth.ts",
-                "template": "express/auth.ts.j2",
+                "template": "express/api/auth.ts.j2",
                 "context": {"auth_entity": auth_entity},
                 "needs_llm": False,
             })
@@ -170,7 +170,7 @@ class Planner:
         files = [
             {
                 "path": f"src/routes/{name_plural}.routes.ts",
-                "template": "express/routes.ts.j2",
+                "template": "express/api/routes.ts.j2",
                 "context": {
                     "entity": entity,
                     "routes": allowed_routes,
@@ -182,7 +182,7 @@ class Planner:
             },
             {
                 "path": f"src/controllers/{name_lower}.controller.ts",
-                "template": "express/controller.ts.j2",
+                "template": "express/api/controller.ts.j2",
                 "context": {
                     "entity": entity,
                     "routes": allowed_routes,
@@ -194,7 +194,7 @@ class Planner:
             },
             {
                 "path": f"src/repositories/{name_lower}.repository.ts",
-                "template": "express/repository.ts.j2",
+                "template": "express/api/repository.ts.j2",
                 "context": {
                     "entity": entity,
                     "parent_fk_relations": parent_fk_relations,
@@ -204,7 +204,7 @@ class Planner:
             },
             {
                 "path": f"src/validators/{name_lower}.validator.ts",
-                "template": "express/validator.ts.j2",
+                "template": "express/api/validator.ts.j2",
                 "context": {
                     "entity": entity,
                     "scalar_fields": scalar_fields,
@@ -218,7 +218,7 @@ class Planner:
             },
             {
                 "path": f"src/types/{name_lower}.types.ts",
-                "template": "express/types.ts.j2",
+                "template": "express/api/types.ts.j2",
                 "context": {
                     "entity": entity,
                     "scalar_fields": scalar_fields,
@@ -233,13 +233,13 @@ class Planner:
             files += [
                 {
                     "path": "src/routes/auth.routes.ts",
-                    "template": "express/auth.routes.ts.j2",
+                    "template": "express/api/auth.routes.ts.j2",
                     "context": {"auth_entity": entity},
                     "needs_llm": False,
                 },
                 {
                     "path": "src/controllers/auth.controller.ts",
-                    "template": "express/auth.controller.ts.j2",
+                    "template": "express/api/auth.controller.ts.j2",
                     "context": {
                         "auth_entity": entity,
                         "sensitive_fields": sensitive_fields,
