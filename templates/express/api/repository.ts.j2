@@ -55,14 +55,16 @@ export class {{ entity.name }}Repository {
     }
 {% endfor %}
     return prisma.{{ entity.name_lower }}.create({
-      data: securedData as {{ entity.name }}CreateInput,
+      // Cast to any: custom type name clashes with Prisma's checked variant; scalar FKs resolve correctly at runtime.
+      data: securedData as any,
 {% if has_safe_select %}
       select: this.safeSelect,
 {% endif %}
     });
 {% else %}
     return prisma.{{ entity.name_lower }}.create({
-      data,
+      // Cast to any: custom type name clashes with Prisma's checked variant; scalar FKs resolve correctly at runtime.
+      data: data as any,
 {% if has_safe_select %}
       select: this.safeSelect,
 {% endif %}
@@ -82,7 +84,8 @@ export class {{ entity.name }}Repository {
 {% endfor %}
       return await prisma.{{ entity.name_lower }}.update({
         where: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: id },
-        data: securedData as {{ entity.name }}UpdateInput,
+        // Cast to any: see create() comment above.
+        data: securedData as any,
 {% if has_safe_select %}
         select: this.safeSelect,
 {% endif %}
@@ -90,7 +93,8 @@ export class {{ entity.name }}Repository {
 {% else %}
       return await prisma.{{ entity.name_lower }}.update({
         where: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: id },
-        data,
+        // Cast to any: see create() comment above.
+        data: data as any,
 {% if has_safe_select %}
         select: this.safeSelect,
 {% endif %}
