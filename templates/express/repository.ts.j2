@@ -102,21 +102,27 @@ export class {{ entity.name }}Repository {
     }
   }
 
-  async delete(id: number): Promise<void> {
+  async delete(id: number): Promise<boolean> {
 {% set id_field = entity.fields | selectattr('is_id') | first %}
+    try {
 {% if child_cascade_deletes %}
-    // Delete child records first to avoid FK constraint violations, then delete this entity.
-    await prisma.$transaction([
+      // Delete child records first to avoid FK constraint violations, then delete this entity.
+      await prisma.$transaction([
 {% for child in child_cascade_deletes %}
-      prisma.{{ child.child_name_lower }}.deleteMany({ where: { {{ child.fk_field }}: id } }),
+        prisma.{{ child.child_name_lower }}.deleteMany({ where: { {{ child.fk_field }}: id } }),
 {% endfor %}
-      prisma.{{ entity.name_lower }}.delete({ where: { {{ id_field.name if id_field else 'id' }}: id } }),
-    ]);
+        prisma.{{ entity.name_lower }}.delete({ where: { {{ id_field.name if id_field else 'id' }}: id } }),
+      ]);
 {% else %}
-    await prisma.{{ entity.name_lower }}.delete({
-      where: { {{ id_field.name if id_field else 'id' }}: id },
-    });
+      await prisma.{{ entity.name_lower }}.delete({
+        where: { {{ id_field.name if id_field else 'id' }}: id },
+      });
 {% endif %}
+      return true;
+    } catch (err: any) {
+      if (err.code === 'P2025') return false;
+      throw err;
+    }
   }
 {% for rel in parent_fk_relations %}
 
