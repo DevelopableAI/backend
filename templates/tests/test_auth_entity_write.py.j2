@@ -56,14 +56,29 @@ def run(ctx: TestContext) -> None:
 {% if has_put %}
     # {{ section_num }}-4  PUT with valid auth — update own record
 {% set update_field = required_scalar_fields[0] if required_scalar_fields else None %}
+{#- Safe values for field names the LLM validator will constrain (per validation_logic.txt) -#}
+{% set _auth_enum_defaults = {'role': 'admin', 'type': 'standard', 'status': 'active', 'category': 'general', 'state': 'active'} %}
+{% set _auth_username_like = ['username', 'handle', 'login', 'nickname', 'screenname', 'screen_name'] %}
 {% if update_field %}
     if {{ auth_entity.name_lower }}1_id and token1:
+{# Choose an update value that passes the LLM-generated Zod validator for this field #}
+{% if update_field.is_enum %}
+        _auth_update_val = "{{ update_field.enum_values[0] }}"
+{% elif update_field.name in _auth_enum_defaults %}
+        _auth_update_val = "{{ _auth_enum_defaults[update_field.name] }}"
+{% elif update_field.name in _auth_username_like %}
+        _auth_update_val = "updated_{{ auth_entity.name_lower }}_01"
+{% elif 'slug' in update_field.name.lower() %}
+        _auth_update_val = "updated-{{ auth_entity.name_lower }}-01"
+{% else %}
+        _auth_update_val = "Updated {{ auth_entity.name }}"
+{% endif %}
         resp = ctx.req("PUT", "/api/{{ auth_entity.name_plural }}/" + str({{ auth_entity.name_lower }}1_id),
                        token=token1,
-                       body={"{{ update_field.name }}": "Updated {{ auth_entity.name }} Value"})
+                       body={"{{ update_field.name }}": _auth_update_val})
         if ctx.assert_status(resp, 200, f"PUT /api/{{ auth_entity.name_plural }}/{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}} by self → 200"):
             data = ctx.safe_json(resp)
-            if data.get("{{ update_field.name }}") == "Updated {{ auth_entity.name }} Value":
+            if data.get("{{ update_field.name }}") == _auth_update_val:
                 ctx.ok("{{ update_field.name }} update persisted correctly")
             else:
                 ctx.fail(f"{{ update_field.name }} not updated: got {data.get('{{ update_field.name }}')!r}")

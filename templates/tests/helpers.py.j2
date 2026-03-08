@@ -36,6 +36,7 @@ class TestContext:
         self.pass_count = 0
         self.fail_count = 0
         self.warn_count = 0
+        self.skip_count = 0
 
     # ------------------------------------------------------------------
     # Logging
@@ -58,6 +59,11 @@ class TestContext:
         """Log a security warning (does NOT count as a failure)."""
         self.warn_count += 1
         print(f"  ⚠️   {msg}")
+
+    def skip(self, msg: str) -> None:
+        """Log a skipped test (prerequisite state missing — does NOT count as fail)."""
+        self.skip_count += 1
+        print(f"  ⏭️   SKIP  {msg}")
 
     # ------------------------------------------------------------------
     # HTTP helpers

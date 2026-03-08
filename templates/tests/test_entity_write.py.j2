@@ -85,6 +85,20 @@ def run(ctx: TestContext) -> None:
     4. Optional string / number / enum (same priority order)
    This avoids accidentally using a field whose LLM-generated Zod validator
    enforces enum or other constraints that the template doesn't know about. -#}
+{#- Field names the validation LLM will infer as enums (per validation_logic.txt heuristics),
+    mapped to a safe value that would pass the inferred z.enum([...]) constraint. -#}
+{% set _enum_like_defaults = {
+    'role': 'admin',
+    'type': 'standard',
+    'status': 'active',
+    'category': 'general',
+    'state': 'active',
+    'kind': 'standard',
+    'mode': 'normal',
+    'tier': 'basic',
+    'level': 'beginner',
+    'priority': 'medium'
+} %}
 {% set _req_str  = required_scalar_fields | selectattr("ts_type", "equalto", "string") | rejectattr("is_enum", "equalto", true) | list %}
 {% set _req_num  = required_scalar_fields | selectattr("ts_type", "equalto", "number") | list %}
 {% set _req_enum = required_scalar_fields | selectattr("is_enum",  "equalto", true)    | list %}
@@ -98,6 +112,12 @@ def run(ctx: TestContext) -> None:
     if {{ entity.name_lower }}1_id and token1:
 {% if _update_field.is_enum %}
         _update_val: str | int = "{{ _update_field.enum_values[0] }}"
+{% elif _update_field.name in _enum_like_defaults %}
+        _update_val: str | int = "{{ _enum_like_defaults[_update_field.name] }}"
+{% elif 'slug' in _update_field.name.lower() %}
+        _update_val: str | int = "updated-{{ entity.name_lower }}"
+{% elif 'username' in _update_field.name.lower() or 'handle' in _update_field.name.lower() %}
+        _update_val: str | int = "updated_{{ entity.name_lower }}"
 {% elif _update_field.ts_type == "string" %}
         _update_val: str | int = "Updated {{ entity.name }}"
 {% else %}
@@ -113,6 +133,8 @@ def run(ctx: TestContext) -> None:
                 ctx.ok("Updated '{{ _update_field.name }}' returned correctly")
             else:
                 ctx.fail("Updated '{{ _update_field.name }}' mismatch in response")
+    else:
+        ctx.skip("PUT /api/{{ entity.name_plural }}/:id by owner — seed ID or token not available")
 {% else %}
     # {{ section_num }}-update  No updatable scalar fields — skipping happy-path PUT test
 {% endif %}
@@ -124,6 +146,8 @@ def run(ctx: TestContext) -> None:
         ctx.assert_status(resp, 401,
                           f"PUT /api/{{ entity.name_plural }}/{{"{"}}{{ entity.name_lower }}1_id{{"}"}} without auth → 401",
                           auth_fail=True)
+    else:
+        ctx.skip("PUT /api/{{ entity.name_plural }}/:id without auth — seed ID not available")
 
 {% if owner_fk_field %}
     # {{ section_num }}-owner  PUT by non-owner → 403
@@ -134,6 +158,8 @@ def run(ctx: TestContext) -> None:
         ctx.assert_status(resp, 403,
                           f"PUT /api/{{ entity.name_plural }}/{{"{"}}{{ entity.name_lower }}1_id{{"}"}} by non-owner → 403",
                           auth_fail=True)
+    else:
+        ctx.skip("PUT /api/{{ entity.name_plural }}/:id by non-owner — seed ID or token2 not available")
 {% endif %}
 
     # {{ section_num }}-notfound  PUT non-existent → 404
@@ -142,6 +168,8 @@ def run(ctx: TestContext) -> None:
         resp = ctx.req("PUT", "/api/{{ entity.name_plural }}/9999999", token=token1,
                        body={"title": "Ghost update"})
         ctx.assert_status(resp, 404, "PUT /api/{{ entity.name_plural }}/9999999 (non-existent) → 404")
+    else:
+        ctx.skip("PUT /api/{{ entity.name_plural }}/9999999 — token not available")
 {% endif %}
 
     # {{ section_num }}-delete-noauth  DELETE without auth → 401
@@ -150,6 +178,8 @@ def run(ctx: TestContext) -> None:
         ctx.assert_status(resp, 401,
                           f"DELETE /api/{{ entity.name_plural }}/{{"{"}}{{ entity.name_lower }}2_id{{"}"}} without auth → 401",
                           auth_fail=True)
+    else:
+        ctx.skip("DELETE /api/{{ entity.name_plural }}/:id without auth — seed ID2 not available")
 
 {% if owner_fk_field %}
     # {{ section_num }}-delete-nonowner  DELETE by non-owner → 403
@@ -159,6 +189,8 @@ def run(ctx: TestContext) -> None:
         ctx.assert_status(resp, 403,
                           f"DELETE /api/{{ entity.name_plural }}/{{"{"}}{{ entity.name_lower }}2_id{{"}"}} by non-owner → 403",
                           auth_fail=True)
+    else:
+        ctx.skip("DELETE /api/{{ entity.name_plural }}/:id by non-owner — seed ID2 or token2 not available")
 {% endif %}
 
     # {{ section_num }}-delete-owner  DELETE by owner → 204
@@ -167,6 +199,8 @@ def run(ctx: TestContext) -> None:
         resp = ctx.req("DELETE", "/api/{{ entity.name_plural }}/" + str({{ entity.name_lower }}2_id), token=token1)
         if ctx.assert_status(resp, 204, f"DELETE /api/{{ entity.name_plural }}/{{"{"}}{{ entity.name_lower }}2_id{{"}"}} by owner → 204"):
             ctx.state["{{ entity.name_lower }}2_deleted"] = True
+    else:
+        ctx.skip("DELETE /api/{{ entity.name_plural }}/:id by owner — seed ID2 or token not available")
 
     # {{ section_num }}-get-deleted  GET after delete → 404
     if {{ entity.name_lower }}2_id and ctx.state.get("{{ entity.name_lower }}2_deleted"):
@@ -178,4 +212,6 @@ def run(ctx: TestContext) -> None:
     if token1:
         resp = ctx.req("DELETE", "/api/{{ entity.name_plural }}/9999999", token=token1)
         ctx.assert_status(resp, 404, "DELETE /api/{{ entity.name_plural }}/9999999 (non-existent) → 404")
+    else:
+        ctx.skip("DELETE /api/{{ entity.name_plural }}/9999999 — token not available")
 {% endif %}

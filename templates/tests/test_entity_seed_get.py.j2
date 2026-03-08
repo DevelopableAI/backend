@@ -103,6 +103,8 @@ def run(ctx: TestContext) -> None:
                 ctx.ok("{{ entity.name }} id matches requested id")
             else:
                 ctx.fail(f"{{ entity.name }} id mismatch: {data.get('id')} vs {{"{"}}{{ entity.name_lower }}1_id{{"}"}}")
+    else:
+        ctx.skip("GET /api/{{ entity.name_plural }}/:id — seed ID not available (seed may have failed)")
 
     # {{ section_num }}-4  Non-existent → 404
     resp = ctx.req("GET", "/api/{{ entity.name_plural }}/9999999")

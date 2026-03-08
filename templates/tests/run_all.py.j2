@@ -64,21 +64,27 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Final summary
     # ------------------------------------------------------------------
-    total = ctx.pass_count + ctx.fail_count
+    total = ctx.pass_count + ctx.fail_count + ctx.skip_count
     print(f"\n{'═' * 64}")
     print(f"  FINAL RESULTS")
     print(f"{'═' * 64}")
     print(f"  ✅  Passed   : {ctx.pass_count}")
     print(f"  ❌  Failed   : {ctx.fail_count}")
+    print(f"  ⏭️   Skipped  : {ctx.skip_count}")
     print(f"  ⚠️   Warnings : {ctx.warn_count}")
-    print(f"  Total tests  : {total}")
+    print(f"  Total        : {total}  (passed + failed + skipped)")
     print(f"{'═' * 64}")
 
     if ctx.fail_count > 0:
         print(f"\n  {ctx.fail_count} test(s) FAILED. Review the ❌ / ⛔️ entries above.")
+        if ctx.skip_count > 0:
+            print(f"  {ctx.skip_count} test(s) were skipped due to missing prerequisite state.")
         sys.exit(1)
     else:
-        print(f"\n  All {total} tests passed! 🎉")
+        executed = ctx.pass_count + ctx.fail_count
+        print(f"\n  All {executed} executed tests passed! 🎉")
+        if ctx.skip_count > 0:
+            print(f"  {ctx.skip_count} test(s) were skipped (prerequisite data not available).")
         if ctx.warn_count > 0:
             print(f"  Review the {ctx.warn_count} ⚠️  security warning(s) above.")
 

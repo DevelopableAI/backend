@@ -19,6 +19,14 @@ def run(ctx: TestContext) -> None:
     {{ auth_entity.name_lower if auth_entity else 'user' }}1_id = ctx.state.get("{{ auth_entity.name_lower if auth_entity else 'user' }}1_id")
 {% endif %}
 
+    # Resolve canonical create path — replace :id placeholder with actual parent ID from state
+{% if primary_parent_entity and ':id' in canonical_create_path %}
+    _parent_id = ctx.state.get("{{ primary_parent_entity.name_lower }}1_id")
+    _create_path = "{{ canonical_create_path }}".replace(":id", str(_parent_id) if _parent_id else "0")
+{% else %}
+    _create_path = "{{ canonical_create_path }}"
+{% endif %}
+
 {% set string_fields = required_scalar_fields | selectattr("ts_type", "equalto", "string") | list %}
 {% set first_str = string_fields[0] if string_fields else required_scalar_fields[0] if required_scalar_fields else None %}
 
@@ -26,7 +34,7 @@ def run(ctx: TestContext) -> None:
     # {{ section_num }}-1  Very long {{ first_str.name }} (300 chars) — should be rejected or truncated
     long_value = "A" * 300
     if token1:
-        resp = ctx.req("POST", "{{ canonical_create_path }}", token=token1,
+        resp = ctx.req("POST", _create_path, token=token1,
                        body={
                            "{{ first_str.name }}": long_value,
 {% for f in required_scalar_fields if f.name != first_str.name %}
@@ -46,7 +54,7 @@ def run(ctx: TestContext) -> None:
     # {{ section_num }}-2  Very long {{ string_fields[1].name }} (15 000 chars)
     long_content = "C" * 15_000
     if token1:
-        resp = ctx.req("POST", "{{ canonical_create_path }}", token=token1,
+        resp = ctx.req("POST", _create_path, token=token1,
                        body={
                            "{{ string_fields[1].name }}": long_content,
 {% for f in required_scalar_fields if f.name != string_fields[1].name %}
@@ -66,7 +74,7 @@ def run(ctx: TestContext) -> None:
     # {{ section_num }}-3  XSS payload in content — stored verbatim (escaping is frontend responsibility)
     xss_payload = '<script>alert("xss")</script>'
     if token1:
-        resp = ctx.req("POST", "{{ canonical_create_path }}", token=token1,
+        resp = ctx.req("POST", _create_path, token=token1,
                        body={
                            "{{ first_str.name }}": "XSS Test",
 {% if string_fields | length > 1 %}
@@ -106,30 +114,50 @@ def run(ctx: TestContext) -> None:
         ctx.warn(f"SQL injection in path segment → unexpected HTTP {resp.status_code}")
 
 {% if first_str %}
+{# Find the first string field across ALL string fields that is not format-restricted.
+   This is the field that will receive emoji in the body AND be verified in the check. #}
+{% set ns = namespace(emoji_check_field=None) %}
+{% for f in string_fields %}
+{% if ns.emoji_check_field is none and
+      'slug' not in f.name.lower() and
+      'url' not in f.name.lower() and
+      f.name.lower() != 'website' and
+      'username' not in f.name.lower() and
+      'handle' not in f.name.lower() %}
+{% set ns.emoji_check_field = f.name %}
+{% endif %}
+{% endfor %}
     # {{ section_num }}-6  Unicode / emoji — should round-trip correctly
     if token1:
-        resp = ctx.req("POST", "{{ canonical_create_path }}", token=token1,
+        resp = ctx.req("POST", _create_path, token=token1,
                        body={
-                           "{{ first_str.name }}": "Unicode Test 🌍",
-{% if string_fields | length > 1 %}
-                           "{{ string_fields[1].name }}": "Emoji content: 🚀✅❌⚠️",
-{% endif %}
-{% for f in required_scalar_fields if f.name != first_str.name and (string_fields | length <= 1 or f.name != string_fields[1].name) %}
+{# Each required field gets a format-safe value; the first unrestricted field gets emoji. #}
+{% for f in required_scalar_fields %}
+{% if f.name == ns.emoji_check_field %}
+                           "{{ f.name }}": "Unicode Test 🌍🚀",
+{% elif 'slug' in f.name.lower() %}
+                           "{{ f.name }}": "unicode-test-slug",
+{% elif 'url' in f.name.lower() or f.name.lower() == 'website' %}
+                           "{{ f.name }}": "https://unicode-test.example.com",
+{% elif 'username' in f.name.lower() or 'handle' in f.name.lower() %}
+                           "{{ f.name }}": "unicode_test_user",
+{% else %}
                            "{{ f.name }}": "Normal value",
+{% endif %}
 {% endfor %}
                        })
         if ctx.assert_status(resp, 201, "POST {{ entity.name_lower }} with Unicode/emoji → 201"):
             data = ctx.safe_json(resp)
-            content_val = data.get("{{ string_fields[1].name if string_fields | length > 1 else first_str.name }}", "")
-            if "🚀" in content_val or "🌍" in content_val:
+            content_val = data.get("{{ ns.emoji_check_field }}", "")
+            if "🌍" in content_val or "🚀" in content_val:
                 ctx.ok("Unicode/emoji stored and returned correctly")
             else:
-                ctx.fail("Emoji not present in returned response")
+                ctx.fail("Emoji not present in returned response (field: {{ ns.emoji_check_field }})")
             ctx.state["unicode_{{ entity.name_lower }}_id"] = data.get("id")
 
     # {{ section_num }}-7  Empty string {{ first_str.name }} → 400 (validation)
     if token1:
-        resp = ctx.req("POST", "{{ canonical_create_path }}", token=token1,
+        resp = ctx.req("POST", _create_path, token=token1,
                        body={
                            "{{ first_str.name }}": "",
 {% for f in required_scalar_fields if f.name != first_str.name %}
@@ -164,7 +192,7 @@ def run(ctx: TestContext) -> None:
 
     # {{ section_num }}-10  Content-Type: text/plain body → 400 or 415
     if token1:
-        url = f"{ctx.base_url}{{ canonical_create_path }}"
+        url = f"{ctx.base_url}{_create_path}"
         print(f"  🚀  POST {{ canonical_create_path }} (Content-Type: text/plain)")
         try:
             resp = _req.post(
@@ -185,7 +213,7 @@ def run(ctx: TestContext) -> None:
 
     # {{ section_num }}-11  No body at all → 400
     if token1:
-        url = f"{ctx.base_url}{{ canonical_create_path }}"
+        url = f"{ctx.base_url}{_create_path}"
         print("  🚀  POST {{ canonical_create_path }} (no body at all)")
         try:
             resp = _req.post(
