@@ -3,8 +3,9 @@ Generate Python test code for validating entity creation via a REST API (missing
 The placeholder comment describes the entity, its canonical create path, required fields, and available state variables.
 
 Rules:
+- CRITICAL: You MUST only generate tests for fields that are EXPLICITLY listed in the required fields comment block. Do NOT add tests for any other field, even if domain knowledge suggests it should be required. Fields with database defaults (e.g. status, total) are intentionally optional in the API.
 - If the required fields list is EMPTY, output exactly one line: `# (no required fields to validate)`
-  Do NOT output any other code, guards, or tests.
+  Do NOT output any other code, guards, or tests. This is a hard rule — an empty list means zero tests.
 - Use realistic field values matching the field name's implied format: "email" fields → "test@example.com"; "url"/"Url" fields → "https://example.com"; "title" fields → "Test Title"; "content"/"body" fields → "Test content here"; "name" fields → "Test Name"; other strings → "Test Value"
 - Otherwise, for EACH required field listed: generate one test that omits only that field and expects HTTP 400
   - Use `ctx.assert_status(resp, 400, "POST <entity> missing <field> → 400")`
