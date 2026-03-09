@@ -227,6 +227,11 @@ class TestPlanner:
                 child_rctx = entity_route_ctx.get(child_entity["name"], {})
                 child_owner_fk = nested_route.get("child_owner_fk_field")
                 child_req_scalar, child_opt_scalar = self._split_scalar_fields(child_entity, auth_entity_name)
+                child_secondary_fk = self._get_secondary_fk_fields(
+                    child_entity, entities, auth_entity_name,
+                    nested_route.get("fk_field"),
+                    child_owner_fk,
+                )
 
                 modules.append({
                     "path": f"test_{num:02d}_nested_{auth_entity['name_lower']}_{nested_route['relation_name']}.py",
@@ -240,6 +245,7 @@ class TestPlanner:
                         "child_owner_fk_field": child_owner_fk,
                         "child_required_scalar_fields": child_req_scalar,
                         "child_optional_scalar_fields": child_opt_scalar,
+                        "child_secondary_fk_fields": child_secondary_fk,
                     },
                     "needs_llm": True,
                     "llm_task": "seed_data",
@@ -261,6 +267,11 @@ class TestPlanner:
                     continue
                 child_req_scalar, child_opt_scalar = self._split_scalar_fields(child_entity, auth_entity_name)
                 child_owner_fk = nested_route.get("child_owner_fk_field")
+                child_secondary_fk = self._get_secondary_fk_fields(
+                    child_entity, entities, auth_entity_name,
+                    nested_route.get("fk_field"),
+                    child_owner_fk,
+                )
 
                 modules.append({
                     "path": f"test_{num:02d}_nested_{entity['name_lower']}_{nested_route['relation_name']}.py",
@@ -275,6 +286,7 @@ class TestPlanner:
                         "child_owner_fk_field": child_owner_fk,
                         "child_required_scalar_fields": child_req_scalar,
                         "child_optional_scalar_fields": child_opt_scalar,
+                        "child_secondary_fk_fields": child_secondary_fk,
                     },
                     "needs_llm": True,
                     "llm_task": "seed_data",
