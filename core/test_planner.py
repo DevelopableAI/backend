@@ -138,6 +138,11 @@ class TestPlanner:
                 self._resolve_canonical_create(entity, entities, auth_entity, auth_entity_name)
             )
 
+            # Secondary FK fields: non-primary-parent, non-owner FKs that must be in the request body
+            secondary_fk_fields = self._get_secondary_fk_fields(
+                entity, entities, auth_entity_name, primary_parent_fk_field, owner_fk_field
+            )
+
             # seed_get
             modules.append({
                 "path": f"test_{num:02d}_{entity['name_plural']}_seed_get.py",
@@ -155,6 +160,7 @@ class TestPlanner:
                     "required_scalar_fields": required_scalar,
                     "optional_scalar_fields": optional_scalar,
                     "all_fk_fields": all_fk_fields,
+                    "secondary_fk_fields": secondary_fk_fields,
                 },
                 "needs_llm": True,
                 "llm_task": "seed_data",
@@ -180,6 +186,7 @@ class TestPlanner:
                     "required_scalar_fields": required_scalar,
                     "optional_scalar_fields": optional_scalar,
                     "all_fk_fields": all_fk_fields,
+                    "secondary_fk_fields": secondary_fk_fields,
                     "primary_parent_entity": primary_parent_entity,
                     "primary_parent_fk_field": primary_parent_fk_field,
                 },
@@ -220,6 +227,11 @@ class TestPlanner:
                 child_rctx = entity_route_ctx.get(child_entity["name"], {})
                 child_owner_fk = nested_route.get("child_owner_fk_field")
                 child_req_scalar, child_opt_scalar = self._split_scalar_fields(child_entity, auth_entity_name)
+                child_secondary_fk = self._get_secondary_fk_fields(
+                    child_entity, entities, auth_entity_name,
+                    nested_route.get("fk_field"),
+                    child_owner_fk,
+                )
 
                 modules.append({
                     "path": f"test_{num:02d}_nested_{auth_entity['name_lower']}_{nested_route['relation_name']}.py",
@@ -233,6 +245,7 @@ class TestPlanner:
                         "child_owner_fk_field": child_owner_fk,
                         "child_required_scalar_fields": child_req_scalar,
                         "child_optional_scalar_fields": child_opt_scalar,
+                        "child_secondary_fk_fields": child_secondary_fk,
                     },
                     "needs_llm": True,
                     "llm_task": "seed_data",
@@ -254,6 +267,11 @@ class TestPlanner:
                     continue
                 child_req_scalar, child_opt_scalar = self._split_scalar_fields(child_entity, auth_entity_name)
                 child_owner_fk = nested_route.get("child_owner_fk_field")
+                child_secondary_fk = self._get_secondary_fk_fields(
+                    child_entity, entities, auth_entity_name,
+                    nested_route.get("fk_field"),
+                    child_owner_fk,
+                )
 
                 modules.append({
                     "path": f"test_{num:02d}_nested_{entity['name_lower']}_{nested_route['relation_name']}.py",
@@ -268,6 +286,7 @@ class TestPlanner:
                         "child_owner_fk_field": child_owner_fk,
                         "child_required_scalar_fields": child_req_scalar,
                         "child_optional_scalar_fields": child_opt_scalar,
+                        "child_secondary_fk_fields": child_secondary_fk,
                     },
                     "needs_llm": True,
                     "llm_task": "seed_data",
@@ -449,6 +468,43 @@ class TestPlanner:
             for rel in entity.get("relations", [])
             if rel.get("fk_field") and rel["type"] == "many_to_one"
         ]
+
+    def _get_secondary_fk_fields(
+        self,
+        entity: dict,
+        all_entities: list[dict],
+        auth_entity_name: str | None,
+        primary_parent_fk_field: str | None,
+        owner_fk_field: str | None,
+    ) -> list[dict]:
+        """
+        Returns FK fields that are neither the primary parent FK (URL-injected)
+        nor the owner FK (JWT-injected).  These must be included in the request
+        body by the test and their values sourced from ctx.state.
+
+        Example: for OrderItem under Order, orderId is the primary parent FK and
+        is URL-injected, while productId points to Product and must come from the body.
+        """
+        excluded = {f for f in [primary_parent_fk_field, owner_fk_field] if f}
+        result = []
+        for rel in entity.get("relations", []):
+            if rel["type"] != "many_to_one" or not rel.get("fk_field"):
+                continue
+            fk = rel["fk_field"]
+            if fk in excluded:
+                continue
+            if rel["related_entity"] == auth_entity_name:
+                continue  # belt-and-suspenders: skip direct auth entity FKs
+            related_name = rel["related_entity"]
+            related_entity = next((e for e in all_entities if e["name"] == related_name), None)
+            if not related_entity:
+                continue
+            result.append({
+                "fk_field": fk,
+                "related_entity_lower": related_entity["name_lower"],
+                "state_key": f"{related_entity['name_lower']}1_id",
+            })
+        return result
 
     def _find_login_field(self, auth_entity: dict) -> dict | None:
         """Find the field used for login (prefer 'email', then first unique field)."""

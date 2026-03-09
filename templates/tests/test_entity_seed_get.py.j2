@@ -11,6 +11,9 @@ Requires ctx.state:
 {% if primary_parent_entity and primary_parent_entity.name != (auth_entity.name if auth_entity else '') %}
   {{ primary_parent_entity.name_lower }}1_id
 {% endif %}
+{% for sfk in secondary_fk_fields %}
+  {{ sfk.state_key }} (for {{ sfk.fk_field }})
+{% endfor %}
 """
 
 from helpers import TestContext, section
@@ -28,6 +31,9 @@ def run(ctx: TestContext) -> None:
 {% if primary_parent_entity and primary_parent_entity.name != (auth_entity.name if auth_entity else '') %}
     {{ primary_parent_entity.name_lower }}1_id = ctx.state.get("{{ primary_parent_entity.name_lower }}1_id")
 {% endif %}
+{% for sfk in secondary_fk_fields %}
+    {{ sfk.related_entity_lower }}1_id = ctx.state.get("{{ sfk.state_key }}")
+{% endfor %}
 
     # --- Seed: create {{ entity.name_plural }} ---
 
@@ -45,11 +51,18 @@ def run(ctx: TestContext) -> None:
 #   {{ f.name }}: {{ f.ts_type }} (optional)
 {% endfor %}
 #
-# Server-injected FK fields (omit from body):
+# Server-injected FK fields (omit from body — injected from JWT or URL param):
 {% for fk in all_fk_fields %}
 #   {{ fk }}
 {% endfor %}
 #
+{% if secondary_fk_fields %}
+# IMPORTANT — Required FK fields that MUST be included in the request body (NOT server-injected):
+{% for sfk in secondary_fk_fields %}
+#   {{ sfk.fk_field }}: use {{ sfk.related_entity_lower }}1_id from ctx.state — include in EVERY seed body
+{% endfor %}
+#
+{% endif %}
 # State variables to populate:
 #   ctx.state["{{ entity.name_lower }}1_id"] — first created (use token1)
 #   ctx.state["{{ entity.name_lower }}2_id"] — second created (use token1, include optional fields)
@@ -71,6 +84,9 @@ def run(ctx: TestContext) -> None:
 {% if primary_parent_entity and primary_parent_entity.name != (auth_entity.name if auth_entity else '') %}
 #   {{ primary_parent_entity.name_lower }}1_id
 {% endif %}
+{% for sfk in secondary_fk_fields %}
+#   {{ sfk.related_entity_lower }}1_id  (use as value for {{ sfk.fk_field }} in body)
+{% endfor %}
 /* LLM_SECTION_END */
 
     # --- GET tests ---

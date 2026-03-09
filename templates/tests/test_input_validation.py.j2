@@ -10,6 +10,16 @@ Populates ctx.state: long_title_{{ entity.name_lower }}_id, xss_{{ entity.name_l
 import requests as _req
 from helpers import TestContext, section
 
+{#- Returns a Python literal that is type-safe for field f.
+    Used for non-targeted "filler" body fields so number/boolean fields
+    don't receive a string and trigger a type-validation error. -#}
+{%- macro nval(f) -%}
+{%- if f.ts_type == "number" -%}9.99
+{%- elif f.ts_type == "boolean" -%}True
+{%- else -%}"Normal value"
+{%- endif -%}
+{%- endmacro %}
+
 
 def run(ctx: TestContext) -> None:
     section("{{ section_num }} · INPUT VALIDATION & EDGE CASES")
@@ -38,7 +48,7 @@ def run(ctx: TestContext) -> None:
                        body={
                            "{{ first_str.name }}": long_value,
 {% for f in required_scalar_fields if f.name != first_str.name %}
-                           "{{ f.name }}": "Normal content",
+                           "{{ f.name }}": {{ nval(f) }},
 {% endfor %}
                        })
         if resp.status_code in (400, 422):
@@ -58,7 +68,7 @@ def run(ctx: TestContext) -> None:
                        body={
                            "{{ string_fields[1].name }}": long_content,
 {% for f in required_scalar_fields if f.name != string_fields[1].name %}
-                           "{{ f.name }}": "Long content test",
+                           "{{ f.name }}": {{ nval(f) }},
 {% endfor %}
                        })
         if resp.status_code in (400, 422):
@@ -83,7 +93,7 @@ def run(ctx: TestContext) -> None:
                            "{{ first_str.name }}": xss_payload,
 {% endif %}
 {% for f in required_scalar_fields if f.name != first_str.name and (string_fields | length <= 1 or f.name != string_fields[1].name) %}
-                           "{{ f.name }}": "Normal value",
+                           "{{ f.name }}": {{ nval(f) }},
 {% endfor %}
                        })
         if resp.status_code == 201:
@@ -142,7 +152,7 @@ def run(ctx: TestContext) -> None:
 {% elif 'username' in f.name.lower() or 'handle' in f.name.lower() %}
                            "{{ f.name }}": "unicode_test_user",
 {% else %}
-                           "{{ f.name }}": "Normal value",
+                           "{{ f.name }}": {{ nval(f) }},
 {% endif %}
 {% endfor %}
                        })
@@ -161,7 +171,7 @@ def run(ctx: TestContext) -> None:
                        body={
                            "{{ first_str.name }}": "",
 {% for f in required_scalar_fields if f.name != first_str.name %}
-                           "{{ f.name }}": "Content with empty {{ first_str.name }}",
+                           "{{ f.name }}": {{ nval(f) }},
 {% endfor %}
                        })
         if resp.status_code == 400:
