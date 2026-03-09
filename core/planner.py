@@ -418,7 +418,7 @@ class Planner:
             child_owner_fk_field = child_owner_fk if child_owner_fk != fk_field else None
 
             # Non-auth parent FKs on the child entity
-            child_parent_fk_fields = self._get_parent_fk_fields(child_entity, auth_entity_name)
+            child_parent_fk_fields = self._get_parent_fk_fields(child_entity, all_entities, auth_entity_name)
             has_parent_fk_schema = len(child_parent_fk_fields) > 0
 
             # Use CreateNested only when THIS route's fk_field is a non-auth parent FK
