@@ -102,6 +102,10 @@ def run(ctx: TestContext) -> None:
 {% for f in child_required_scalar_fields %}
 {% if f.is_enum %}
                            "{{ f.name }}": "{{ f.enum_values[0] }}",
+{% elif f.ts_type == "number" %}
+                           "{{ f.name }}": 42,
+{% elif f.ts_type == "boolean" %}
+                           "{{ f.name }}": True,
 {% else %}
                            "{{ f.name }}": "Updated via direct PUT",
 {% endif %}
@@ -111,9 +115,17 @@ def run(ctx: TestContext) -> None:
                              f"PUT /api/{{ child_entity.name_plural }}/{{"{"}}nested_child_id{{"}"}} by owner → 200"):
             data = ctx.safe_json(resp)
 {% if child_required_scalar_fields %}
-{% set _f0 = child_required_scalar_fields[0] %}
-{% set _expected = _f0.enum_values[0] if _f0.is_enum else "Updated via direct PUT" %}
-            if data.get("{{ _f0.name }}") == "{{ _expected }}":
+{# Prefer a string field for the assertion so we can compare against a known string value. #}
+{% set _str_fields = child_required_scalar_fields | selectattr("ts_type", "equalto", "string") | rejectattr("is_enum", "equalto", true) | list %}
+{% set _f0 = _str_fields[0] if _str_fields else child_required_scalar_fields[0] %}
+{% if _f0.is_enum %}
+{% set _expected_val = '"' + _f0.enum_values[0] + '"' %}
+{% elif _f0.ts_type == "number" %}
+{% set _expected_val = "42" %}
+{% else %}
+{% set _expected_val = '"Updated via direct PUT"' %}
+{% endif %}
+            if data.get("{{ _f0.name }}") == {{ _expected_val }}:
                 ctx.ok("{{ _f0.name }} update via direct PUT persisted correctly")
             else:
                 ctx.fail(f"{{ _f0.name }} not updated: {data.get('{{ _f0.name }}')!r}")
@@ -125,7 +137,15 @@ def run(ctx: TestContext) -> None:
                        token=token2,
                        body={
 {% for f in child_required_scalar_fields %}
+{% if f.is_enum %}
+                           "{{ f.name }}": "{{ f.enum_values[0] }}",
+{% elif f.ts_type == "number" %}
+                           "{{ f.name }}": 42,
+{% elif f.ts_type == "boolean" %}
+                           "{{ f.name }}": True,
+{% else %}
                            "{{ f.name }}": "Hijack attempt",
+{% endif %}
 {% endfor %}
                        })
         if resp.status_code in (403, 404):
