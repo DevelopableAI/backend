@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
+      JWT_SECRET: ci-only-jwt-secret-not-for-production
+      PORT: 3000
+      NODE_ENV: test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Push schema to test database
+        # db push is used instead of migrate deploy because there are no
+        # committed migration files in a freshly generated project.
+        run: npx prisma db push --accept-data-loss
+
+      - name: Start API server in background
+        run: npm run dev > /tmp/api.log 2>&1 &
+
+      - name: Wait for API to be ready
+        run: |
+          echo "Waiting for API to start on port $PORT..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:${PORT}/health > /dev/null; then
+              echo "API is ready after ${i} attempts."
+              exit 0
+            fi
+            echo "Attempt ${i}/30 — sleeping 2s..."
+            sleep 2
+          done
+          echo "API did not start in time. Server log:"
+          cat /tmp/api.log
+          exit 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python test dependencies
+        run: pip install requests
+
+      - name: Run integration tests
+        # Only runs if the test suite was generated into tests/
+        if: ${{ hashFiles('tests/run_all.py') != '' }}
+        run: python tests/run_all.py
+
+      - name: Print server log on failure
+        if: failure()
+        run: cat /tmp/api.log || true
