@@ -28,19 +28,21 @@ The platform is modelled as a **Backend Engineer** (`main.py`) that coordinates 
                     │  (orchestrates all agents)   │
                     └────────────┬────────────────┘
                                  │
-               ┌─────────────────┴──────────────────┐
-               │                                     │
-    ┌──────────▼──────────┐             ┌────────────▼────────────┐
-    │   Developer Agent   │             │     Tester Agent        │
-    │  agents/developer.py│             │  agents/tester.py       │
-    │                     │             │                         │
-    │  Planner + Assembler│  api_plan   │ TestPlanner + Assembler │
-    │  → Express API      ├────────────►│ → Python test suite     │
-    └─────────────────────┘             └─────────────────────────┘
+          ┌──────────────────────┼──────────────────────┐
+          │                      │                       │
+┌─────────▼───────────┐ ┌────────▼────────────┐ ┌───────▼──────────────────┐
+│   Developer Agent   │ │   Tester Agent      │ │  Version Control Agent   │
+│  agents/developer.py│ │  agents/tester.py   │ │  agents/version_control.py│
+│                     │ │                     │ │                          │
+│  Planner + Assembler│ │ TestPlanner +       │ │  VCPlanner + Assembler   │
+│  → Express API      ├─► Assembler           │ │  → Dockerfile,           │
+└─────────────────────┘ │ → Python test suite │ │    docker-compose.yml,   │
+        api_plan ───────►                     │ │    GitHub Actions CI     │
+                        └─────────────────────┘ │  → git init + push       │
+                                                └──────────────────────────┘
 ```
 
 **Agents planned but not yet implemented:**
-- **Version Control Agent** — manages git branching, commits, and pull requests
 - **Deployment Agent** — sets up and maintains CI/CD pipelines to deploy the backend artifact
 
 ### Agent Responsibilities
@@ -50,6 +52,7 @@ The platform is modelled as a **Backend Engineer** (`main.py`) that coordinates 
 | Backend Engineer | `main.py` | CLI entry point; parses schema, loads rules, coordinates agents |
 | Developer | `agents/developer.py` | Generates Express + TypeScript API (Planner → Assembler) |
 | Tester | `agents/tester.py` | Generates Python integration test suite (TestPlanner → Assembler) |
+| Version Control | `agents/version_control.py` | Generates infra files (Dockerfile, Compose, CI), initialises git, creates GitHub repo, pushes |
 
 ---
 
@@ -67,13 +70,15 @@ backend/
 │
 ├── agents/                          # Agent layer — each agent owns its generation domain
 │   ├── developer.py                 # Developer agent: Express API (wraps Planner + Assembler)
-│   └── tester.py                    # Tester agent: Python test suite (wraps TestPlanner + Assembler)
+│   ├── tester.py                    # Tester agent: Python test suite (wraps TestPlanner + Assembler)
+│   └── version_control.py           # Version Control agent: infra files, git init, GitHub push
 │
 ├── core/                            # Shared infrastructure used by agents
 │   ├── parser.py                    # PrismaParser: schema.prisma → structured spec dict
 │   ├── planner.py                   # Planner: spec → API file plan (used by Developer)
 │   ├── test_planner.py              # TestPlanner: spec + api_plan → test file plan (used by Tester)
-│   ├── assembler.py                 # Assembler: orchestrates TemplateGenerator + LLMGenerator
+│   ├── vc_planner.py                # VCPlanner: spec → infra file plan (used by Version Control)
+│   ├── assembler.py                 # Assembler: orchestrates TemplateGenerator + LLMGenerator; git-diff aware
 │   └── rules_parser.py              # BusinessRulesParser: merges YAML constraints into spec
 │
 ├── generators/
@@ -100,7 +105,12 @@ backend/
 │           ├── pagination.ts.j2     # parsePagination + buildPaginatedResponse helpers
 │           ├── prisma.ts.j2         # Singleton PrismaClient export
 │           ├── crypto.ts.j2         # bcrypt hashValue / compareValue helpers
-│           └── env.example.j2       # .env.example with all required environment variables
+│           ├── env.example.j2       # .env.example with all required environment variables
+│           ├── Dockerfile.j2        # Multi-stage Node.js 20 production container
+│           ├── docker-compose.yml.j2 # Local dev stack: PostgreSQL, pgAdmin, API service
+│           └── .github/
+│               └── workflows/
+│                   └── ci.yml.j2    # GitHub Actions: install, migrate, start API, run tests
 │   └── tests/                       # Jinja2 templates for the Python integration test suite
 │       ├── helpers.py.j2            # Shared HTTP client, auth helpers, state fixtures
 │       ├── run_all.py.j2            # Sequential test runner
@@ -160,9 +170,11 @@ Each artifact type has its own templates and a matching `prompts/express/<type>/
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...   # Required — Claude API key for LLM sections
+GITHUB_TOKEN=ghp_...           # Optional — GitHub PAT for --github publishing (or pass via CLI)
+GITHUB_USER=your-username      # Optional — GitHub username/org for --github publishing
 ```
 
-The `.env` file is git-ignored. The platform exits early if `ANTHROPIC_API_KEY` is missing.
+The `.env` file is git-ignored. The platform exits early if `ANTHROPIC_API_KEY` is missing. `GITHUB_TOKEN` and `GITHUB_USER` can alternatively be supplied interactively when `--github` is used.
 
 ---
 
@@ -180,15 +192,36 @@ python main.py path/to/schema.prisma --out ./output --tests-out ./tests
 
 # Skip LLM calls (uses placeholder Zod schemas — useful for fast iteration)
 python main.py path/to/schema.prisma --out ./output --no-llm
+
+# Generate, then publish to a new GitHub repository (prompts for token/user if not set)
+python main.py path/to/schema.prisma --out ./output --github
+
+# Full run: tests + GitHub push, private repo, skip LLM
+python main.py path/to/schema.prisma --out ./output --no-llm \
+  --github --github-token ghp_... --github-user myorg --github-repo my-api --private
+
+# Re-run after making manual edits — skip files you've modified, overwrite untouched files
+python main.py path/to/schema.prisma --out ./output --no-llm
+
+# Force-overwrite all files including user-modified ones
+python main.py path/to/schema.prisma --out ./output --no-llm --force
 ```
 
-After generation, follow the printed next steps:
+After generation without `--github`, follow the printed next steps:
 
 ```bash
 cd output
 npm install
 npx prisma migrate dev
 npm run dev
+```
+
+After `--github`, the repository is live and CI runs automatically. For local Docker development:
+
+```bash
+cd output
+cp .env.example .env   # fill in secrets
+docker-compose up
 ```
 
 ---
@@ -217,13 +250,29 @@ Backend Engineer (main.py)
      │               └─ LLMGenerator      → Fills /* LLM_SECTION_START */ … /* LLM_SECTION_END */
      │                                      markers via Claude API
      │
-     └─► Tester agent (agents/tester.py)  [optional, if --tests-out is set]
+     ├─► Tester agent (agents/tester.py)  [optional, if --tests-out is set or --github used]
+     │        │
+     │        ├─ TestPlanner (core/test_planner.py)
+     │        │    Produces a "test_plan" dict based on spec + api_plan
+     │        │
+     │        └─ Assembler (core/assembler.py)
+     │               Same Assembler, different templates and prompt_subdir="tests"
+     │
+     └─► Version Control agent (agents/version_control.py)  [optional, if --github is set]
               │
-              ├─ TestPlanner (core/test_planner.py)
-              │    Produces a "test_plan" dict based on spec + api_plan
+              ├─ VCPlanner (core/vc_planner.py)
+              │    Produces a "vc_plan" dict: Dockerfile, docker-compose.yml, .github/workflows/ci.yml
               │
-              └─ Assembler (core/assembler.py)
-                     Same Assembler, different templates and prompt_subdir="tests"
+              ├─ Assembler (core/assembler.py)
+              │    Renders infra templates (no LLM calls)
+              │
+              ├─ Writes .gitignore
+              │
+              ├─ git init → git add . → git commit → git branch -M main
+              │
+              ├─ GitHub API: POST /user/repos  →  creates repository
+              │
+              └─ git push -u origin main  →  triggers GitHub Actions CI
 ```
 
 ### LLM section mechanism
@@ -360,6 +409,10 @@ Key variables available in each template category:
 - `auth_entity` — the entity dict
 - `sensitive_fields` — list of fields with `is_sensitive: True`
 
+**Infra templates (Dockerfile, docker-compose, CI):**
+- `spec` — full spec dict
+- `project_name` — slug-safe name derived from the first entity (e.g. `"user-api"`); used for database naming in docker-compose
+
 ---
 
 ## Development Conventions
@@ -370,6 +423,9 @@ Key variables available in each template category:
 - **Prompt files are plain text** in `prompts/express/<task>.txt`; they describe the output rules and are prepended to the entity context before each LLM call
 - **`--no-llm` mode must always produce valid TypeScript** (with empty Zod objects as placeholders) so the template pipeline can be tested without API calls
 - **Tests in `tests/` run against the generated project** (a live Express server), not the generator itself; they are integration + security tests for the output
+- **Infra templates are fully static** — `Dockerfile.j2`, `docker-compose.yml.j2`, and `ci.yml.j2` contain no LLM sections; `VCPlanner` always sets `needs_llm: False` for them
+- **GitHub Actions expressions must be escaped** — wrap the entire CI template in `{% raw %} / {% endraw %}` to prevent Jinja2 from interpreting `${{ }}` as its own template syntax
+- **`--force` flag controls re-generation safety** — without it, the Assembler checks `git diff HEAD` before overwriting each file; files with local changes are skipped to preserve user edits
 
 ---
 
@@ -426,4 +482,6 @@ Key variables available in each template category:
 4. **No test suite for the generator itself** — only the generated projects are tested; consider adding pytest tests for `PrismaParser`, `Planner`, and template rendering
 5. **Synchronous Anthropic client** — `LLMGenerator` uses the blocking SDK client; for parallel generation wrap calls with `asyncio.to_thread` or switch to `anthropic.AsyncAnthropic`
 6. **No rate limiting or audit logging in generated output** — planned as next invariant layer
-7. **Version Control and Deployment agents not yet implemented** — placeholders for future development
+7. **GitHub token embedded in remote URL** — the VersionControl agent uses `https://<token>@github.com/...` to authenticate the push; the token may appear in `git remote -v` output inside the generated project
+8. **CI uses `prisma db push` not `migrate deploy`** — freshly generated projects have no committed migration files, so CI uses `db push --accept-data-loss`; projects that adopt proper migrations should update the workflow step
+9. **Deployment agent not yet implemented** — placeholder for future development
