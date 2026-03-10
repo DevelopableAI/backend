@@ -116,6 +116,13 @@ def main():
         "--private", action="store_true",
         help="Create the GitHub repository as private",
     )
+    parser.add_argument(
+        "--force", action="store_true",
+        help=(
+            "Overwrite all files, including ones you have modified since the last commit. "
+            "By default, re-runs skip files that differ from HEAD in the output git repo."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -142,7 +149,7 @@ def main():
 
     # ── Developer agent: generate the Express API ─────────────────────────────
     print(f"\n[Developer] Generating Express API into {out_dir}/...")
-    developer = Developer(out_dir=out_dir, use_llm=not args.no_llm)
+    developer = Developer(out_dir=out_dir, use_llm=not args.no_llm, force=args.force)
     api_plan = developer.generate(spec, env_values=env_values)
 
     print(f"\nDone. Your project is at {out_dir}/")
@@ -162,7 +169,7 @@ def main():
     if tests_out:
         tests_dir = Path(tests_out)
         print(f"\n[Tester] Generating integration test suite into {tests_dir}/...")
-        tester = Tester(tests_dir=tests_dir, use_llm=not args.no_llm)
+        tester = Tester(tests_dir=tests_dir, use_llm=not args.no_llm, force=args.force)
         tester.generate(spec, api_plan)
 
         print(f"\nTest suite at {tests_dir}/")

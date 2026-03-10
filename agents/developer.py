@@ -16,9 +16,9 @@ class Developer:
     Returns the file plan so downstream agents (e.g. Tester) can inspect what was generated.
     """
 
-    def __init__(self, out_dir: Path, use_llm: bool = True):
+    def __init__(self, out_dir: Path, use_llm: bool = True, force: bool = False):
         self.out_dir = out_dir
-        self.assembler = Assembler(out_dir=out_dir, use_llm=use_llm)
+        self.assembler = Assembler(out_dir=out_dir, use_llm=use_llm, force=force)
 
     def generate(
         self, spec: dict[str, Any], env_values: dict[str, str] | None = None

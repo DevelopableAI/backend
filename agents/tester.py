@@ -17,9 +17,9 @@ class Tester:
     and nested route descriptors into the correct test modules.
     """
 
-    def __init__(self, tests_dir: Path, use_llm: bool = True):
+    def __init__(self, tests_dir: Path, use_llm: bool = True, force: bool = False):
         self.tests_dir = tests_dir
-        self.assembler = Assembler(out_dir=tests_dir, use_llm=use_llm)
+        self.assembler = Assembler(out_dir=tests_dir, use_llm=use_llm, force=force)
 
     def generate(self, spec: dict[str, Any], api_plan: dict[str, Any]) -> dict[str, Any]:
         """
