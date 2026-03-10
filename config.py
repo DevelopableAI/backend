@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GITHUB_USER = os.getenv("GITHUB_USER", "")
 MODEL = "claude-sonnet-4-6"
 TEMPERATURE_LLM = 0.2
 
