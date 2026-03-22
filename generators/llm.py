@@ -163,7 +163,6 @@ class LLMGenerator(BaseGenerator):
             temperature=config.TEMPERATURE_LLM,
             system=system_content,
             messages=[{"role": "user", "content": user_content}],
-            betas=["prompt-caching-2024-07-31"],
         )
         self._record_usage(task, resolved_model, response.usage)
 
@@ -205,7 +204,6 @@ class LLMGenerator(BaseGenerator):
                     temperature=config.TEMPERATURE_LLM,
                     system=system_content,
                     messages=[{"role": "user", "content": retry_user_content}],
-                    betas=["prompt-caching-2024-07-31"],
                 )
                 self._record_usage(f"{task}:retry", resolved_model, retry_response.usage)
                 retry_raw = retry_response.content[0].text
