@@ -2,6 +2,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import config
 from generators.template import TemplateGenerator
 from generators.llm import LLMGenerator
 
@@ -12,7 +13,9 @@ class Assembler:
         self.use_llm = use_llm
         self.force = force
         self.template_gen = TemplateGenerator()
-        self.llm_gen = LLMGenerator() if use_llm else None
+        # Bypass the disk-level response cache when --force is set so every file
+        # is regenerated from the API, matching the user's explicit intent.
+        self.llm_gen = LLMGenerator(use_response_cache=not force) if use_llm else None
 
     def assemble(self, spec: dict[str, Any], plan: dict[str, Any], env_values: dict[str, str] | None = None):
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -60,12 +63,15 @@ class Assembler:
             entity = file_plan.get("llm_entity") or file_plan["context"].get("entity")
             task = file_plan.get("llm_task", "")
             prompt_subdir = file_plan.get("prompt_subdir", "express")
+            llm_model_key = file_plan.get("llm_model")
+            model = config.MODEL_FAST if llm_model_key == "fast" else None
             content = self.llm_gen.fill(
                 content=content,
                 task=task,
                 entity=entity,
                 spec=spec,
                 prompt_subdir=prompt_subdir,
+                model=model,
             )
 
         return content

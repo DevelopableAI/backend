@@ -8,6 +8,7 @@ from core.parser import PrismaParser
 from core.rules_parser import BusinessRulesParser
 from agents.developer import Developer
 from agents.tester import Tester
+from generators.llm import get_session_summary, reset_session
 
 
 def collect_env_values(env_vars: list[str]) -> dict[str, str]:
@@ -197,6 +198,34 @@ def main():
         print(f"  cd {out_dir}")
         print("  cp .env.example .env  # fill in your values")
         print("  docker compose up")
+
+    # ── LLM usage summary ──────────────────────────────────────────────────────
+    if not args.no_llm:
+        _print_usage_summary()
+
+
+def _print_usage_summary():
+    summary = get_session_summary()
+    if not summary:
+        return
+
+    calls = summary["calls"]
+    hits = summary["cache_hits"]
+    api_calls = calls - hits
+    total_in = summary["input_tokens"]
+    total_out = summary["output_tokens"]
+    cache_write = summary["cache_write_tokens"]
+    cache_read = summary["cache_read_tokens"]
+    cost = summary["estimated_cost_usd"]
+
+    print("\n── LLM usage ────────────────────────────────────────────")
+    print(f"  API calls       : {api_calls}  (+ {hits} response cache hits, 0 cost)")
+    print(f"  Input tokens    : {total_in:,}  (uncached)")
+    print(f"  Cache write     : {cache_write:,}  tokens")
+    print(f"  Cache read      : {cache_read:,}  tokens  (billed at 10% rate)")
+    print(f"  Output tokens   : {total_out:,}")
+    print(f"  Estimated cost  : ${cost:.4f}")
+    print("─────────────────────────────────────────────────────────")
 
 
 if __name__ == "__main__":
