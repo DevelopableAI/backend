@@ -83,3 +83,31 @@
 
 # 03/10/2026
 - Implemented version control agent and tested against all 3 example schemas
+
+# 03/22/2026
+- Output for controlled cost E-commerce API:
+ ── LLM usage ────────────────────────────────────────────
+  API calls       : 18  (+ 0 response cache hits, 0 cost)
+  Input tokens    : 25,993  (uncached)
+  Cache write     : 0  tokens
+  Cache read      : 0  tokens  (billed at 10% rate)
+  Output tokens   : 4,998
+  Estimated cost  : $0.0837
+─────────────────────────────────────────────────────────
+Test files: 2600 lines total (per file average 120 lines, all python code)
+CI/CD job action: 90
+API files:
+    Controller files: 5 * 120 = 600
+    Utility files: 5 * 35 = 175
+    Repository files: 5 * 76 = 380
+    Custom types and DTOs: 5 * 10 = 50
+    Total = 1205 
+- Output for controlled cost PM API:
+── LLM usage ────────────────────────────────────────────
+  API calls       : 22  (+ 0 response cache hits, 0 cost)
+  Input tokens    : 31,030  (uncached)
+  Cache write     : 0  tokens
+  Cache read      : 0  tokens  (billed at 10% rate)
+  Output tokens   : 6,150
+  Estimated cost  : $0.1020
+─────────────────────────────────────────────────────────
