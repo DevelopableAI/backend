@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import re
 import textwrap
 from pathlib import Path
@@ -11,12 +12,46 @@ from generators.base import BaseGenerator
 SECTION_START = "/* LLM_SECTION_START */"
 SECTION_END = "/* LLM_SECTION_END */"
 
+# Module-level session usage accumulator — reset between CLI runs via reset_session()
+_session_usage: list[dict] = []
+
+
+def get_session_summary() -> dict[str, Any]:
+    """Return aggregated token usage and estimated cost for the current session."""
+    if not _session_usage:
+        return {}
+
+    totals: dict[str, Any] = {
+        "calls": len(_session_usage),
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_hits": 0,
+        "estimated_cost_usd": 0.0,
+    }
+    for entry in _session_usage:
+        totals["input_tokens"] += entry["input_tokens"]
+        totals["output_tokens"] += entry["output_tokens"]
+        totals["cache_write_tokens"] += entry["cache_write_tokens"]
+        totals["cache_read_tokens"] += entry["cache_read_tokens"]
+        if entry.get("response_cache_hit"):
+            totals["cache_hits"] += 1
+        totals["estimated_cost_usd"] += entry["cost_usd"]
+
+    return totals
+
+
+def reset_session():
+    _session_usage.clear()
+
 
 class LLMGenerator(BaseGenerator):
-    def __init__(self):
+    def __init__(self, use_response_cache: bool = True):
         import anthropic
         self.client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-        self.system_prompt = self._load_system_prompt()
+        self.use_response_cache = use_response_cache
+        self._cache_dir = Path.home() / ".developable" / "cache"
 
     def render(self, **kwargs) -> str:
         # LLMGenerator.fill() is the main entry point, render() satisfies the ABC
@@ -29,6 +64,7 @@ class LLMGenerator(BaseGenerator):
         entity: dict | None,
         spec: dict,
         prompt_subdir: str = "express",
+        model: str | None = None,
     ) -> str:
         """
         Finds LLM_SECTION_START / LLM_SECTION_END markers in content,
@@ -36,6 +72,8 @@ class LLMGenerator(BaseGenerator):
 
         prompt_subdir controls which subdirectory under prompts/ is used for
         the task prompt file (default: "express", use "tests" for Python test generation).
+        model overrides the default model for this task (e.g. config.MODEL_FAST for
+        simple seed_data tasks).
         """
         pattern = re.compile(
             r"/\* LLM_SECTION_START \*/(.*?)/\* LLM_SECTION_END \*/",
@@ -50,6 +88,7 @@ class LLMGenerator(BaseGenerator):
                 entity=entity,
                 spec=spec,
                 prompt_subdir=prompt_subdir,
+                model=model,
             )
 
         return pattern.sub(replace_section, content)
@@ -61,6 +100,7 @@ class LLMGenerator(BaseGenerator):
         entity: dict | None,
         spec: dict,
         prompt_subdir: str = "express",
+        model: str | None = None,
     ) -> str:
         prompt_path = config.PROMPTS_DIR / prompt_subdir / f"{task}.txt"
         if not prompt_path.exists():
@@ -69,17 +109,62 @@ class LLMGenerator(BaseGenerator):
 
         task_prompt = prompt_path.read_text()
         language = "Python" if prompt_subdir == "tests" else "TypeScript"
-        user_message = self._build_user_message(task_prompt, placeholder, entity, spec, language)
-
         system_prompt = self._load_system_prompt(prompt_subdir)
+        dynamic_part = self._build_dynamic_part(placeholder, entity, spec, language)
+
+        resolved_model = model or config.MODEL
+        max_tokens = config.TASK_MAX_TOKENS.get(task, config.TASK_MAX_TOKENS_DEFAULT)
+        entity_label = entity["name"] if entity else "project"
+
+        # ── Response cache check (skip API call entirely for repeated runs) ──
+        if self.use_response_cache:
+            cache_key = self._cache_key(resolved_model, system_prompt, task_prompt, dynamic_part)
+            cached = self._get_cached_response(cache_key)
+            if cached is not None:
+                print(f"  [response cache hit] {task} / {entity_label}")
+                _session_usage.append({
+                    "task": task,
+                    "model": resolved_model,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_write_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "cost_usd": 0.0,
+                    "response_cache_hit": True,
+                })
+                return cached
+
+        # ── Build prompt-cached content blocks ────────────────────────────────
+        # system and task_prompt are identical across all entity calls within
+        # a generation run — mark them for Anthropic's server-side prompt cache
+        # so subsequent calls pay only 10% of the input token cost.
+        system_content = [
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        user_content = [
+            {
+                "type": "text",
+                "text": task_prompt,
+                "cache_control": {"type": "ephemeral"},
+            },
+            {
+                "type": "text",
+                "text": dynamic_part,
+            },
+        ]
 
         response = self.client.messages.create(
-            model=config.MODEL,
-            max_tokens=2048,
+            model=resolved_model,
+            max_tokens=max_tokens,
             temperature=config.TEMPERATURE_LLM,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
+            system=system_content,
+            messages=[{"role": "user", "content": user_content}],
         )
+        self._record_usage(task, resolved_model, response.usage)
 
         raw = response.content[0].text
         cleaned = self._cleanup_markdown(raw).strip()
@@ -95,21 +180,32 @@ class LLMGenerator(BaseGenerator):
                     f"  ⚠️  LLM output for task '{task}' failed syntax validation "
                     f"(likely indentation). Retrying once..."
                 )
-                retry_message = (
-                    user_message
-                    + "\n\nYour previous response had Python indentation errors. "
+                correction = (
+                    "\n\nYour previous response had Python indentation errors. "
                     "Remember: every top-level statement must start at column 0 "
                     "(zero leading spaces). Code nested inside `if`, `for`, or `with` "
                     "blocks uses exactly 4 spaces. Do NOT add extra leading spaces to "
                     "outermost statements."
                 )
+                retry_user_content = [
+                    {
+                        "type": "text",
+                        "text": task_prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {
+                        "type": "text",
+                        "text": dynamic_part + correction,
+                    },
+                ]
                 retry_response = self.client.messages.create(
-                    model=config.MODEL,
-                    max_tokens=2048,
+                    model=resolved_model,
+                    max_tokens=max_tokens,
                     temperature=config.TEMPERATURE_LLM,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": retry_message}],
+                    system=system_content,
+                    messages=[{"role": "user", "content": retry_user_content}],
                 )
+                self._record_usage(f"{task}:retry", resolved_model, retry_response.usage)
                 retry_raw = retry_response.content[0].text
                 retry_cleaned = self._normalize_test_indent(
                     self._cleanup_markdown(retry_raw).strip()
@@ -122,7 +218,62 @@ class LLMGenerator(BaseGenerator):
                         "Using original output — manual review may be needed."
                     )
 
+        # Store in response cache so re-runs of the same schema skip the API call
+        if self.use_response_cache:
+            self._set_cached_response(cache_key, cleaned)
+
         return cleaned
+
+    def _build_dynamic_part(
+        self,
+        placeholder: str,
+        entity: dict | None,
+        spec: dict,
+        language: str,
+    ) -> str:
+        """Build the dynamic (per-entity) portion of the user message."""
+        if entity:
+            field_summary = "\n".join(
+                f"  - {f['name']}: {f['ts_type']}"
+                + (" (optional)" if f["is_optional"] else "")
+                + (" (unique)" if f["is_unique"] else "")
+                for f in entity["fields"]
+                if not f["is_relation"]
+            )
+            hints = "\n".join(f"  - {h}" for h in entity.get("llm_hints", [])) or "  (none)"
+            constraints = entity.get("llm_constraints", [])
+            constraints_section = (
+                "\n            Business-rule constraints (from rules file):\n"
+                + "\n".join(f"            - {c}" for c in constraints)
+            ) if constraints else ""
+            entity_section = f"""
+            Entity: {entity['name']}
+            Fields:
+            {field_summary}
+
+            Custom hints from schema:
+            {hints}
+{constraints_section}
+"""
+        else:
+            entity_section = ""
+
+        return f"""{entity_section}
+            The section to fill replaces this placeholder:
+            {placeholder}
+
+            Output only the {language} code for this section, no explanation, no markdown fences."""
+
+    # Keep _build_user_message as an alias for any external callers (unused internally)
+    def _build_user_message(
+        self,
+        task_prompt: str,
+        placeholder: str,
+        entity: dict | None,
+        spec: dict,
+        language: str = "TypeScript",
+    ) -> str:
+        return task_prompt + self._build_dynamic_part(placeholder, entity, spec, language)
 
     def _normalize_test_indent(self, code: str) -> str:
         """
@@ -174,46 +325,58 @@ class LLMGenerator(BaseGenerator):
         except SyntaxError:
             return False
 
-    def _build_user_message(
-        self,
-        task_prompt: str,
-        placeholder: str,
-        entity: dict | None,
-        spec: dict,
-        language: str = "TypeScript",
-    ) -> str:
-        if entity:
-            field_summary = "\n".join(
-                f"  - {f['name']}: {f['ts_type']}"
-                + (" (optional)" if f["is_optional"] else "")
-                + (" (unique)" if f["is_unique"] else "")
-                for f in entity["fields"]
-                if not f["is_relation"]
-            )
-            hints = "\n".join(f"  - {h}" for h in entity.get("llm_hints", [])) or "  (none)"
-            constraints = entity.get("llm_constraints", [])
-            constraints_section = (
-                "\n            Business-rule constraints (from rules file):\n"
-                + "\n".join(f"            - {c}" for c in constraints)
-            ) if constraints else ""
-            entity_section = f"""
-            Entity: {entity['name']}
-            Fields:
-            {field_summary}
+    # ── Response cache (disk-based, SHA256-keyed) ──────────────────────────────
 
-            Custom hints from schema:
-            {hints}
-{constraints_section}
-"""
-        else:
-            entity_section = ""
+    def _cache_key(self, model: str, system: str, static: str, dynamic: str) -> str:
+        data = f"{model}|{system}|{static}|{dynamic}"
+        return hashlib.sha256(data.encode()).hexdigest()
 
-        return f"""{task_prompt}
-{entity_section}
-            The section to fill replaces this placeholder:
-            {placeholder}
+    def _get_cached_response(self, key: str) -> str | None:
+        path = self._cache_dir / f"{key}.txt"
+        return path.read_text() if path.exists() else None
 
-            Output only the {language} code for this section, no explanation, no markdown fences."""
+    def _set_cached_response(self, key: str, value: str):
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        (self._cache_dir / f"{key}.txt").write_text(value)
+
+    # ── Token usage tracking ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _record_usage(task: str, model: str, usage: Any):
+        """Record token usage for one API call and print a per-call summary line."""
+        pricing = config.MODEL_PRICING.get(model, config.MODEL_PRICING[config.MODEL])
+
+        # Per Anthropic docs: input_tokens = uncached input (NOT including cache_creation
+        # or cache_read tokens); those are billed at their own rates.
+        input_t = getattr(usage, "input_tokens", 0)
+        output_t = getattr(usage, "output_tokens", 0)
+        cache_write_t = getattr(usage, "cache_creation_input_tokens", 0)
+        cache_read_t = getattr(usage, "cache_read_input_tokens", 0)
+
+        cost = (
+            input_t * pricing["input"] / 1_000_000
+            + cache_write_t * pricing["cache_write"] / 1_000_000
+            + cache_read_t * pricing["cache_read"] / 1_000_000
+            + output_t * pricing["output"] / 1_000_000
+        )
+
+        _session_usage.append({
+            "task": task,
+            "model": model,
+            "input_tokens": input_t,
+            "output_tokens": output_t,
+            "cache_write_tokens": cache_write_t,
+            "cache_read_tokens": cache_read_t,
+            "cost_usd": cost,
+            "response_cache_hit": False,
+        })
+
+        cache_info = ""
+        if cache_write_t:
+            cache_info += f", {cache_write_t} cache-write"
+        if cache_read_t:
+            cache_info += f", {cache_read_t} cache-read"
+        print(f"  [{task}] {input_t} in / {output_t} out{cache_info} → ${cost:.4f}")
 
     def _load_system_prompt(self, prompt_subdir: str = "express") -> str:
         path = config.PROMPTS_DIR / prompt_subdir / "system.txt"

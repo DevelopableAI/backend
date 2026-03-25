@@ -72,6 +72,7 @@ class TestPlanner:
                 },
                 "needs_llm": True,
                 "llm_task": "seed_data",
+                "llm_model": "fast",
                 "llm_entity": auth_entity,
                 "prompt_subdir": "tests",
             })
@@ -164,6 +165,7 @@ class TestPlanner:
                 },
                 "needs_llm": True,
                 "llm_task": "seed_data",
+                "llm_model": "fast",
                 "llm_entity": entity,
                 "prompt_subdir": "tests",
             })
@@ -249,6 +251,7 @@ class TestPlanner:
                     },
                     "needs_llm": True,
                     "llm_task": "seed_data",
+                    "llm_model": "fast",
                     "llm_entity": child_entity,
                     "prompt_subdir": "tests",
                 })
@@ -290,6 +293,7 @@ class TestPlanner:
                     },
                     "needs_llm": True,
                     "llm_task": "seed_data",
+                    "llm_model": "fast",
                     "llm_entity": child_entity,
                     "prompt_subdir": "tests",
                 })
