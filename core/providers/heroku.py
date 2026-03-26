@@ -86,6 +86,54 @@ class HerokuProvider(BaseProvider):
 
         return {"api_key": api_key, "app_name": self._app_name}
 
+    def provision_database(self, spec: dict[str, Any]) -> dict[str, Any] | None:
+        """
+        Provision Heroku Postgres and return DATABASE_URL + tracked resource.
+        """
+        creds = self._credentials
+        api_key = creds["api_key"]
+        project_name = self.slug(spec)
+        app_name: str = creds.get("app_name") or project_name
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/vnd.heroku+json; version=3",
+            "Content-Type": "application/json",
+        }
+
+        app_name = self._ensure_app(headers, app_name)
+        self._credentials["app_name"] = app_name
+
+        addon_resp = requests.post(
+            f"{_HEROKU_API}/apps/{app_name}/addons",
+            headers=headers,
+            json={"plan": "heroku-postgresql:essential-0"},
+            timeout=30,
+        )
+        if addon_resp.status_code not in (200, 201):
+            # If add-on already exists this can return 422; continue.
+            pass
+
+        cfg = requests.get(
+            f"{_HEROKU_API}/apps/{app_name}/config-vars",
+            headers=headers,
+            timeout=30,
+        )
+        if not cfg.ok:
+            return None
+        config = cfg.json()
+        db_url = config.get("DATABASE_URL", "")
+        if not db_url:
+            return None
+
+        return {
+            "database_url": db_url,
+            "resource": {
+                "type": "heroku_postgres",
+                "id": f"{app_name}:DATABASE_URL",
+                "url": None,
+            },
+        }
+
     # ── Main deploy ────────────────────────────────────────────────────────────
 
     def deploy(

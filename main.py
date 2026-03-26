@@ -224,6 +224,12 @@ def main():
 
     # ── Deployment agent: deploy to cloud ─────────────────────────────────────
     if args.deploy_to:
+        if not args.github:
+            print(
+                "\nError: --deploy-to requires --github so deployment runs after Version Control publishing.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         from agents.deployment import Deployment
 
         print(f"\n[Deployment] Deploying to {args.deploy_to.upper()}...")

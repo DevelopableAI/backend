@@ -2,32 +2,12 @@
 Deployment Agent.
 
 The Deployment Agent is the fourth component of the Backend Engineer. It takes
-a fully-generated Express API project (output of Developer + optionally Tester
-and VersionControl) and deploys it to a cloud provider of the user's choice.
+an already generated API project and deploys it to a chosen cloud provider.
 
-Responsibilities
-────────────────
-1. Present an interactive provider menu (or accept --deploy-to via CLI).
-2. Detect existing credentials; prompt for missing ones.
-3. Ensure the Dockerfile exists in the output directory (generate it via
-   VCPlanner if absent — same approach as VersionControl agent).
-4. Build a Docker image from the output directory.
-5. Delegate push + deploy to the chosen cloud provider implementation.
-6. Record the deployment result in <out_dir>/.developable/state.json.
-7. Print the live endpoint URL.
-
-Zero LLM cost
-─────────────
-This agent makes no Anthropic API calls. All operations are pure Python SDK /
-subprocess calls against the cloud provider APIs.
-
-Usage (from main.py)
-────────────────────
-    deployer = Deployment(out_dir=out_dir, provider="aws", aws_region="eu-west-1")
-    record = deployer.deploy(spec, api_plan)
-    print(record["endpoint"])
+This agent intentionally avoids LLM calls to keep runtime cost minimal.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -38,19 +18,6 @@ from core.providers import PROVIDER_MAP, get_provider
 
 
 class Deployment:
-    """
-    The Deployment Agent.
-
-    Args:
-        out_dir:   Path to the generated project directory (must contain a
-                   Dockerfile or one will be generated).
-        provider:  Cloud provider slug ("aws", "heroku", "gcp"). If None, the
-                   user is prompted interactively.
-        **kwargs:  Provider-specific configuration forwarded to the provider
-                   constructor (e.g. aws_region, heroku_app, gcp_project,
-                   gcp_region).
-    """
-
     def __init__(
         self,
         out_dir: Path,
@@ -61,61 +28,57 @@ class Deployment:
         self.provider_name = provider
         self.provider_kwargs = self._normalise_kwargs(kwargs)
 
-    # ── Public API ─────────────────────────────────────────────────────────────
-
     def deploy(self, spec: dict[str, Any], api_plan: dict[str, Any]) -> dict[str, Any]:
-        """
-        Run the full deployment pipeline.
-
-        Args:
-            spec:     Parsed Prisma spec (from PrismaParser).
-            api_plan: File plan returned by the Developer agent.
-
-        Returns:
-            A deployment record dict (also persisted to state.json).
-        """
-        # 1. Resolve provider
         provider_name = self.provider_name or self._ask_provider()
-
-        # 2. Instantiate provider
         kwargs = self.provider_kwargs.get(provider_name, {})
         provider = get_provider(provider_name, self.out_dir, **kwargs)
 
-        # 3. Credentials
         print(f"\n  Detecting {provider.display_name} credentials...")
         creds = provider.detect_credentials()
         if creds is None:
             creds = provider.collect_credentials()
         else:
-            print(f"  Found existing credentials.")
+            print("  Found existing credentials.")
         provider.configure(creds)
 
-        # 4. Ensure Dockerfile exists
+        env_vars = self._read_env_file()
+        db_resource = None
+        if (
+            ("DATABASE_URL" not in env_vars or not env_vars["DATABASE_URL"])
+            and hasattr(provider, "provision_database")
+        ):
+            print(f"\n  Provisioning managed database on {provider.display_name}...")
+            db_result = provider.provision_database(spec)
+            if db_result and db_result.get("database_url"):
+                env_vars["DATABASE_URL"] = db_result["database_url"]
+                db_resource = db_result.get("resource")
+                self._upsert_env("DATABASE_URL", db_result["database_url"])
+                print("  DATABASE_URL saved to generated project's .env")
+
         self._ensure_dockerfile(spec)
 
-        # 5. Build Docker image
         project_name = provider.slug(spec)
         image_tag = f"developable/{project_name}:latest"
         print(f"\n  Building Docker image '{image_tag}'...")
         self._docker_build(image_tag)
 
-        # 6. Read env vars from .env file
         env_vars = self._read_env_file()
         if "DATABASE_URL" not in env_vars or not env_vars["DATABASE_URL"]:
             print(
                 "\n  Warning: DATABASE_URL is not set in .env. "
-                "The deployed container may fail to connect to Postgres.\n"
-                "  Set DATABASE_URL in .env before deploying, or configure it "
-                "in your cloud provider's environment settings.",
+                "The deployed container may fail to connect to Postgres.",
             )
+        else:
+            self._push_schema_to_remote_db(env_vars["DATABASE_URL"])
 
-        # 7. Deploy via provider
         import uuid
+
         deployment_id = str(uuid.uuid4())
         print(f"\n  Deploying to {provider.display_name}...")
         record = provider.deploy(spec, image_tag, env_vars, deployment_id)
+        if db_resource:
+            record.setdefault("resources", []).append(db_resource)
 
-        # 8. Persist state
         state = DeploymentState(self.out_dir)
         state.initialise(
             project_name=project_name,
@@ -124,12 +87,12 @@ class Deployment:
         state.add(record)
         state.save()
 
+        self._configure_post_ci_deploy_workflow(record)
+        self._run_remote_smoke_tests(record["endpoint"])
+
         return record
 
-    # ── Private helpers ────────────────────────────────────────────────────────
-
     def _ask_provider(self) -> str:
-        """Present an interactive numbered menu and return the chosen slug."""
         providers = list(PROVIDER_MAP.items())
         print("\nDeployment Agent — select a cloud provider:")
         for i, (slug, name) in enumerate(providers, 1):
@@ -138,28 +101,22 @@ class Deployment:
 
         while True:
             choice = input("  Enter number or provider name: ").strip().lower()
-            # Accept number
             if choice.isdigit():
                 idx = int(choice) - 1
                 if 0 <= idx < len(providers):
                     return providers[idx][0]
-            # Accept slug directly
             if choice in PROVIDER_MAP:
                 return choice
             print(f"  Invalid choice. Enter 1-{len(providers)} or one of: {', '.join(PROVIDER_MAP)}")
 
     def _ensure_dockerfile(self, spec: dict[str, Any]) -> None:
-        """
-        Generate infrastructure files (Dockerfile, docker-compose, CI) if the
-        Dockerfile is absent. Mirrors the VersionControl agent's _generate_infra_files.
-        """
         dockerfile = self.out_dir / "Dockerfile"
         if dockerfile.exists():
             return
 
         print("  Dockerfile not found — generating infrastructure files...")
-        from core.vc_planner import VCPlanner
         from core.assembler import Assembler
+        from core.vc_planner import VCPlanner
 
         plan = VCPlanner().plan(spec)
         assembler = Assembler(out_dir=self.out_dir, use_llm=False)
@@ -167,24 +124,15 @@ class Deployment:
         print(f"  Generated {len(plan['files'])} infrastructure file(s).")
 
     def _docker_build(self, image_tag: str) -> None:
-        """Build the Docker image from the output directory."""
         result = subprocess.run(
             ["docker", "build", "-t", image_tag, str(self.out_dir)],
-            capture_output=False,  # show build output to user
+            capture_output=False,
         )
         if result.returncode != 0:
-            print(
-                "\nDocker build failed. Ensure Docker is running and the "
-                "Dockerfile in the output directory is valid.",
-                file=sys.stderr,
-            )
+            print("\nDocker build failed.", file=sys.stderr)
             sys.exit(1)
 
     def _read_env_file(self) -> dict[str, str]:
-        """
-        Parse <out_dir>/.env into a key-value dict.
-        Skips comments and blank lines. Returns empty dict if file is absent.
-        """
         env_file = self.out_dir / ".env"
         env_vars: dict[str, str] = {}
         if not env_file.exists():
@@ -198,12 +146,117 @@ class Deployment:
                 env_vars[key.strip()] = value.strip().strip('"').strip("'")
         return env_vars
 
+    def _upsert_env(self, key: str, value: str) -> None:
+        env_file = self.out_dir / ".env"
+        if not env_file.exists():
+            env_file.write_text(f'{key}="{value}"\n')
+            return
+
+        lines = env_file.read_text().splitlines()
+        replaced = False
+        new_lines: list[str] = []
+        for line in lines:
+            if line.strip().startswith(f"{key}="):
+                new_lines.append(f'{key}="{value}"')
+                replaced = True
+            else:
+                new_lines.append(line)
+        if not replaced:
+            new_lines.append(f'{key}="{value}"')
+        env_file.write_text("\n".join(new_lines) + "\n")
+
+    def _push_schema_to_remote_db(self, database_url: str) -> None:
+        print("\n  Applying Prisma schema to remote database (prisma db push)...")
+        env = dict(os.environ, DATABASE_URL=database_url)
+        result = subprocess.run(
+            ["npx", "prisma", "db", "push", "--accept-data-loss"],
+            cwd=self.out_dir,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print("\n  Warning: Remote schema push failed. Deployment will continue.")
+            if result.stderr:
+                print(result.stderr)
+
+    def _configure_post_ci_deploy_workflow(self, record: dict[str, Any]) -> None:
+        git_dir = self.out_dir / ".git"
+        if not git_dir.exists():
+            return
+
+        workflow = self.out_dir / ".github/workflows/deploy-after-ci.yml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        provider = record.get("provider", "cloud")
+        workflow.write_text(
+            f"""name: CD Deploy
+
+on:
+  workflow_run:
+    workflows: [\"CI\"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy:
+    if: ${{{{ github.event.workflow_run.conclusion == 'success' }}}}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trigger {provider.upper()} deployment webhook
+        env:
+          DEPLOY_WEBHOOK_URL: ${{{{ secrets.DEPLOY_WEBHOOK_URL }}}}
+        run: |
+          if [ -z \"$DEPLOY_WEBHOOK_URL\" ]; then
+            echo \"DEPLOY_WEBHOOK_URL is not set; skipping deploy.\"
+            exit 0
+          fi
+          curl -fsSL -X POST \"$DEPLOY_WEBHOOK_URL\"
+"""
+        )
+
+        self._git_commit_and_push(
+            "Add post-CI deployment workflow",
+            [".github/workflows/deploy-after-ci.yml"],
+        )
+
+    def _run_remote_smoke_tests(self, endpoint: str) -> None:
+        test_runner = self.out_dir / "tests/run_all.py"
+        if not test_runner.exists():
+            print("\n  No generated Python test suite found at tests/run_all.py; skipping remote tests.")
+            return
+
+        print(f"\n  Running generated tests against remote API: {endpoint}")
+        result = subprocess.run(
+            [sys.executable, str(test_runner), endpoint],
+            cwd=self.out_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print("\n  Warning: Remote API test run failed.")
+            if result.stdout:
+                print(result.stdout)
+            if result.stderr:
+                print(result.stderr, file=sys.stderr)
+        else:
+            print("  Remote API test run succeeded.")
+
+    def _git_commit_and_push(self, message: str, paths: list[str]) -> None:
+        try:
+            subprocess.run(["git", "add", *paths], cwd=self.out_dir, check=True, capture_output=True, text=True)
+            status = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=self.out_dir)
+            if status.returncode == 0:
+                return
+            subprocess.run(["git", "commit", "-m", message], cwd=self.out_dir, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "push", "origin", "main"], cwd=self.out_dir, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError:
+            print("  Warning: could not auto-commit/push post-deploy workflow.")
+
     @staticmethod
     def _normalise_kwargs(kwargs: dict[str, Any]) -> dict[str, dict[str, Any]]:
-        """
-        Map flat CLI kwargs (aws_region, heroku_app, gcp_project, gcp_region)
-        to per-provider dicts passed to provider constructors.
-        """
         return {
             "aws": {k: v for k, v in {
                 "region": kwargs.get("aws_region"),
