@@ -125,6 +125,29 @@ def main():
         ),
     )
 
+    # ── Deployment agent flags ─────────────────────────────────────────────────
+    parser.add_argument(
+        "--deploy-to", default=None, metavar="PROVIDER",
+        choices=["aws", "heroku", "gcp"],
+        help="Deploy the generated API to a cloud provider: aws | heroku | gcp",
+    )
+    parser.add_argument(
+        "--aws-region", default=None, metavar="REGION",
+        help="AWS region for ECS Fargate deployment (default: us-east-1 or from ~/.aws/config)",
+    )
+    parser.add_argument(
+        "--heroku-app", default=None, metavar="NAME",
+        help="Heroku app name (default: <project-name>)",
+    )
+    parser.add_argument(
+        "--gcp-project", default=None, metavar="PROJECT_ID",
+        help="GCP project ID for Cloud Run deployment",
+    )
+    parser.add_argument(
+        "--gcp-region", default=None, metavar="REGION",
+        help="GCP region for Cloud Run deployment (default: us-central1)",
+    )
+
     args = parser.parse_args()
 
     schema_path = Path(args.schema)
@@ -198,6 +221,27 @@ def main():
         print(f"  cd {out_dir}")
         print("  cp .env.example .env  # fill in your values")
         print("  docker compose up")
+
+    # ── Deployment agent: deploy to cloud ─────────────────────────────────────
+    if args.deploy_to:
+        from agents.deployment import Deployment
+
+        print(f"\n[Deployment] Deploying to {args.deploy_to.upper()}...")
+        deployer = Deployment(
+            out_dir=out_dir,
+            provider=args.deploy_to,
+            aws_region=args.aws_region,
+            heroku_app=args.heroku_app,
+            gcp_project=args.gcp_project,
+            gcp_region=args.gcp_region,
+        )
+        record = deployer.deploy(spec, api_plan)
+        print(f"\n✓ Deployment complete!")
+        print(f"  Endpoint : {record['endpoint']}")
+        if record.get("region"):
+            print(f"  Region   : {record['region']}")
+        print(f"  Provider : {record['provider']}")
+        print(f"  State    : {out_dir}/.developable/state.json")
 
     # ── LLM usage summary ──────────────────────────────────────────────────────
     if not args.no_llm:
