@@ -1,27 +1,29 @@
 """
-Heroku deployment provider.
+Heroku deployment provider with Heroku Postgres addon provisioning.
 
 Deployment flow
 ───────────────
 1. Detect API key from HEROKU_API_KEY env var or ~/.netrc.
 2. Create the Heroku app (idempotent — catches 422 name-already-taken).
-3. Set container environment variables via Heroku Config Vars API.
-4. Authenticate Docker to registry.heroku.com.
-5. Tag and push the image to the Heroku container registry.
-6. Release the web dyno via the Heroku Formation API.
-7. Return a deployment record.
+3. Provision Heroku Postgres Essential-0 addon.
+4. Apply Prisma schema to the remote database (npx prisma db push).
+5. Set container environment variables via Heroku Config Vars API.
+6. Authenticate Docker to registry.heroku.com.
+7. Tag and push the image to the Heroku container registry.
+8. Release the web dyno via the Heroku Formation API.
+9. Return a deployment record.
+
+Database (Heroku Postgres)
+──────────────────────────
+- Essential-0 plan (~$5/month), provisioned as a Heroku addon.
+- Heroku sets DATABASE_URL in the app's config vars automatically.
+- We retrieve it and return it as the remote_db_url for schema migration.
 
 Tagging note
 ────────────
 Heroku has no native resource-tagging system. Traceability is maintained by:
   - Setting DEVELOPABLE_* config vars on the app.
   - Recording resources in the local state file.
-
-Database note
-─────────────
-DATABASE_URL must be set in <out_dir>/.env before deploying. Heroku Postgres
-add-on can be added manually afterwards with:
-  heroku addons:create heroku-postgresql:essential-0 --app <app-name>
 """
 
 import getpass
@@ -29,6 +31,7 @@ import netrc
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +42,8 @@ from .base import BaseProvider
 
 _HEROKU_API = "https://api.heroku.com"
 _HEROKU_REGISTRY = "registry.heroku.com"
+_ADDON_WAIT_TIMEOUT_S = 300   # 5 minutes
+_ADDON_POLL_INTERVAL_S = 10
 
 
 class HerokuProvider(BaseProvider):
@@ -48,15 +53,14 @@ class HerokuProvider(BaseProvider):
 
     def __init__(self, out_dir: Path, app_name: str | None = None) -> None:
         super().__init__(out_dir)
-        self._app_name = app_name  # may be set by CLI flag or collected interactively
+        self._app_name = app_name          # initial preference from CLI
+        self._app_name_resolved: str = ""  # set after _ensure_app() succeeds
+        self._api_headers: dict[str, str] = {}
 
     # ── Credential handling ────────────────────────────────────────────────────
 
     def detect_credentials(self) -> dict[str, Any] | None:
-        """
-        Check HEROKU_API_KEY env var first, then ~/.netrc for a stored token.
-        Returns None if no token is found.
-        """
+        """Check HEROKU_API_KEY env var, then ~/.netrc."""
         api_key = os.environ.get("HEROKU_API_KEY", "").strip()
         if api_key:
             return {"api_key": api_key, "app_name": self._app_name}
@@ -65,7 +69,6 @@ class HerokuProvider(BaseProvider):
             nrc = netrc.netrc()
             auth = nrc.authenticators("api.heroku.com")
             if auth:
-                # netrc format: machine api.heroku.com login <email> password <token>
                 token = auth[2]  # password field holds the API token
                 if token:
                     return {"api_key": token, "app_name": self._app_name}
@@ -77,7 +80,7 @@ class HerokuProvider(BaseProvider):
     def collect_credentials(self) -> dict[str, Any]:
         """Prompt for Heroku API key and optional app name."""
         print("\nHeroku credentials not found in environment or ~/.netrc.")
-        print("You can create an API token at: https://dashboard.heroku.com/account\n")
+        print("Create an API token at: https://dashboard.heroku.com/account\n")
 
         api_key = getpass.getpass("  Heroku API Key: ").strip()
         if not api_key:
@@ -85,6 +88,47 @@ class HerokuProvider(BaseProvider):
             sys.exit(1)
 
         return {"api_key": api_key, "app_name": self._app_name}
+
+    # ── Database provisioning ──────────────────────────────────────────────────
+
+    def provision_database(
+        self,
+        spec: dict[str, Any],
+        project_name: str,
+        deployment_id: str,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """
+        Add the Heroku Postgres Essential-0 addon to the app.
+
+        The app must already exist (call _ensure_app first — done in deploy()).
+        Heroku automatically sets DATABASE_URL in the app's config vars.
+        """
+        if not self._app_name_resolved:
+            raise RuntimeError(
+                "provision_database() must be called after _ensure_app() "
+                "sets self._app_name_resolved."
+            )
+
+        app_name = self._app_name_resolved
+        headers = self._api_headers
+
+        print(f"  [Heroku] Adding Heroku Postgres Essential-0 addon to app '{app_name}'...")
+        print(f"           This typically takes 1–2 minutes. Please wait...")
+
+        addon_id, addon_name = self._create_postgres_addon(headers, app_name)
+
+        print(f"  [Heroku] Waiting for Postgres addon to provision...")
+        self._wait_for_addon(headers, app_name, addon_id)
+
+        # Heroku sets DATABASE_URL automatically; retrieve it
+        db_url = self._get_database_url(headers, app_name)
+
+        print(f"  [Heroku] Postgres addon provisioned: {addon_name}")
+
+        resources = [
+            {"type": "heroku_postgres_addon", "id": addon_id, "name": addon_name, "plan": "essential-0"}
+        ]
+        return db_url, resources
 
     # ── Main deploy ────────────────────────────────────────────────────────────
 
@@ -100,18 +144,20 @@ class HerokuProvider(BaseProvider):
         project_name = self.slug(spec)
         tags = self.build_tags(project_name, deployment_id, spec)
 
-        # App name: prefer CLI arg / previously collected value; default to slug
-        app_name: str = creds.get("app_name") or project_name
-
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Accept": "application/vnd.heroku+json; version=3",
             "Content-Type": "application/json",
         }
+        self._api_headers = headers
 
-        # 1. Create app
+        # App name: prefer CLI arg / previously collected value; default to slug
+        app_name: str = creds.get("app_name") or project_name
+
+        # 1. Create app (sets self._app_name_resolved)
         print(f"  [Heroku] Creating app '{app_name}'...")
         app_name = self._ensure_app(headers, app_name)
+        self._app_name_resolved = app_name
 
         # 2. Set config vars (env vars + Developable tracking vars)
         print(f"  [Heroku] Setting config vars...")
@@ -156,14 +202,56 @@ class HerokuProvider(BaseProvider):
             tags=tags,
         )
 
+    # ── CI/CD workflow generation ──────────────────────────────────────────────
+
+    def generate_deploy_workflow(
+        self,
+        project_name: str,
+        record: dict[str, Any],
+    ) -> str:
+        """Return a GitHub Actions deploy.yml for Heroku container deployments."""
+        app_name = self._app_name_resolved or project_name
+
+        return f"""\
+name: Deploy to Heroku
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy:
+    if: ${{{{ github.event.workflow_run.conclusion == 'success' }}}}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Heroku Container Registry
+        run: docker login --username=_ --password=${{{{ secrets.HEROKU_API_KEY }}}} registry.heroku.com
+
+      - name: Build and push image
+        run: |
+          docker build -t registry.heroku.com/{app_name}/web .
+          docker push registry.heroku.com/{app_name}/web
+
+      - name: Release web dyno
+        run: |
+          IMAGE_ID=$(docker inspect registry.heroku.com/{app_name}/web --format={{{{.Id}}}})
+          curl -s -X PATCH https://api.heroku.com/apps/{app_name}/formation \\
+            -H "Content-Type: application/json" \\
+            -H "Accept: application/vnd.heroku+json; version=3" \\
+            -H "Authorization: Bearer ${{{{ secrets.HEROKU_API_KEY }}}}" \\
+            -d "{{\\"updates\\":[{{\\"type\\":\\"web\\",\\"docker_image\\":\\"$IMAGE_ID\\"}}]}}"
+"""
+
     # ── Private helpers ────────────────────────────────────────────────────────
 
     def _ensure_app(self, headers: dict, app_name: str) -> str:
-        """
-        Create the Heroku app. If the name is taken and belongs to this account
-        reuse it. If taken by someone else, append a suffix and retry once.
-        Returns the final app name used.
-        """
+        """Create the Heroku app or reuse an existing one. Returns final app name."""
         resp = requests.post(
             f"{_HEROKU_API}/apps",
             headers=headers,
@@ -174,21 +262,18 @@ class HerokuProvider(BaseProvider):
             return resp.json()["name"]
 
         if resp.status_code == 422:
-            # Name taken — check if it belongs to us (fetch app details)
+            # Check if the app belongs to us
             check = requests.get(
                 f"{_HEROKU_API}/apps/{app_name}",
                 headers=headers,
                 timeout=15,
             )
             if check.ok:
-                # App already exists under our account — reuse it
-                return app_name
+                return app_name  # Reuse our own app
 
-            # Taken by someone else — use a different name
+            # Name taken by someone else — append suffix
             new_name = f"{app_name}-{self._credentials.get('deployment_id', 'dev')[:6]}"
-            print(
-                f"  [Heroku] App name '{app_name}' is taken. Trying '{new_name}'...",
-            )
+            print(f"  [Heroku] App name '{app_name}' is taken. Trying '{new_name}'...")
             retry = requests.post(
                 f"{_HEROKU_API}/apps",
                 headers=headers,
@@ -204,11 +289,81 @@ class HerokuProvider(BaseProvider):
             )
             sys.exit(1)
 
+        print(f"\nHeroku API error ({resp.status_code}): {resp.text}", file=sys.stderr)
+        sys.exit(1)
+
+    def _create_postgres_addon(
+        self, headers: dict, app_name: str
+    ) -> tuple[str, str]:
+        """Create the Heroku Postgres Essential-0 addon. Returns (addon_id, addon_name)."""
+        resp = requests.post(
+            f"{_HEROKU_API}/apps/{app_name}/addons",
+            headers=headers,
+            json={"plan": "heroku-postgresql:essential-0"},
+            timeout=60,
+        )
+        if resp.status_code == 422:
+            # Addon may already exist — fetch it
+            addons = requests.get(
+                f"{_HEROKU_API}/apps/{app_name}/addons",
+                headers=headers,
+                timeout=15,
+            ).json()
+            for addon in addons:
+                if "heroku-postgresql" in addon.get("plan", {}).get("name", ""):
+                    return addon["id"], addon["name"]
+        if not resp.ok:
+            print(
+                f"\nHeroku Postgres addon creation failed ({resp.status_code}): {resp.text}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        data = resp.json()
+        return data["id"], data["name"]
+
+    def _wait_for_addon(self, headers: dict, app_name: str, addon_id: str) -> None:
+        """Poll addon state until 'provisioned'."""
+        deadline = time.time() + _ADDON_WAIT_TIMEOUT_S
+        while time.time() < deadline:
+            resp = requests.get(
+                f"{_HEROKU_API}/apps/{app_name}/addons/{addon_id}",
+                headers=headers,
+                timeout=15,
+            )
+            if resp.ok:
+                state = resp.json().get("state", "")
+                if state == "provisioned":
+                    return
+                print(f"  [Heroku] Addon state: {state} — waiting...", end="\r", flush=True)
+            time.sleep(_ADDON_POLL_INTERVAL_S)
         print(
-            f"\nHeroku API error ({resp.status_code}): {resp.text}",
+            f"\n  [Heroku] Warning: Postgres addon did not provision within "
+            f"{_ADDON_WAIT_TIMEOUT_S}s.",
             file=sys.stderr,
         )
         sys.exit(1)
+
+    def _get_database_url(self, headers: dict, app_name: str) -> str:
+        """Retrieve DATABASE_URL from Heroku config vars."""
+        resp = requests.get(
+            f"{_HEROKU_API}/apps/{app_name}/config-vars",
+            headers=headers,
+            timeout=15,
+        )
+        if not resp.ok:
+            print(
+                f"\nCould not retrieve config vars ({resp.status_code}): {resp.text}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        db_url = resp.json().get("DATABASE_URL", "")
+        if not db_url:
+            print(
+                "\nHeroku Postgres addon provisioned but DATABASE_URL not found in config vars.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return db_url
 
     def _set_config_vars(
         self, headers: dict, app_name: str, config_vars: dict[str, str]
@@ -239,7 +394,6 @@ class HerokuProvider(BaseProvider):
             sys.exit(1)
 
     def _release(self, headers: dict, app_name: str, image_id: str) -> None:
-        """Release the web process type with the new image."""
         resp = requests.patch(
             f"{_HEROKU_API}/apps/{app_name}/formation",
             headers=headers,

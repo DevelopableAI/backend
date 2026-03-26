@@ -5,12 +5,17 @@ Every provider (AWS, Heroku, GCP, …) must implement this ABC.
 Providers are responsible for:
   1. Detecting credentials from the environment / config files.
   2. Collecting any missing credentials interactively.
-  3. Pushing the built Docker image to their registry.
-  4. Deploying the container to their managed compute service.
-  5. Tagging/labelling cloud resources for traceability.
-  6. Returning a standardised deployment record.
+  3. Provisioning a managed PostgreSQL database.
+  4. Applying the Prisma schema to the remote database.
+  5. Pushing the built Docker image to their registry.
+  6. Deploying the container to their managed compute service.
+  7. Tagging/labelling cloud resources for traceability.
+  8. Returning a standardised deployment record.
+  9. Generating a provider-specific GitHub Actions deploy workflow.
 """
 
+import os
+import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -54,6 +59,27 @@ class BaseProvider(ABC):
         """
 
     @abstractmethod
+    def provision_database(
+        self,
+        spec: dict[str, Any],
+        project_name: str,
+        deployment_id: str,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """
+        Provision a managed PostgreSQL database on the cloud provider.
+
+        Args:
+            spec:          Parsed Prisma spec.
+            project_name:  DNS-safe project slug (e.g. "user-api").
+            deployment_id: UUID string for this deployment (used in tags).
+
+        Returns:
+            (remote_database_url, resource_descriptors)
+            remote_database_url: full postgresql:// connection string.
+            resource_descriptors: list of {type, id, arn/url, ...} dicts.
+        """
+
+    @abstractmethod
     def deploy(
         self,
         spec: dict[str, Any],
@@ -67,8 +93,9 @@ class BaseProvider(ABC):
         Args:
             spec:          Parsed Prisma spec (entities, datasource, …).
             image_tag:     Local Docker image tag built in agents/deployment.py.
-            env_vars:      Environment variables to inject into the container
-                           (read from <out_dir>/.env by the Deployment agent).
+            env_vars:      Environment variables to inject into the container.
+                           DATABASE_URL will already point to the remote DB
+                           provisioned by provision_database().
             deployment_id: UUID string for this deployment (used in tags).
 
         Returns:
@@ -77,11 +104,52 @@ class BaseProvider(ABC):
             resources (list), tags (dict).
         """
 
-    # ── Shared helpers ─────────────────────────────────────────────────────────
+    @abstractmethod
+    def generate_deploy_workflow(
+        self,
+        project_name: str,
+        record: dict[str, Any],
+    ) -> str:
+        """
+        Return the YAML string for a provider-specific GitHub Actions
+        deploy.yml that triggers after CI passes on main.
+
+        The workflow must:
+        - Trigger via `workflow_run` on the "CI" workflow completing on main.
+        - Only run when CI conclusion is 'success'.
+        - Build + push the Docker image to the provider's registry.
+        - Re-deploy the service with the new image.
+        """
+
+    # ── Shared concrete methods ────────────────────────────────────────────────
 
     def configure(self, credentials: dict[str, Any]) -> None:
-        """Store resolved credentials for use in deploy()."""
+        """Store resolved credentials for use in provision_database() and deploy()."""
         self._credentials = credentials
+
+    def apply_schema(self, remote_db_url: str) -> None:
+        """
+        Run `npx --yes prisma db push --accept-data-loss` in out_dir
+        against the remote database URL.
+
+        Requires Node.js + npx to be available on the local machine.
+        Prints a manual fallback instruction if npx is not found.
+        """
+        print(f"  Applying Prisma schema to remote database...")
+        env = {**os.environ, "DATABASE_URL": remote_db_url}
+        result = subprocess.run(
+            ["npx", "--yes", "prisma", "db", "push", "--accept-data-loss"],
+            cwd=self.out_dir,
+            env=env,
+        )
+        if result.returncode != 0:
+            print(
+                "\n  Warning: Prisma schema migration failed (exit code "
+                f"{result.returncode}).\n"
+                "  Apply it manually with:\n"
+                f"    DATABASE_URL='{remote_db_url}' npx prisma db push --accept-data-loss\n"
+                f"  (run from: {self.out_dir})"
+            )
 
     def build_tags(
         self,

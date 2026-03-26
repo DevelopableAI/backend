@@ -230,6 +230,7 @@ def main():
         deployer = Deployment(
             out_dir=out_dir,
             provider=args.deploy_to,
+            tests_dir=Path(tests_out) if tests_out else None,
             aws_region=args.aws_region,
             heroku_app=args.heroku_app,
             gcp_project=args.gcp_project,
