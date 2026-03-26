@@ -151,8 +151,9 @@ execution-focused counterpart.
 - Keep credential collection explicit and minimal.
 - Prefer provider API/SDK/CLI operations; avoid any LLM calls.
 - Record all deployable resources in local state with consistent tag metadata.
-- When possible, provision DB + apply schema (`prisma db push`) before service
-  rollout.
+- Always provision a provider-managed remote DB first, then apply schema
+  (`prisma db push`) before service rollout (ignore any local `DATABASE_URL`
+  originally provided by schema/env collection).
 - Post-deploy, generated CI/CD should redeploy only after CI success on `main`.
 - Any temporary test run against remote endpoint must avoid polluting committed
   test code/config.

@@ -54,6 +54,16 @@ class BaseProvider(ABC):
         """
 
     @abstractmethod
+    def provision_database(self, spec: dict[str, Any]) -> dict[str, Any] | None:
+        """
+        Provision a provider-managed remote database for this deployment.
+
+        Returns a dict with:
+          - database_url: str
+          - resource: optional resource descriptor for deployment state
+        """
+
+    @abstractmethod
     def deploy(
         self,
         spec: dict[str, Any],

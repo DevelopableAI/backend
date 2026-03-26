@@ -43,17 +43,19 @@ class Deployment:
 
         env_vars = self._read_env_file()
         db_resource = None
-        if (
-            ("DATABASE_URL" not in env_vars or not env_vars["DATABASE_URL"])
-            and hasattr(provider, "provision_database")
-        ):
-            print(f"\n  Provisioning managed database on {provider.display_name}...")
-            db_result = provider.provision_database(spec)
-            if db_result and db_result.get("database_url"):
-                env_vars["DATABASE_URL"] = db_result["database_url"]
-                db_resource = db_result.get("resource")
-                self._upsert_env("DATABASE_URL", db_result["database_url"])
-                print("  DATABASE_URL saved to generated project's .env")
+        print(f"\n  Provisioning managed database on {provider.display_name}...")
+        db_result = provider.provision_database(spec)
+        if not db_result or not db_result.get("database_url"):
+            print(
+                "\nError: provider did not return a remote DATABASE_URL. "
+                "Deployment requires remote DB provisioning first.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        env_vars["DATABASE_URL"] = db_result["database_url"]
+        db_resource = db_result.get("resource")
+        self._upsert_env("DATABASE_URL", db_result["database_url"])
+        print("  DATABASE_URL saved to generated project's .env")
 
         self._ensure_dockerfile(spec)
 

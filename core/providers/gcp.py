@@ -26,6 +26,8 @@ We normalise tag keys/values to lowercase and replace invalid characters.
 import getpass
 import json
 import os
+import secrets
+import string
 import subprocess
 import sys
 from pathlib import Path
@@ -134,6 +136,62 @@ class GCPProvider(BaseProvider):
             "region": region,
         }
 
+    def provision_database(self, spec: dict[str, Any]) -> dict[str, Any] | None:
+        """
+        Provision Cloud SQL Postgres via gcloud CLI and return DATABASE_URL.
+        """
+        creds_info = self._credentials
+        project_id: str = creds_info["project_id"]
+        region: str = creds_info["region"]
+        instance = f"{self.slug(spec).replace('-', '')[:50]}-db"
+        db_name = "appdb"
+        db_user = "developable"
+        password = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(24))
+
+        env = dict(os.environ)
+        if creds_info.get("credentials_file"):
+            env["GOOGLE_APPLICATION_CREDENTIALS"] = creds_info["credentials_file"]
+
+        self._run_cmd(
+            ["gcloud", "sql", "instances", "create", instance, "--database-version=POSTGRES_15", "--tier=db-f1-micro", f"--region={region}", f"--project={project_id}", "--quiet"],
+            env=env,
+            allow_failure=True,
+        )
+        self._run_cmd(
+            ["gcloud", "sql", "users", "set-password", "postgres", f"--instance={instance}", f"--password={password}", f"--project={project_id}", "--quiet"],
+            env=env,
+        )
+        self._run_cmd(
+            ["gcloud", "sql", "databases", "create", db_name, f"--instance={instance}", f"--project={project_id}", "--quiet"],
+            env=env,
+            allow_failure=True,
+        )
+
+        describe = self._run_cmd(
+            ["gcloud", "sql", "instances", "describe", instance, f"--project={project_id}", "--format=json"],
+            env=env,
+        )
+        payload = json.loads(describe)
+        ip = ""
+        for addr in payload.get("ipAddresses", []):
+            if addr.get("type") == "PRIMARY":
+                ip = addr.get("ipAddress", "")
+                break
+        if not ip and payload.get("ipAddresses"):
+            ip = payload["ipAddresses"][0].get("ipAddress", "")
+        if not ip:
+            return None
+
+        return {
+            "database_url": f"postgresql://postgres:{password}@{ip}:5432/{db_name}",
+            "resource": {
+                "type": "gcp_cloud_sql_instance",
+                "id": instance,
+                "project": project_id,
+                "region": region,
+            },
+        }
+
     # ── Main deploy ────────────────────────────────────────────────────────────
 
     def deploy(
@@ -212,6 +270,18 @@ class GCPProvider(BaseProvider):
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
         return creds
+
+    def _run_cmd(
+        self,
+        cmd: list[str],
+        env: dict[str, str],
+        allow_failure: bool = False,
+    ) -> str:
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        if result.returncode != 0 and not allow_failure:
+            print(f"\nCommand failed: {' '.join(cmd)}\n{result.stderr}", file=sys.stderr)
+            sys.exit(1)
+        return result.stdout
 
     def _push_to_gcr(
         self, creds_info: dict[str, Any], local_tag: str, image_uri: str

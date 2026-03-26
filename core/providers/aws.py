@@ -30,6 +30,8 @@ initial validation. For production-grade stability add an ALB in front.
 import base64
 import getpass
 import json
+import secrets
+import string
 import subprocess
 import sys
 import time
@@ -116,6 +118,72 @@ class AWSProvider(BaseProvider):
             "secret_key": secret_key,
             "session_token": None,
             "region": region,
+        }
+
+    def provision_database(self, spec: dict[str, Any]) -> dict[str, Any] | None:
+        """Provision a public RDS Postgres instance and return DATABASE_URL."""
+        import boto3
+        from botocore.exceptions import ClientError
+
+        creds = self._credentials
+        region = creds["region"]
+        project_name = self.slug(spec)
+        db_id = f"{project_name.replace('-', '')[:40]}db"
+        db_name = "appdb"
+        db_user = "developable"
+        alphabet = string.ascii_letters + string.digits
+        db_password = "".join(secrets.choice(alphabet) for _ in range(24))
+
+        session = boto3.Session(
+            aws_access_key_id=creds["access_key"],
+            aws_secret_access_key=creds["secret_key"],
+            aws_session_token=creds.get("session_token"),
+            region_name=region,
+        )
+        rds = session.client("rds")
+
+        try:
+            existing = rds.describe_db_instances(DBInstanceIdentifier=db_id)["DBInstances"][0]
+            rds.modify_db_instance(
+                DBInstanceIdentifier=db_id,
+                MasterUserPassword=db_password,
+                ApplyImmediately=True,
+            )
+            waiter = rds.get_waiter("db_instance_available")
+            waiter.wait(DBInstanceIdentifier=db_id, WaiterConfig={"Delay": 30, "MaxAttempts": 40})
+            existing = rds.describe_db_instances(DBInstanceIdentifier=db_id)["DBInstances"][0]
+            endpoint = existing.get("Endpoint", {}).get("Address")
+            if endpoint:
+                url = f"postgresql://{db_user}:{db_password}@{endpoint}:5432/{db_name}"
+                return {
+                    "database_url": url,
+                    "resource": {"type": "aws_rds_instance", "id": db_id, "arn": existing.get("DBInstanceArn")},
+                }
+        except ClientError:
+            pass
+
+        print(f"  [AWS] Creating RDS instance '{db_id}' (this can take several minutes)...")
+        rds.create_db_instance(
+            DBInstanceIdentifier=db_id,
+            AllocatedStorage=20,
+            DBInstanceClass="db.t3.micro",
+            Engine="postgres",
+            EngineVersion="15",
+            MasterUsername=db_user,
+            MasterUserPassword=db_password,
+            DBName=db_name,
+            PubliclyAccessible=True,
+            BackupRetentionPeriod=0,
+            Tags=[{"Key": "managedBy", "Value": "developable"}],
+        )
+        waiter = rds.get_waiter("db_instance_available")
+        waiter.wait(DBInstanceIdentifier=db_id, WaiterConfig={"Delay": 30, "MaxAttempts": 60})
+        created = rds.describe_db_instances(DBInstanceIdentifier=db_id)["DBInstances"][0]
+        endpoint = created["Endpoint"]["Address"]
+        url = f"postgresql://{db_user}:{db_password}@{endpoint}:5432/{db_name}"
+        return {
+            "database_url": url,
+            "resource": {"type": "aws_rds_instance", "id": db_id, "arn": created.get("DBInstanceArn")},
         }
 
     # ── Main deploy ────────────────────────────────────────────────────────────
