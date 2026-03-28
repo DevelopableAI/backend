@@ -27,9 +27,9 @@ Heroku has no native resource-tagging system. Traceability is maintained by:
 """
 
 import getpass
+import json
 import netrc
 import os
-import re
 import subprocess
 import sys
 import time
@@ -187,17 +187,27 @@ class HerokuProvider(BaseProvider):
             print("\nDocker push failed.", file=sys.stderr)
             sys.exit(1)
 
-        # 5. Get image ID (config digest) per Heroku's documented release flow:
-        #    https://devcenter.heroku.com/articles/container-registry-and-runtime
-        result = subprocess.run(
-            ["docker", "inspect", heroku_image, "--format={{.Id}}"],
+        # 5. Get the image config digest from the manifest.
+        #    With `docker buildx`, `docker inspect --format={{.Id}}` returns the
+        #    manifest digest (sha256 of the manifest JSON), not the config digest
+        #    (sha256 of the image config JSON). Heroku's Formation API indexes
+        #    images by config digest, so we must read it from the manifest itself.
+        manifest_result = subprocess.run(
+            ["docker", "manifest", "inspect", heroku_image],
             capture_output=True, text=True,
         )
-        image_id = result.stdout.strip()
-        print(f"  [Heroku] Image ID: {image_id}")
-        print(f"  [Heroku] App stack: ", end="")
-        stack_resp = requests.get(f"{_HEROKU_API}/apps/{app_name}", headers=headers, timeout=15)
-        print(stack_resp.json().get("stack", {}).get("name", "unknown") if stack_resp.ok else "?")
+        if manifest_result.returncode != 0:
+            print(
+                f"\nFailed to inspect manifest: {manifest_result.stderr}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        manifest = json.loads(manifest_result.stdout)
+        image_id = manifest.get("config", {}).get("digest", "")
+        if not image_id:
+            print("\nCould not read config digest from manifest.", file=sys.stderr)
+            sys.exit(1)
+        print(f"  [Heroku] Config digest: {image_id}")
 
         # 6. Release
         print(f"  [Heroku] Releasing web dyno...")
