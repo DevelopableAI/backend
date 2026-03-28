@@ -216,7 +216,10 @@ class HerokuProvider(BaseProvider):
         # 7. Check that Heroku accepted the release and show dyno state
         self._print_release_status(headers, app_name)
 
-        endpoint = f"https://{app_name}.herokuapp.com"
+        # Heroku now appends a random hash to the default domain for security
+        # (e.g. developable-a8389cc7a1ea.herokuapp.com instead of developable.herokuapp.com).
+        # Fetch the actual domain from the API instead of constructing it ourselves.
+        endpoint = self._get_app_domain(headers, app_name)
         resources = [
             {"type": "heroku_app", "id": app_name, "url": endpoint},
         ]
@@ -461,6 +464,32 @@ jobs:
                 file=sys.stderr,
             )
             sys.exit(1)
+
+    def _get_app_domain(self, headers: dict, app_name: str) -> str:
+        """
+        Return the app's actual herokuapp.com domain.
+
+        Heroku now appends a random hash suffix to default domains
+        (e.g. myapp-a1b2c3d4e5f6.herokuapp.com) so we can't construct the URL
+        from the app name alone. Fetch the real hostname from the domains API.
+        Falls back to the legacy pattern if the API call fails.
+        """
+        try:
+            resp = requests.get(
+                f"{_HEROKU_API}/apps/{app_name}/domains",
+                headers=headers,
+                timeout=15,
+            )
+            if resp.ok:
+                for domain in resp.json():
+                    if domain.get("kind") == "heroku" and domain.get("hostname", "").endswith(".herokuapp.com"):
+                        hostname = domain["hostname"]
+                        print(f"  [Heroku] App domain: https://{hostname}")
+                        return f"https://{hostname}"
+        except Exception as e:
+            print(f"  [Heroku] Warning: could not fetch domain: {e}")
+        # Fallback to legacy pattern
+        return f"https://{app_name}.herokuapp.com"
 
     def _print_release_status(self, headers: dict, app_name: str) -> None:
         """Fetch and print the latest release + dyno state for diagnostics."""
