@@ -238,13 +238,23 @@ class Deployment:
     def _docker_build(self, image_tag: str) -> None:
         """Build the Docker image from the output directory, streaming output.
 
-        Always targets linux/amd64 — all supported cloud providers (Heroku,
-        AWS ECS Fargate, GCP Cloud Run) require AMD64 images regardless of
-        the host architecture (e.g. Apple Silicon).
+        Uses `docker buildx build` with:
+        - --platform linux/amd64   all supported providers require AMD64
+        - --provenance=false       forces Docker manifest v2 format; newer Docker
+                                   Desktop defaults to OCI format which Heroku
+                                   (and some other registries) reject with
+                                   "error from registry: unsupported"
+        - --load                   loads the built image into the local Docker daemon
+                                   (required when buildx is used with --platform)
         """
-        result = subprocess.run(
-            ["docker", "build", "--platform", "linux/amd64", "-t", image_tag, str(self.out_dir)],
-        )
+        result = subprocess.run([
+            "docker", "buildx", "build",
+            "--platform", "linux/amd64",
+            "--provenance=false",
+            "--load",
+            "-t", image_tag,
+            str(self.out_dir),
+        ])
         if result.returncode != 0:
             print(
                 "\nDocker build failed. Ensure Docker is running and the "
