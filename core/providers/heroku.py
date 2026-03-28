@@ -26,7 +26,6 @@ Heroku has no native resource-tagging system. Traceability is maintained by:
   - Recording resources in the local state file.
 """
 
-import base64
 import getpass
 import netrc
 import os
@@ -179,18 +178,27 @@ class HerokuProvider(BaseProvider):
         print(f"  [Heroku] Authenticating Docker to registry.heroku.com...")
         self._docker_login(api_key)
 
-        # 4. Tag + push image
+        # 4. Tag + push image (stream output so push failures are visible)
         heroku_image = f"{_HEROKU_REGISTRY}/{app_name}/web"
         print(f"  [Heroku] Pushing image to {heroku_image}...")
         self._run(["docker", "tag", image_tag, heroku_image])
-        self._run(["docker", "push", heroku_image])
+        push = subprocess.run(["docker", "push", heroku_image])
+        if push.returncode != 0:
+            print("\nDocker push failed.", file=sys.stderr)
+            sys.exit(1)
 
-        # 5. Verify push and get manifest digest directly from the registry.
-        #    The Docker-Content-Digest response header contains the exact digest
-        #    Heroku stored — this is what the Formation API expects for docker_image.
-        #    Using docker inspect values risks a mismatch between local and registry.
-        print(f"  [Heroku] Verifying image in registry...")
-        image_id = self._get_registry_digest(api_key, app_name)
+        # 5. Get image ID (config digest) per Heroku's documented release flow:
+        #    https://devcenter.heroku.com/articles/container-registry-and-runtime
+        result = subprocess.run(
+            ["docker", "inspect", heroku_image, "--format={{.Id}}"],
+            capture_output=True, text=True,
+        )
+        image_id = result.stdout.strip()
+        print(f"  [Heroku] Image ID: {image_id}")
+        print(f"  [Heroku] App stack: ", end="")
+        stack_resp = requests.get(f"{_HEROKU_API}/apps/{app_name}", headers=headers, timeout=15)
+        print(stack_resp.json().get("stack", {}).get("name", "unknown") if stack_resp.ok else "?")
+
         # 6. Release
         print(f"  [Heroku] Releasing web dyno...")
         self._release(headers, app_name, image_id)
@@ -258,42 +266,6 @@ jobs:
 """
 
     # ── Private helpers ────────────────────────────────────────────────────────
-
-    def _get_registry_digest(self, api_key: str, app_name: str) -> str:
-        """Query the Heroku registry for the manifest digest of the pushed image.
-
-        Uses the Docker Registry v2 HTTP API. The Docker-Content-Digest response
-        header is the authoritative digest Heroku's platform stored — using any
-        locally computed value risks a mismatch that causes the Formation API to
-        return 404 "record not found".
-        """
-        resp = requests.get(
-            f"https://{_HEROKU_REGISTRY}/v2/{app_name}/web/manifests/latest",
-            headers={
-                # Registry v2 API uses HTTP Basic auth: username="_", password=api_key
-                # (same credentials as docker login, not the Heroku Platform API Bearer token)
-                "Authorization": "Basic " + base64.b64encode(f"_:{api_key}".encode()).decode(),
-                "Accept": "application/vnd.docker.distribution.manifest.v2+json",
-            },
-            timeout=30,
-        )
-        if not resp.ok:
-            print(
-                f"\n[Heroku] Image not found in registry after push "
-                f"({resp.status_code}): {resp.text}\n"
-                "The docker push may have failed silently. "
-                "Check that Docker is logged in to registry.heroku.com.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        digest = resp.headers.get("Docker-Content-Digest", "")
-        if not digest:
-            print(
-                "\n[Heroku] Registry response missing Docker-Content-Digest header.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        return digest
 
     def _set_container_stack(self, headers: dict, app_name: str) -> None:
         """Set the app's build stack to 'container' (required for registry releases)."""
