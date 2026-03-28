@@ -472,7 +472,7 @@ jobs:
                     print(" ready.")
                     return
             except requests.exceptions.RequestException as e:
-                print(f"  Error hitting the endpoint: {e.response.json()}")
+                print(f"  [Heroku] Health check error: {e}")
                 pass
             print(".", end="", flush=True)
             time.sleep(poll_s)
