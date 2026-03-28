@@ -25,6 +25,10 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# Prisma requires libssl at runtime. node:20-slim (Debian bookworm) includes
+# libssl3 as a node dependency, but we install openssl explicitly to be safe.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
+
 # Only copy what is needed to run
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
