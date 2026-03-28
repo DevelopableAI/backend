@@ -176,12 +176,18 @@ class HerokuProvider(BaseProvider):
         self._run(["docker", "tag", image_tag, heroku_image])
         self._run(["docker", "push", heroku_image])
 
-        # 5. Get image ID for release
+        # 5. Get the registry-assigned manifest digest for release.
+        #    docker inspect --format={{.Id}} returns the local config digest,
+        #    but Heroku's Platform API looks up images by the manifest digest
+        #    that the registry assigned during push. RepoDigests contains the
+        #    value in "registry.heroku.com/{app}/web@sha256:..." format.
         result = subprocess.run(
-            ["docker", "inspect", heroku_image, "--format={{.Id}}"],
+            ["docker", "inspect", heroku_image, "--format={{index .RepoDigests 0}}"],
             capture_output=True, text=True
         )
-        image_id = result.stdout.strip()
+        repo_digest = result.stdout.strip()
+        # Extract "sha256:..." from "registry.heroku.com/{app}/web@sha256:..."
+        image_id = repo_digest.split("@", 1)[-1] if "@" in repo_digest else repo_digest
 
         # 6. Release
         print(f"  [Heroku] Releasing web dyno...")
@@ -240,10 +246,11 @@ jobs:
 
       - name: Release web dyno
         run: |
-          IMAGE_ID=$(docker inspect registry.heroku.com/{app_name}/web --format={{{{.Id}}}})
+          REPO_DIGEST=$(docker inspect registry.heroku.com/{app_name}/web --format='{{{{index .RepoDigests 0}}}}')
+          IMAGE_ID="${{REPO_DIGEST##*@}}"
           curl -s -X PATCH https://api.heroku.com/apps/{app_name}/formation \\
             -H "Content-Type: application/json" \\
-            -H "Accept: application/vnd.heroku+json; version=3" \\
+            -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \\
             -H "Authorization: Bearer ${{{{ secrets.HEROKU_API_KEY }}}}" \\
             -d "{{\\"updates\\":[{{\\"type\\":\\"web\\",\\"docker_image\\":\\"$IMAGE_ID\\"}}]}}"
 """
