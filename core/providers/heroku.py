@@ -463,13 +463,15 @@ jobs:
         """Poll GET <endpoint>/health until HTTP 200 or timeout."""
         print(f"  [Heroku] Waiting for dyno to become ready (up to {timeout_s}s)...", end="", flush=True)
         deadline = time.time() + timeout_s
+        print(f"  [Heroku] Endpoint to call: {endpoint}/health")
         while time.time() < deadline:
             try:
                 resp = requests.get(f"{endpoint}/health", timeout=5)
                 if resp.status_code == 200:
                     print(" ready.")
                     return
-            except requests.exceptions.RequestException:
+            except requests.exceptions.RequestException as e:
+                print(f"  Error hitting the endpoint: {e.response.json()}")
                 pass
             print(".", end="", flush=True)
             time.sleep(poll_s)
