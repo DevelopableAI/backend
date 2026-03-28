@@ -213,6 +213,9 @@ class HerokuProvider(BaseProvider):
         print(f"  [Heroku] Releasing web dyno...")
         self._release(headers, app_name, image_id)
 
+        # 7. Check that Heroku accepted the release and show dyno state
+        self._print_release_status(headers, app_name)
+
         endpoint = f"https://{app_name}.herokuapp.com"
         resources = [
             {"type": "heroku_app", "id": app_name, "url": endpoint},
@@ -256,8 +259,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Login to Heroku Container Registry
-        run: echo "${{{{ secrets.HEROKU_API_KEY }}}}" | docker login --username=_ --password-stdin registry.heroku.com
+      - name: Log in to Heroku Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: registry.heroku.com
+          username: _
+          password: ${{{{ secrets.HEROKU_API_KEY }}}}
 
       - name: Build and push image
         run: |
@@ -267,7 +274,7 @@ jobs:
       - name: Release web dyno
         run: |
           IMAGE_ID=$(docker manifest inspect registry.heroku.com/{app_name}/web | python3 -c "import sys,json; m=json.load(sys.stdin); print(m['config']['digest'])")
-          curl -s -X PATCH https://api.heroku.com/apps/{app_name}/formation \\
+          curl -f -s -X PATCH https://api.heroku.com/apps/{app_name}/formation \\
             -H "Content-Type: application/json" \\
             -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \\
             -H "Authorization: Bearer ${{{{ secrets.HEROKU_API_KEY }}}}" \\
@@ -454,6 +461,34 @@ jobs:
                 file=sys.stderr,
             )
             sys.exit(1)
+
+    def _print_release_status(self, headers: dict, app_name: str) -> None:
+        """Fetch and print the latest release + dyno state for diagnostics."""
+        try:
+            rel = requests.get(
+                f"{_HEROKU_API}/apps/{app_name}/releases",
+                headers={**headers, "Range": "version ..; order=desc, max=1"},
+                timeout=15,
+            )
+            dynos = requests.get(
+                f"{_HEROKU_API}/apps/{app_name}/dynos",
+                headers=headers,
+                timeout=15,
+            )
+            if rel.ok:
+                releases = rel.json()
+                if releases:
+                    r = releases[0]
+                    print(f"  [Heroku] Latest release v{r.get('version')}: status={r.get('status')} description={r.get('description')}")
+            if dynos.ok:
+                dyno_list = dynos.json()
+                if dyno_list:
+                    for d in dyno_list:
+                        print(f"  [Heroku] Dyno {d.get('name')}: state={d.get('state')}")
+                else:
+                    print("  [Heroku] No dynos running yet (release pending).")
+        except Exception as e:
+            print(f"  [Heroku] Could not fetch release status: {e}")
 
     def wait_for_ready(self, endpoint: str, timeout_s: int = 120, poll_s: int = 5) -> None:
         """
