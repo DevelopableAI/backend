@@ -29,6 +29,7 @@ Heroku has no native resource-tagging system. Traceability is maintained by:
 import getpass
 import netrc
 import os
+import re
 import subprocess
 import sys
 import time
@@ -170,24 +171,34 @@ class HerokuProvider(BaseProvider):
         print(f"  [Heroku] Authenticating Docker to registry.heroku.com...")
         self._docker_login(api_key)
 
-        # 4. Tag + push image
+        # 4. Tag + push image, capturing the manifest digest from push output.
+        #    docker push always prints "digest: sha256:..." on success — this
+        #    is the manifest digest Heroku's registry assigned and the value
+        #    the Platform API expects for docker_image. docker inspect .Id gives
+        #    the local config digest which is different and not found by Heroku.
         heroku_image = f"{_HEROKU_REGISTRY}/{app_name}/web"
         print(f"  [Heroku] Pushing image to {heroku_image}...")
         self._run(["docker", "tag", image_tag, heroku_image])
-        self._run(["docker", "push", heroku_image])
-
-        # 5. Get the registry-assigned manifest digest for release.
-        #    docker inspect --format={{.Id}} returns the local config digest,
-        #    but Heroku's Platform API looks up images by the manifest digest
-        #    that the registry assigned during push. RepoDigests contains the
-        #    value in "registry.heroku.com/{app}/web@sha256:..." format.
-        result = subprocess.run(
-            ["docker", "inspect", heroku_image, "--format={{index .RepoDigests 0}}"],
-            capture_output=True, text=True
+        push_result = subprocess.run(
+            ["docker", "push", heroku_image],
+            capture_output=True, text=True,
         )
-        repo_digest = result.stdout.strip()
-        # Extract "sha256:..." from "registry.heroku.com/{app}/web@sha256:..."
-        image_id = repo_digest.split("@", 1)[-1] if "@" in repo_digest else repo_digest
+        if push_result.returncode != 0:
+            print(
+                f"\nDocker push failed:\n{push_result.stderr}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # Parse "digest: sha256:..." from the push output
+        _match = re.search(r"digest:\s+(sha256:\S+)", push_result.stdout + push_result.stderr)
+        if not _match:
+            print(
+                f"\nCould not parse image digest from docker push output:\n{push_result.stdout}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        image_id = _match.group(1)
 
         # 6. Release
         print(f"  [Heroku] Releasing web dyno...")
