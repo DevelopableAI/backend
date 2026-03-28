@@ -1,5 +1,7 @@
 from typing import Any
 
+from core.llm_data import generate_test_data
+
 
 class TestPlanner:
     """
@@ -18,6 +20,9 @@ class TestPlanner:
     - llm_entity: entity dict passed to LLMGenerator (overrides context["entity"])
     - prompt_subdir: "tests" for all test modules (instructs LLM to generate Python)
     """
+
+    def __init__(self, use_llm: bool = True):
+        self.use_llm = use_llm
 
     def plan(self, spec: dict[str, Any], api_plan: dict[str, Any]) -> dict[str, Any]:
         entities = spec["entities"]
@@ -58,6 +63,11 @@ class TestPlanner:
             )
 
             # 01 Register
+            _register_seed = generate_test_data(
+                entity_name=auth_entity["name"],
+                fields=[{"name": f["name"], "ts_type": f["ts_type"]} for f in required_scalar + optional_scalar],
+                use_llm=self.use_llm,
+            )
             modules.append({
                 "path": f"test_{num:02d}_register.py",
                 "template": "tests/test_auth_register.py.j2",
@@ -69,12 +79,9 @@ class TestPlanner:
                     "login_field": login_field,
                     "required_scalar_fields": required_scalar,
                     "optional_scalar_fields": optional_scalar,
+                    "seed_values": _register_seed,
                 },
-                "needs_llm": True,
-                "llm_task": "seed_data",
-                "llm_model": "fast",
-                "llm_entity": auth_entity,
-                "prompt_subdir": "tests",
+                "needs_llm": False,
             })
             num += 1
 
@@ -145,6 +152,11 @@ class TestPlanner:
             )
 
             # seed_get
+            _seed_values = generate_test_data(
+                entity_name=entity["name"],
+                fields=[{"name": f["name"], "ts_type": f["ts_type"]} for f in required_scalar + optional_scalar],
+                use_llm=self.use_llm,
+            )
             modules.append({
                 "path": f"test_{num:02d}_{entity['name_plural']}_seed_get.py",
                 "template": "tests/test_entity_seed_get.py.j2",
@@ -162,12 +174,9 @@ class TestPlanner:
                     "optional_scalar_fields": optional_scalar,
                     "all_fk_fields": all_fk_fields,
                     "secondary_fk_fields": secondary_fk_fields,
+                    "seed_values": _seed_values,
                 },
-                "needs_llm": True,
-                "llm_task": "seed_data",
-                "llm_model": "fast",
-                "llm_entity": entity,
-                "prompt_subdir": "tests",
+                "needs_llm": False,
             })
             num += 1
 

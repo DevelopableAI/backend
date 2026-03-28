@@ -37,57 +37,46 @@ def run(ctx: TestContext) -> None:
 
     # --- Seed: create {{ entity.name_plural }} ---
 
-/* LLM_SECTION_START */
-# Generate 3 seed calls for entity "{{ entity.name }}" using its canonical create path.
-#
-# Canonical create path: {{ canonical_create_path }}
-# Requires authentication: {{ requires_auth }}
-#
-# Required body fields (do NOT include FK fields — they are server-injected):
-{% for f in required_scalar_fields %}
-#   {{ f.name }}: {{ f.ts_type }} (required)
-{% endfor %}
-{% for f in optional_scalar_fields %}
-#   {{ f.name }}: {{ f.ts_type }} (optional)
-{% endfor %}
-#
-# Server-injected FK fields (omit from body — injected from JWT or URL param):
-{% for fk in all_fk_fields %}
-#   {{ fk }}
-{% endfor %}
-#
-{% if secondary_fk_fields %}
-# IMPORTANT — Required FK fields that MUST be included in the request body (NOT server-injected):
-{% for sfk in secondary_fk_fields %}
-#   {{ sfk.fk_field }}: use {{ sfk.related_entity_lower }}1_id from ctx.state — include in EVERY seed body
-{% endfor %}
-#
-{% endif %}
-# State variables to populate:
-#   ctx.state["{{ entity.name_lower }}1_id"] — first created (use token1)
-#   ctx.state["{{ entity.name_lower }}2_id"] — second created (use token1, include optional fields)
-#   ctx.state["{{ entity.name_lower }}3_id"] — third created (use token2)
-#
-{% if owner_fk_field %}
-# After seed 1: assert data.get("{{ owner_fk_field }}") == {{ auth_entity.name_lower }}1_id
-#   ctx.ok("{{ owner_fk_field }} correctly injected from JWT") OR ctx.fail(...)
-{% endif %}
-{% if primary_parent_fk_field %}
-# After seed 1: assert data.get("{{ primary_parent_fk_field }}") == {{ primary_parent_entity.name_lower }}1_id
-#   ctx.ok("{{ primary_parent_fk_field }} correctly injected from URL param") OR ctx.fail(...)
-{% endif %}
-#
-# Available context variables (already declared above):
-{% if auth_entity %}
-#   token1, token2, {{ auth_entity.name_lower }}1_id, {{ auth_entity.name_lower }}2_id
-{% endif %}
 {% if primary_parent_entity and primary_parent_entity.name != (auth_entity.name if auth_entity else '') %}
-#   {{ primary_parent_entity.name_lower }}1_id
+    _create_path = f"{{ canonical_create_path | replace(':id', '{' ~ primary_parent_entity.name_lower ~ '1_id}') }}"
+{% else %}
+    _create_path = "{{ canonical_create_path }}"
+{% endif %}
+{% set _token_vars = ["token1", "token1", "token2"] %}
+{% for _i in range(1, 4) %}
+    resp = ctx.req("POST", _create_path,
+{% if auth_entity %}
+                   token={{ _token_vars[_i - 1] }},
+{% endif %}
+                   body={
+{% for f in required_scalar_fields %}
+        "{{ f.name }}": {{ seed_values[_i - 1][f.name] | topython }},
+{% endfor %}
+{% if _i == 2 %}
+{% for f in optional_scalar_fields %}
+        "{{ f.name }}": {{ seed_values[_i - 1][f.name] | topython }},
+{% endfor %}
 {% endif %}
 {% for sfk in secondary_fk_fields %}
-#   {{ sfk.related_entity_lower }}1_id  (use as value for {{ sfk.fk_field }} in body)
+        "{{ sfk.fk_field }}": {{ sfk.related_entity_lower }}1_id,
 {% endfor %}
-/* LLM_SECTION_END */
+    })
+    if ctx.assert_status(resp, 201, "Seed: Create {{ entity.name_lower }}{{ _i }}"):
+        data = ctx.safe_json(resp)
+        ctx.state["{{ entity.name_lower }}{{ _i }}_id"] = data.get("id")
+{% if owner_fk_field and _i == 1 %}
+        if data.get("{{ owner_fk_field }}") == {{ auth_entity.name_lower }}1_id:
+            ctx.ok("{{ owner_fk_field }} injected from JWT")
+        else:
+            ctx.fail(f"{{ owner_fk_field }} mismatch: expected {{ '{' }}{{ auth_entity.name_lower }}1_id{{ '}' }}, got {data.get('{{ owner_fk_field }}')}")
+{% endif %}
+{% if primary_parent_fk_field and _i == 1 %}
+        if data.get("{{ primary_parent_fk_field }}") == {{ primary_parent_entity.name_lower }}1_id:
+            ctx.ok("{{ primary_parent_fk_field }} injected from URL param")
+        else:
+            ctx.fail(f"{{ primary_parent_fk_field }} mismatch: expected {{ '{' }}{{ primary_parent_entity.name_lower }}1_id{{ '}' }}, got {data.get('{{ primary_parent_fk_field }}')}")
+{% endif %}
+{% endfor %}
 
     # --- GET tests ---
 

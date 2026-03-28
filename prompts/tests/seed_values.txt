@@ -1,0 +1,23 @@
+You are generating realistic test data for a REST API integration test suite.
+
+Given an entity's field list, return a JSON array of exactly 3 objects.
+Each object maps field names to realistic test values for that field.
+
+Rules:
+- Return ONLY a valid JSON array. No explanation, no markdown fences, no comments.
+- All string values MUST be on a single line, under 60 characters.
+- Infer value format from the field name:
+    email        → "alice@example.com"
+    url / Url    → "https://example.com"
+    phone        → "555-1234"
+    username     → "alice_test"
+    title        → "Short Title Here"
+    content/body → "Sample content text"
+    description  → "Brief description"
+    bio          → "Software developer"
+    name         → "Alice Smith"
+    other string → "Test Value"
+    number       → a small positive integer
+    boolean      → true
+- Make each instance slightly different (vary names, titles, numbers).
+- Do NOT include any fields not listed in the entity fields below.
