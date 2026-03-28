@@ -364,14 +364,14 @@ class Deployment:
         if "pending" in endpoint:
             print(
                 "\n  Skipping remote smoke tests: endpoint not yet available.\n"
-                f"  Run manually: python {tests_dir}/run_all.py <endpoint>"
+                f"  Run manually: {sys.executable} {tests_dir}/run_all.py <endpoint>"
             )
             return
 
         print(f"\n  Running remote smoke tests against {endpoint}...")
         print(f"  (test files are NOT modified — URL passed as argument)\n")
         subprocess.run(
-            ["python", str(tests_dir / "run_all.py"), endpoint],
+            [sys.executable, str(tests_dir / "run_all.py"), endpoint],
         )
         # Non-fatal: test failures are printed but do not halt the deployment pipeline.
 

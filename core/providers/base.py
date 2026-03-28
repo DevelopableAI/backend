@@ -137,8 +137,14 @@ class BaseProvider(ABC):
         """
         print(f"  Applying Prisma schema to remote database...")
         env = {**os.environ, "DATABASE_URL": remote_db_url}
+
+        # Ensure node_modules are present so the project's own Prisma version
+        # is used. `npx --yes prisma` downloads the latest release (currently
+        # v7), which dropped support for `url = env(...)` in schema.prisma.
+        subprocess.run(["npm", "install"], cwd=self.out_dir, capture_output=True)
+
         result = subprocess.run(
-            ["npx", "--yes", "prisma", "db", "push", "--accept-data-loss"],
+            ["./node_modules/.bin/prisma", "db", "push", "--accept-data-loss"],
             cwd=self.out_dir,
             env=env,
         )
