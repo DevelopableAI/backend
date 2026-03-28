@@ -178,35 +178,18 @@ class HerokuProvider(BaseProvider):
         print(f"  [Heroku] Authenticating Docker to registry.heroku.com...")
         self._docker_login(api_key)
 
-        # 4. Tag + push image, capturing the manifest digest from push output.
-        #    docker push always prints "digest: sha256:..." on success — this
-        #    is the manifest digest Heroku's registry assigned and the value
-        #    the Platform API expects for docker_image. docker inspect .Id gives
-        #    the local config digest which is different and not found by Heroku.
+        # 4. Tag + push image
         heroku_image = f"{_HEROKU_REGISTRY}/{app_name}/web"
         print(f"  [Heroku] Pushing image to {heroku_image}...")
         self._run(["docker", "tag", image_tag, heroku_image])
-        push_result = subprocess.run(
-            ["docker", "push", heroku_image],
-            capture_output=True, text=True,
-        )
-        if push_result.returncode != 0:
-            print(
-                f"\nDocker push failed:\n{push_result.stderr}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        self._run(["docker", "push", heroku_image])
 
-        # Parse "digest: sha256:..." from the push output
-        _match = re.search(r"digest:\s+(sha256:\S+)", push_result.stdout + push_result.stderr)
-        if not _match:
-            print(
-                f"\nCould not parse image digest from docker push output:\n{push_result.stdout}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        image_id = _match.group(1)
-        print("Image ID:", image_id)
+        # 5. Verify push and get manifest digest directly from the registry.
+        #    The Docker-Content-Digest response header contains the exact digest
+        #    Heroku stored — this is what the Formation API expects for docker_image.
+        #    Using docker inspect values risks a mismatch between local and registry.
+        print(f"  [Heroku] Verifying image in registry...")
+        image_id = self._get_registry_digest(api_key, app_name)
         # 6. Release
         print(f"  [Heroku] Releasing web dyno...")
         self._release(headers, app_name, image_id)
@@ -274,6 +257,40 @@ jobs:
 """
 
     # ── Private helpers ────────────────────────────────────────────────────────
+
+    def _get_registry_digest(self, api_key: str, app_name: str) -> str:
+        """Query the Heroku registry for the manifest digest of the pushed image.
+
+        Uses the Docker Registry v2 HTTP API. The Docker-Content-Digest response
+        header is the authoritative digest Heroku's platform stored — using any
+        locally computed value risks a mismatch that causes the Formation API to
+        return 404 "record not found".
+        """
+        resp = requests.get(
+            f"https://{_HEROKU_REGISTRY}/v2/{app_name}/web/manifests/latest",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/vnd.docker.distribution.manifest.v2+json",
+            },
+            timeout=30,
+        )
+        if not resp.ok:
+            print(
+                f"\n[Heroku] Image not found in registry after push "
+                f"({resp.status_code}): {resp.text}\n"
+                "The docker push may have failed silently. "
+                "Check that Docker is logged in to registry.heroku.com.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        digest = resp.headers.get("Docker-Content-Digest", "")
+        if not digest:
+            print(
+                "\n[Heroku] Registry response missing Docker-Content-Digest header.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return digest
 
     def _set_container_stack(self, headers: dict, app_name: str) -> None:
         """Set the app's build stack to 'container' (required for registry releases)."""
