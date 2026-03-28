@@ -236,9 +236,14 @@ class Deployment:
         print(f"  Generated {len(plan['files'])} infrastructure file(s).")
 
     def _docker_build(self, image_tag: str) -> None:
-        """Build the Docker image from the output directory, streaming output."""
+        """Build the Docker image from the output directory, streaming output.
+
+        Always targets linux/amd64 — all supported cloud providers (Heroku,
+        AWS ECS Fargate, GCP Cloud Run) require AMD64 images regardless of
+        the host architecture (e.g. Apple Silicon).
+        """
         result = subprocess.run(
-            ["docker", "build", "-t", image_tag, str(self.out_dir)],
+            ["docker", "build", "--platform", "linux/amd64", "-t", image_tag, str(self.out_dir)],
         )
         if result.returncode != 0:
             print(
