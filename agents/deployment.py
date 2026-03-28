@@ -236,7 +236,21 @@ class Deployment:
         print(f"  Generated {len(plan['files'])} infrastructure file(s).")
 
     def _docker_build(self, image_tag: str) -> None:
-        """Build the Docker image from the output directory, streaming output."""
+        """Build the Docker image from the output directory, streaming output.
+
+        Runs `npm install` first if package-lock.json is absent — the Dockerfile
+        uses `npm ci` which requires a lockfile to exist.
+        """
+        if not (self.out_dir / "package-lock.json").exists():
+            print("  Running npm install to generate package-lock.json...")
+            result = subprocess.run(["npm", "install"], cwd=self.out_dir)
+            if result.returncode != 0:
+                print(
+                    "\nnpm install failed. Ensure Node.js is installed.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
         result = subprocess.run(
             ["docker", "build", "-t", image_tag, str(self.out_dir)],
         )
