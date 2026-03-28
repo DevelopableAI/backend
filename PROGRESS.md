@@ -112,6 +112,41 @@ API files:
   Estimated cost  : $0.1020
 ─────────────────────────────────────────────────────────
 
+# 03/27/2026 [Deployment Agent]
+- Implemented Deployment Agent (`agents/deployment.py`) as the 4th component of the Backend Engineer, alongside Developer, Tester, and Version Control agents.
+- Supports three cloud providers: **AWS ECS Fargate**, **Heroku**, and **GCP Cloud Run**
+- Zero LLM cost — pure SDK/subprocess calls, no Anthropic API usage
+- Key features implemented:
+    - Provider selection and credential detection/collection
+    - Managed database provisioning per provider (RDS, Heroku Postgres, Cloud SQL)
+    - Prisma schema applied to remote DB via `npx prisma db push --accept-data-loss`
+    - Container build and push to provider registry
+    - Container deployment
+    - Local resource tracking at `<out_dir>/.developable/state.json`
+    - CI/CD deploy workflow pushed to GitHub (`.github/workflows/deploy.yml`) triggering after CI passes on `main`
+    - Remote smoke tests run against live endpoint after deploy
+- Added `--deploy-to`, `--aws-region`, `--heroku-app`, `--gcp-project`, `--gcp-region`, `--project-name` CLI flags to `main.py`
+- GitHub repo description now set to `"<project_name> API by developable (developablecode.app)"`
+- Changed generated `Dockerfile.j2` from `npm ci` to `npm install` (generated projects have no `package-lock.json`)
+
+## 03/27/2026 [Heroku deployment issues and solutions]
+
+**Issue 1 — Docker push rejected with "error from registry: unsupported"**
+- Newer Docker Desktop defaults to OCI image format (`application/vnd.oci.image.index.v1+json`), which Heroku's registry rejects.
+- **Fix:** Use `docker buildx build --platform linux/amd64 --provenance=false --load`. The `--provenance=false` flag forces Docker manifest v2 format; `--load` is required when using `--platform` with buildx.
+
+**Issue 2 — Release API returning 404 "process_type (web) not found"**
+- The Heroku Formation API requires `Accept: application/vnd.heroku+json; version=3.docker-releases` for container registry releases. Using `version=3` (slug mode) fails with 404 on new apps that have no existing web dyno.
+- **Fix:** Added the `docker-releases` Accept header to the Formation API call.
+
+**Issue 3 — Release API returning 404 "Couldn't find that record"**
+- Root cause traced through multiple hypotheses. The diagnostic output revealed:
+    - `docker buildx` sets the local image's `.Id` to the **manifest digest** (sha256 of the manifest JSON)
+    - Regular `docker build` sets `.Id` to the **config digest** (sha256 of the image config JSON)
+    - Heroku's Formation API indexes images by **config digest**, but we were sending the manifest digest
+    - The build output makes the distinction visible: `exporting manifest sha256:6d733b...` vs `exporting config sha256:c7b523...` — two different values
+- **Fix:** After pushing, run `docker manifest inspect registry.heroku.com/{app}/web` to read the manifest JSON from the registry, then extract `config.digest` — this is the identifier Heroku stores and expects in `docker_image`.
+
 # 03/28/2026
 - Think about Engineer entity -> especially new features that have not been supported by templates -> TemplateGenerator + open-source contribution opportunity for a few extra tokens
 - Engineer entity with template-supported tasks are more like +/- between what is already there and what is the correct template to pick.
