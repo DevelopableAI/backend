@@ -160,6 +160,13 @@ class HerokuProvider(BaseProvider):
         app_name = self._ensure_app(headers, app_name)
         self._app_name_resolved = app_name
 
+        # 2a. Explicitly set the app stack to "container".
+        #     Passing stack in the create payload is not reliable; Heroku
+        #     requires a dedicated PATCH to switch to container mode. Without
+        #     this, the Formation API returns 404 "record not found" because
+        #     it looks for a buildpack slug rather than a container image.
+        self._set_container_stack(headers, app_name)
+
         # 2. Set config vars (env vars + Developable tracking vars)
         print(f"  [Heroku] Setting config vars...")
         config_vars = dict(env_vars)
@@ -268,12 +275,26 @@ jobs:
 
     # ── Private helpers ────────────────────────────────────────────────────────
 
+    def _set_container_stack(self, headers: dict, app_name: str) -> None:
+        """Set the app's build stack to 'container' (required for registry releases)."""
+        resp = requests.patch(
+            f"{_HEROKU_API}/apps/{app_name}",
+            headers=headers,
+            json={"build_stack": "container"},
+            timeout=30,
+        )
+        if not resp.ok:
+            print(
+                f"\n[Heroku] Warning: could not set container stack: {resp.text}",
+                file=sys.stderr,
+            )
+
     def _ensure_app(self, headers: dict, app_name: str) -> str:
         """Create the Heroku app or reuse an existing one. Returns final app name."""
         resp = requests.post(
             f"{_HEROKU_API}/apps",
             headers=headers,
-            json={"name": app_name, "stack": "container"},
+            json={"name": app_name},
             timeout=30,
         )
         if resp.status_code == 201:
