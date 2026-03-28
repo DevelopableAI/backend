@@ -394,9 +394,16 @@ jobs:
             sys.exit(1)
 
     def _release(self, headers: dict, app_name: str, image_id: str) -> None:
+        # Container registry releases require the docker-releases Accept header.
+        # The standard version=3 header treats this as a slug-based formation
+        # update, which fails with 404 on brand-new apps that have no web dyno.
+        docker_headers = {
+            **headers,
+            "Accept": "application/vnd.heroku+json; version=3.docker-releases",
+        }
         resp = requests.patch(
             f"{_HEROKU_API}/apps/{app_name}/formation",
-            headers=headers,
+            headers=docker_headers,
             json={"updates": [{"type": "web", "docker_image": image_id}]},
             timeout=30,
         )
