@@ -26,6 +26,7 @@ Heroku has no native resource-tagging system. Traceability is maintained by:
   - Recording resources in the local state file.
 """
 
+import base64
 import getpass
 import netrc
 import os
@@ -269,7 +270,9 @@ jobs:
         resp = requests.get(
             f"https://{_HEROKU_REGISTRY}/v2/{app_name}/web/manifests/latest",
             headers={
-                "Authorization": f"Bearer {api_key}",
+                # Registry v2 API uses HTTP Basic auth: username="_", password=api_key
+                # (same credentials as docker login, not the Heroku Platform API Bearer token)
+                "Authorization": "Basic " + base64.b64encode(f"_:{api_key}".encode()).decode(),
                 "Accept": "application/vnd.docker.distribution.manifest.v2+json",
             },
             timeout=30,
