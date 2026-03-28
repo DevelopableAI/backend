@@ -213,7 +213,9 @@ class HerokuProvider(BaseProvider):
         print(f"  [Heroku] Releasing web dyno...")
         self._release(headers, app_name, image_id)
 
+        # 7. Wait for the dyno to become ready (poll /health up to 120s)
         endpoint = f"https://{app_name}.herokuapp.com"
+        self._wait_for_ready(endpoint)
         resources = [
             {"type": "heroku_app", "id": app_name, "url": endpoint},
         ]
@@ -266,8 +268,7 @@ jobs:
 
       - name: Release web dyno
         run: |
-          REPO_DIGEST=$(docker inspect registry.heroku.com/{app_name}/web --format='{{{{index .RepoDigests 0}}}}')
-          IMAGE_ID="${{REPO_DIGEST##*@}}"
+          IMAGE_ID=$(docker manifest inspect registry.heroku.com/{app_name}/web | python3 -c "import sys,json; m=json.load(sys.stdin); print(m['config']['digest'])")
           curl -s -X PATCH https://api.heroku.com/apps/{app_name}/formation \\
             -H "Content-Type: application/json" \\
             -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \\
@@ -423,7 +424,8 @@ jobs:
 
     def _docker_login(self, api_key: str) -> None:
         result = subprocess.run(
-            ["docker", "login", "--username=_", f"--password={api_key}", _HEROKU_REGISTRY],
+            ["docker", "login", "--username=_", "--password-stdin", _HEROKU_REGISTRY],
+            input=api_key,
             capture_output=True,
             text=True,
         )
@@ -454,6 +456,24 @@ jobs:
                 file=sys.stderr,
             )
             sys.exit(1)
+
+    def _wait_for_ready(
+        self, endpoint: str, timeout_s: int = 120, poll_s: int = 5
+    ) -> None:
+        """Poll GET <endpoint>/health until HTTP 200 or timeout."""
+        print(f"  [Heroku] Waiting for dyno to become ready (up to {timeout_s}s)...", end="", flush=True)
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            try:
+                resp = requests.get(f"{endpoint}/health", timeout=5)
+                if resp.status_code == 200:
+                    print(" ready.")
+                    return
+            except requests.exceptions.RequestException:
+                pass
+            print(".", end="", flush=True)
+            time.sleep(poll_s)
+        print(f"\n  [Heroku] Warning: dyno did not become healthy within {timeout_s}s. Tests may fail.", file=sys.stderr)
 
     def _run(self, cmd: list[str]) -> None:
         result = subprocess.run(cmd, capture_output=True)
