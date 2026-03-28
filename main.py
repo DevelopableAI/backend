@@ -195,10 +195,12 @@ def main():
     print("  npm run dev")
 
     # ── Tester agent: generate the integration test suite ─────────────────────
-    # When --github is used without --tests-out, put tests inside the output
-    # directory so they are included in the git repository.
+    # When --github is used, tests MUST live inside out_dir/tests so that
+    # `git add .` includes them and CI's hashFiles('tests/run_all.py') finds
+    # them. An explicit --tests-out outside out_dir is silently ignored in
+    # favour of out_dir/tests when publishing to GitHub.
     tests_out = args.tests_out
-    if args.github and not tests_out:
+    if args.github:
         tests_out = str(out_dir / "tests")
 
     if tests_out:
