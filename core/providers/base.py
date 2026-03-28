@@ -179,3 +179,13 @@ class BaseProvider(ABC):
             return entities[0]["name_lower"] + "-api"
         schema_path = spec.get("schema_path", "schema")
         return Path(schema_path).stem.replace("_", "-").lower() + "-api"
+
+    def wait_for_ready(self, endpoint: str) -> None:
+        """
+        Block until the deployed service is accepting traffic.
+
+        Default implementation is a no-op. Providers that deploy containers
+        asynchronously (e.g. Heroku) should override this to poll the health
+        endpoint. This is called by the deployment agent AFTER apply_schema()
+        so the service has its DATABASE_URL before the readiness check starts.
+        """

@@ -213,9 +213,7 @@ class HerokuProvider(BaseProvider):
         print(f"  [Heroku] Releasing web dyno...")
         self._release(headers, app_name, image_id)
 
-        # 7. Wait for the dyno to become ready (poll /health up to 120s)
         endpoint = f"https://{app_name}.herokuapp.com"
-        self._wait_for_ready(endpoint)
         resources = [
             {"type": "heroku_app", "id": app_name, "url": endpoint},
         ]
@@ -457,10 +455,13 @@ jobs:
             )
             sys.exit(1)
 
-    def _wait_for_ready(
-        self, endpoint: str, timeout_s: int = 120, poll_s: int = 5
-    ) -> None:
-        """Poll GET <endpoint>/health until HTTP 200 or timeout."""
+    def wait_for_ready(self, endpoint: str, timeout_s: int = 120, poll_s: int = 5) -> None:
+        """
+        Poll GET <endpoint>/health until HTTP 200 or timeout.
+
+        Called by the deployment agent AFTER apply_schema() so DATABASE_URL is
+        already set in Heroku's config vars and the dyno has restarted with it.
+        """
         print(f"  [Heroku] Waiting for dyno to become ready (up to {timeout_s}s)...", end="", flush=True)
         deadline = time.time() + timeout_s
         print(f"  [Heroku] Endpoint to call: {endpoint}/health")

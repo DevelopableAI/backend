@@ -159,6 +159,9 @@ class Deployment:
             # The app restarts on config var changes, so no extra release needed.
             record["resources"].extend(db_resources)
 
+            # Wait for the dyno to become healthy now that DATABASE_URL is set.
+            provider.wait_for_ready(record["endpoint"])
+
         else:
             # AWS / GCP: provision DB first, then deploy container.
             print(f"\n  Provisioning managed PostgreSQL database...")
@@ -166,6 +169,8 @@ class Deployment:
 
             print(f"\n  Applying Prisma schema to remote database...")
             provider.apply_schema(db_url)
+
+            provider.wait_for_ready(record["endpoint"])
 
             # Build image
             image_tag = f"developable/{project_name}:latest"
