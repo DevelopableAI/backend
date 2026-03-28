@@ -206,7 +206,7 @@ class HerokuProvider(BaseProvider):
             )
             sys.exit(1)
         image_id = _match.group(1)
-
+        print("Image ID:", image_id)
         # 6. Release
         print(f"  [Heroku] Releasing web dyno...")
         self._release(headers, app_name, image_id)
