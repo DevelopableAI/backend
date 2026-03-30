@@ -178,8 +178,11 @@ class HerokuProvider(BaseProvider):
         self._set_container_stack(headers, app_name)
 
         # 2. Set config vars (env vars + Developable tracking vars)
+        #    Exclude DATABASE_URL — the local .env value points to localhost
+        #    and would override the real Heroku Postgres URL. The addon sets
+        #    DATABASE_URL automatically; we update it after provisioning.
         print(f"  [Heroku] Setting config vars...")
-        config_vars = dict(env_vars)
+        config_vars = {k: v for k, v in env_vars.items() if k != "DATABASE_URL"}
         config_vars["DEVELOPABLE_PROJECT_NAME"] = project_name
         config_vars["DEVELOPABLE_DEPLOYMENT_ID"] = deployment_id
         self._set_config_vars(headers, app_name, config_vars)
@@ -402,12 +405,17 @@ jobs:
 
     def _get_database_url(self, headers: dict, app_name: str) -> str:
         """
-        Retrieve DATABASE_URL from Heroku config vars.
+        Retrieve the Heroku Postgres URL and set it as DATABASE_URL.
 
-        Heroku Postgres sets the URL with the legacy `postgres://` scheme.
-        Prisma 5 requires `postgresql://`, so we normalize and write the
-        corrected value back to Heroku config vars. This also triggers a
-        dyno restart so the running app picks up the correct URL immediately.
+        Heroku Postgres sets the addon URL under HEROKU_POSTGRESQL_*_URL, not
+        necessarily DATABASE_URL — if we previously set DATABASE_URL to a local
+        .env value, Heroku will not override it. We read the addon-specific key
+        directly so we always get the real remote URL.
+
+        Heroku also uses the legacy `postgres://` scheme; Prisma 5 requires
+        `postgresql://`, so we normalize and write the corrected value back to
+        DATABASE_URL. This triggers a dyno restart so the running app picks up
+        the correct URL.
         """
         resp = requests.get(
             f"{_HEROKU_API}/apps/{app_name}/config-vars",
@@ -420,10 +428,24 @@ jobs:
                 file=sys.stderr,
             )
             sys.exit(1)
-        db_url = resp.json().get("DATABASE_URL", "")
+
+        config = resp.json()
+
+        # Prefer the addon-specific key (HEROKU_POSTGRESQL_*_URL) — this is the
+        # authoritative source and is unaffected by any DATABASE_URL we set earlier.
+        db_url = ""
+        for key, value in config.items():
+            if key.startswith("HEROKU_POSTGRESQL_") and key.endswith("_URL") and value:
+                db_url = value
+                break
+
+        # Fall back to DATABASE_URL if the addon key is absent
+        if not db_url:
+            db_url = config.get("DATABASE_URL", "")
+
         if not db_url:
             print(
-                "\nHeroku Postgres addon provisioned but DATABASE_URL not found in config vars.",
+                "\nHeroku Postgres addon provisioned but no DATABASE_URL found in config vars.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -431,8 +453,10 @@ jobs:
         # Normalize scheme: Heroku sets postgres://, Prisma 5 requires postgresql://
         if db_url.startswith("postgres://"):
             db_url = "postgresql://" + db_url[len("postgres://"):]
-            self._set_config_vars(headers, app_name, {"DATABASE_URL": db_url})
-            print("  [Heroku] Normalized DATABASE_URL scheme to postgresql:// (dyno will restart)")
+
+        # Always write DATABASE_URL back so the dyno uses the correct remote URL.
+        self._set_config_vars(headers, app_name, {"DATABASE_URL": db_url})
+        print("  [Heroku] DATABASE_URL set to remote Heroku Postgres (dyno will restart)")
 
         return db_url
 
