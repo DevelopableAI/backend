@@ -150,3 +150,154 @@ API files:
 # 03/28/2026
 - Think about Engineer entity -> especially new features that have not been supported by templates -> TemplateGenerator + open-source contribution opportunity for a few extra tokens
 - Engineer entity with template-supported tasks are more like +/- between what is already there and what is the correct template to pick.
+
+# 03/30/2026 [Persistent Engineer Architecture]
+
+## Vision
+
+Evolve Developable from a one-shot CLI tool into a **publishable Python library** (`pip install developable`) where each backend service gets a persistent **Engineer** — a digital entity that stays responsible for that service indefinitely.
+
+The Engineer is the same 4 agents (Developer + Tester + VersionControl + Deployment) composed with persistent state and task routing. The key insight from 03/28: **template-supported tasks are "+/- between what is already there and what the correct template to pick is."** The LLM's role stays narrow — fill logic gaps in templates (validators, test bodies), and one-shot generate new templates when none exists.
+
+```
+# First time: create a service
+eng = Engineer.create(schema="./schema.prisma", out_dir="./my-api")
+
+# Later: add a new entity or endpoint
+eng = Engineer.attach("./my-api")
+eng.add_feature(schema="./v2.schema.prisma")
+
+# Anytime: maintain the service
+eng.maintain(tasks=["security_audit", "dependency_upgrade"])
+```
+
+---
+
+## Phase 1 — Library Packaging
+
+Move all source into a `developable/` package directory. No feature changes — purely structural.
+
+- `pyproject.toml` with entrypoint `developable = "developable.cli:main"`
+- `importlib.resources` to resolve `templates/` and `prompts/` paths after `pip install` (replaces current path-relative `config.py`)
+- Optional extras: `developable[deploy]` (boto3/docker/gcp SDKs), `developable[community]` (pygithub for PR contribution)
+- `main.py` at repo root becomes a one-line shim to `developable.cli:main` for backward compat
+- `developable/__init__.py` exposes: `Engineer`, `generate(schema, out_dir)`, `attach(out_dir)`
+
+---
+
+## Phase 2 — Engineer Entity + State (`engineer.json`)
+
+A new state file at `<out_dir>/.developable/engineer.json` (extends the existing `state.json`).
+
+**Key fields:**
+- `schema_hash` — SHA256 of the raw `.prisma` file; detects schema drift at a glance
+- `entity_hashes` — per-entity SHA256 of the canonical-JSON-serialised spec sub-dict; enables O(1) diff to find changed entities
+- `file_manifest` — per-file: last-written content hash + which template generated it; gives `Assembler` a second signal for user-modification detection beyond git-diff (handles cloned/CI environments)
+- `template_registry.active_templates` — maps each template key to its source level and version
+- `task_history` — every `create`, `add_feature`, `maintain` call logged with cost in USD
+
+**Engineer class interface:**
+- `Engineer.create(schema, out_dir, ...)` — runs the full generation pipeline, writes `engineer.json`
+- `Engineer.attach(out_dir)` — reads `engineer.json`, reconstructs state, ready for `add_feature` or `maintain`
+
+**Assembler changes:** after each successful file write, record the content hash into `EngineerState.file_manifest`. `_is_user_modified()` gains a second check: if current content hash matches the last-written hash in `engineer.json`, the file has not been modified even if `git diff` is ambiguous.
+
+---
+
+## Phase 3 — Incremental Feature Addition
+
+`eng.add_feature(schema="./v2.prisma")` should cost ~$0.005–0.01 per changed entity (not $0.08 per full re-generation).
+
+**Schema diff:** `Planner.diff(old_snapshot, new_spec)` produces a `SchemaDiff`:
+```python
+{
+  "new_entities": ["Webhook"],
+  "removed_entities": [],
+  "modified_entities": {
+    "Post": { "new_fields": ["publishedAt"], "modified_fields": [], "removed_fields": [] }
+  },
+  "unchanged_entities": ["User", "Comment"]
+}
+```
+
+**Template sensitivity map** (static dict in `planner.py`) declares which templates are affected by which change types:
+```python
+TEMPLATE_SENSITIVITY = {
+    "express/api/validator.ts.j2":  ["fields", "relations", "llm_constraints"],
+    "express/api/types.ts.j2":      ["fields"],
+    "express/api/repository.ts.j2": ["fields", "relations"],
+    "express/api/controller.ts.j2": ["relations", "auth_entity_name"],
+    "express/api/routes.ts.j2":     ["auth_entity_name"],
+    "express/api/app.ts.j2":        ["entities"],    # entity list changed
+    "express/api/package.json.j2":  [],              # never schema-sensitive
+}
+```
+
+`Planner.plan_incremental(spec, diff)` returns only files where the template's sensitivity set intersects with what actually changed. For a field addition on `Post`, only `validator.ts`, `types.ts`, `repository.ts` for `Post` are re-planned — 1 LLM call (validator) + 2 pure template renders.
+
+`TestPlanner.plan_incremental()` mirrors this; only test files for new/changed entities are re-generated.
+
+---
+
+## Phase 4 — Template Registry
+
+A 4-level resolution chain replacing the current single `FileSystemLoader`:
+
+```
+Level 1 — User override:    ~/.developable/templates/<name>
+Level 2 — LLM-generated:    ~/.developable/templates/generated/<name>
+Level 3 — Package bundled:  <package>/templates/<name>      ← today's behaviour
+Level 4 — Community:        ~/.developable/templates/community/<name>
+```
+
+Implemented as a Jinja2 `ChoiceLoader` with multiple `FileSystemLoader`s. The `TemplateGenerator` receives the registry at construction time.
+
+`TemplateRegistry.exists(template_name)` is called by `Planner` for every file plan entry before returning. Missing templates are flagged `"template_status": "missing"` and routed to the gap filler (Phase 5).
+
+Community templates are distributed as a separate PyPI package (`developable-templates-community`), described by a `registry/index.yaml` manifest. This keeps generation offline-first — no network calls during the generation pipeline.
+
+---
+
+## Phase 5 — Template Gap Filler + Community Contribution
+
+When `Planner` flags a missing template, `TemplateGapFiller` fires:
+
+1. **Describe the gap:** template name, output language (TypeScript/Python/YAML), context variable names it will receive, the most structurally similar existing template as a reference example, and a natural-language description of purpose.
+2. **Generate:** `LLMGenerator.generate_template(gap_descriptor)` — LLM adapts the reference template to cover the new structural pattern. One-time cost: ~$0.02–0.05. All future uses of this template cost $0.
+3. **Validate:** `TemplateRegistry.validate(content)` parses the `.j2` with `jinja2.Environment.parse()` and renders against a minimal context. Rejects on syntax errors or dangerous constructs.
+4. **Cache:** written to `~/.developable/templates/generated/<name>.j2`, registered in `engineer.json` with `source: "local_generated"`.
+
+**Contribution workflow:** after the template is used and tests pass:
+```bash
+python main.py ... --contribute   # or eng.contribute_templates()
+```
+`Contributor` (in `registry/contributor.py`) forks the community repo, places the template, adds a `registry/index.yaml` entry, and opens a PR. On merge, the template ships in the next `developable-templates-community` release and becomes available to the entire community at zero LLM cost.
+
+---
+
+## Phase 6 — Maintenance Pipeline
+
+`eng.maintain(tasks=["security_audit", "dependency_upgrade"])`. All tasks are **zero LLM cost** by design; LLM is only invoked if a fix requires generating a novel template (standard gap-fill path).
+
+| Task | Mechanism |
+|---|---|
+| `security_audit` | `npm audit --json` parsing + static pattern scan against `maintenance/audit_patterns.yaml`; auto-patches via `npm audit fix`; re-runs tests to confirm |
+| `dependency_upgrade` | `npm outdated --json` → classify patch/minor/major → `npm install <pkg>@latest` → run tests → rollback `package.json` if tests fail |
+| `template_staleness` | Compare `active_templates` version in `engineer.json` vs. installed package version; for stale templates, call `Assembler.assemble_selective()` on only the affected files |
+| `schema_drift` | Compare current `schema.prisma` SHA256 vs. `schema_hash` in `engineer.json`; emit warning + suggest `add_feature` if diverged |
+
+`MaintenanceRouter` in `maintenance/router.py` maps task name strings to callables and accumulates structured results into a report + `task_history` entry.
+
+---
+
+## Cost Model (preserved across all phases)
+
+| Operation | LLM Calls | Est. Cost |
+|---|---|---|
+| Initial generation (3-entity API) | 3 (one validator per entity) | ~$0.08 |
+| `add_feature` (1 new entity) | 1 (new entity validator) | ~$0.01 |
+| `add_feature` (field change on existing entity) | 1 (updated validator) | ~$0.005 |
+| `maintain` (any task) | 0 | $0.00 |
+| Template gap fill — first use | 1 (generate full `.j2`) | ~$0.02–0.05 |
+| Template gap fill — subsequent uses (cached) | 0 | $0.00 |
+| Community template (post-contribution) | 0 | $0.00 |
