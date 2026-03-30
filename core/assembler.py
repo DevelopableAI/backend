@@ -1,3 +1,4 @@
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -157,5 +158,29 @@ class Assembler:
         if git_root and dest.exists() and self._is_user_modified(dest, git_root):
             print("  skipped prisma/schema.prisma (user-modified, use --force to overwrite)")
             return
-        dest.write_text(Path(source).read_text())
+        schema_text = Path(source).read_text()
+        schema_text = self._inject_binary_targets(schema_text)
+        dest.write_text(schema_text)
         print("  wrote prisma/schema.prisma")
+
+    def _inject_binary_targets(self, schema_text: str) -> str:
+        """
+        Inject binaryTargets into the generator client block if not already present.
+
+        Heroku (and other Debian/Ubuntu hosts) ship with OpenSSL 3.x and do not
+        provide libssl.so.1.1, so the default linux-musl binary fails at runtime.
+        Including explicit targets ensures the correct engine binary is bundled
+        regardless of where `prisma generate` is executed.
+        """
+        # If binaryTargets already set, respect the user's configuration.
+        if re.search(r'generator\s+client\s*\{[^}]*binaryTargets', schema_text, re.DOTALL):
+            return schema_text
+
+        targets = '["native", "linux-musl-openssl-3.0.x", "debian-openssl-3.0.x"]'
+        return re.sub(
+            r'(generator\s+client\s*\{[^}]*?provider\s*=\s*"prisma-client-js")',
+            rf'\1\n  binaryTargets = {targets}',
+            schema_text,
+            count=1,
+            flags=re.DOTALL,
+        )
