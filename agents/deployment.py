@@ -38,11 +38,16 @@ Usage (from main.py)
     print(record["endpoint"])
 """
 
+import base64
+import os
+import re
 import subprocess
 import sys
 import uuid
 from pathlib import Path
 from typing import Any
+
+import requests
 
 from core.deployment_state import DeploymentState
 from core.providers import PROVIDER_MAP, get_provider
@@ -60,6 +65,16 @@ _SECRETS_INSTRUCTIONS: dict[str, list[str]] = {
         "GCP_CREDENTIALS         — base64-encoded service account JSON key",
         "  (encode with: base64 -w0 service-account.json)",
     ],
+}
+
+# Maps provider slug → {GitHub secret name: key in credentials dict}
+_PROVIDER_GITHUB_SECRETS: dict[str, dict[str, str]] = {
+    "heroku": {"HEROKU_API_KEY": "api_key"},
+    "aws": {
+        "AWS_ACCESS_KEY_ID": "access_key_id",
+        "AWS_SECRET_ACCESS_KEY": "secret_access_key",
+    },
+    "gcp": {"GCP_CREDENTIALS": "credentials_b64"},
 }
 
 
@@ -194,13 +209,13 @@ class Deployment:
         state.add(record)
         state.save()
 
-        # ── 8. Push CI/CD deploy workflow ──────────────────────────────────────
+        # ── 8. Push CI/CD deploy workflow + set GitHub secrets ────────────────
         if self._has_github_remote():
             print(f"\n  Generating and pushing CI/CD deploy workflow to GitHub...")
             workflow_yaml = provider.generate_deploy_workflow(project_name, record)
             pushed = self._push_workflow_to_github(workflow_yaml)
             if pushed:
-                self._print_secrets_instructions(provider_name, creds)
+                self._provision_github_secrets(provider_name, creds)
 
         # ── 9. Remote smoke tests ──────────────────────────────────────────────
         self._run_remote_tests(record["endpoint"])
@@ -330,6 +345,137 @@ class Deployment:
 
         print(f"  deploy.yml pushed to GitHub: .github/workflows/deploy.yml")
         return True
+
+    def _provision_github_secrets(
+        self, provider_name: str, creds: dict[str, Any]
+    ) -> None:
+        """
+        Set the required GitHub Actions secrets for the deploy workflow.
+
+        Attempts to auto-set secrets via the GitHub API (requires a GitHub token
+        with repo scope and PyNaCl installed). Falls back to printing manual
+        instructions if the token is unavailable or the API call fails.
+
+        GitHub requires secrets to be encrypted client-side with the repo's
+        public key (libsodium sealed-box) before transmission.
+        """
+        secret_map = _PROVIDER_GITHUB_SECRETS.get(provider_name, {})
+        if not secret_map:
+            return
+
+        token = self._github_token()
+        repo = self._github_repo_fullname()
+
+        if not token or not repo:
+            self._print_secrets_instructions(provider_name, creds)
+            return
+
+        try:
+            from nacl import encoding, public as nacl_public
+        except ImportError:
+            print(
+                "  PyNaCl not installed — cannot auto-set GitHub secrets.\n"
+                "  Run: pip install PyNaCl"
+            )
+            self._print_secrets_instructions(provider_name, creds)
+            return
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+        # Fetch repo public key (required for encryption)
+        key_resp = requests.get(
+            f"https://api.github.com/repos/{repo}/actions/secrets/public-key",
+            headers=headers,
+            timeout=15,
+        )
+        if not key_resp.ok:
+            print(f"  Could not fetch repo public key ({key_resp.status_code}) — skipping auto-set.")
+            self._print_secrets_instructions(provider_name, creds)
+            return
+
+        key_data = key_resp.json()
+        pub_key_bytes = base64.b64decode(key_data["key"])
+        key_id = key_data["key_id"]
+
+        set_ok: list[str] = []
+        failed: list[str] = []
+
+        for secret_name, cred_key in secret_map.items():
+            value = creds.get(cred_key, "")
+            if not value:
+                failed.append(secret_name)
+                continue
+
+            # Encrypt with repo's public key (libsodium sealed-box)
+            box = nacl_public.SealedBox(nacl_public.PublicKey(pub_key_bytes))
+            encrypted = base64.b64encode(box.encrypt(value.encode())).decode()
+
+            resp = requests.put(
+                f"https://api.github.com/repos/{repo}/actions/secrets/{secret_name}",
+                headers=headers,
+                json={"encrypted_value": encrypted, "key_id": key_id},
+                timeout=15,
+            )
+            if resp.status_code in (201, 204):
+                set_ok.append(secret_name)
+            else:
+                failed.append(secret_name)
+                print(f"  Warning: could not set {secret_name} ({resp.status_code}): {resp.text}")
+
+        if set_ok:
+            print(f"\n  GitHub Actions secrets set automatically: {', '.join(set_ok)}")
+            print("  The deploy workflow will trigger after the next successful CI run on main.")
+
+        if failed:
+            print(f"\n  Could not auto-set: {', '.join(failed)}")
+            self._print_secrets_instructions(provider_name, creds)
+
+    def _github_token(self) -> str | None:
+        """
+        Resolve a GitHub token for the Secrets API.
+
+        Tries in order:
+        1. GITHUB_TOKEN environment variable.
+        2. Token embedded in the git remote URL
+           (https://<token>@github.com/owner/repo.git).
+        """
+        token = os.environ.get("GITHUB_TOKEN", "").strip()
+        if token:
+            return token
+
+        url = self._git_remote_url()
+        if url:
+            m = re.match(r"https://([^@]+)@github\.com/", url)
+            if m:
+                return m.group(1)
+
+        return None
+
+    def _github_repo_fullname(self) -> str | None:
+        """
+        Extract 'owner/repo' from the git remote URL.
+        Handles both https://github.com/owner/repo.git and git@github.com:owner/repo.git.
+        """
+        url = self._git_remote_url()
+        if not url:
+            return None
+        # HTTPS: https://[token@]github.com/owner/repo[.git]
+        m = re.search(r"github\.com[/:]([^/]+/[^/.]+?)(?:\.git)?$", url)
+        return m.group(1) if m else None
+
+    def _git_remote_url(self) -> str | None:
+        """Return the origin remote URL, or None if unavailable."""
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=self.out_dir,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
 
     def _print_secrets_instructions(
         self, provider_name: str, creds: dict[str, Any]
