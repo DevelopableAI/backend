@@ -272,12 +272,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Verify HEROKU_API_KEY secret is configured
+        run: |
+          if [ -z "$HEROKU_API_KEY" ]; then
+            echo "::error::HEROKU_API_KEY secret is not set."
+            echo "Add it at: GitHub repo → Settings → Secrets and variables → Actions → New repository secret"
+            echo "Get your token at: https://dashboard.heroku.com/account"
+            exit 1
+          fi
+        env:
+          HEROKU_API_KEY: ${{{{ secrets.HEROKU_API_KEY }}}}
+
       - name: Log in to Heroku Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: registry.heroku.com
-          username: _
-          password: ${{{{ secrets.HEROKU_API_KEY }}}}
+        run: echo "$HEROKU_API_KEY" | docker login registry.heroku.com --username=_ --password-stdin
+        env:
+          HEROKU_API_KEY: ${{{{ secrets.HEROKU_API_KEY }}}}
 
       - name: Build and push image
         run: |
@@ -290,8 +299,10 @@ jobs:
           curl -f -s -X PATCH https://api.heroku.com/apps/{app_name}/formation \\
             -H "Content-Type: application/json" \\
             -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \\
-            -H "Authorization: Bearer ${{{{ secrets.HEROKU_API_KEY }}}}" \\
+            -H "Authorization: Bearer $HEROKU_API_KEY" \\
             -d "{{\\"updates\\":[{{\\"type\\":\\"web\\",\\"docker_image\\":\\"$IMAGE_ID\\"}}]}}"
+        env:
+          HEROKU_API_KEY: ${{{{ secrets.HEROKU_API_KEY }}}}
 """
 
     # ── Private helpers ────────────────────────────────────────────────────────
