@@ -36,6 +36,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+_PUSH_MAX_RETRIES = 4
+_PUSH_BACKOFF_BASE_S = 2
+
 import requests
 
 from .base import BaseProvider
@@ -88,7 +91,14 @@ class HerokuProvider(BaseProvider):
             print("Error: Heroku API Key is required.", file=sys.stderr)
             sys.exit(1)
 
-        return {"api_key": api_key, "app_name": self._app_name}
+        app_name = self._app_name
+        if not app_name:
+            entered = input(
+                "  Heroku app name (leave blank to auto-generate from schema name): "
+            ).strip()
+            app_name = entered or None
+
+        return {"api_key": api_key, "app_name": app_name}
 
     # ── Database provisioning ──────────────────────────────────────────────────
 
@@ -182,10 +192,7 @@ class HerokuProvider(BaseProvider):
         heroku_image = f"{_HEROKU_REGISTRY}/{app_name}/web"
         print(f"  [Heroku] Pushing image to {heroku_image}...")
         self._run(["docker", "tag", image_tag, heroku_image])
-        push = subprocess.run(["docker", "push", heroku_image])
-        if push.returncode != 0:
-            print("\nDocker push failed.", file=sys.stderr)
-            sys.exit(1)
+        self._docker_push_with_retry(heroku_image)
 
         # 5. Get the image config digest from the manifest.
         #    With `docker buildx`, `docker inspect --format={{.Id}}` returns the
@@ -394,7 +401,14 @@ jobs:
         sys.exit(1)
 
     def _get_database_url(self, headers: dict, app_name: str) -> str:
-        """Retrieve DATABASE_URL from Heroku config vars."""
+        """
+        Retrieve DATABASE_URL from Heroku config vars.
+
+        Heroku Postgres sets the URL with the legacy `postgres://` scheme.
+        Prisma 5 requires `postgresql://`, so we normalize and write the
+        corrected value back to Heroku config vars. This also triggers a
+        dyno restart so the running app picks up the correct URL immediately.
+        """
         resp = requests.get(
             f"{_HEROKU_API}/apps/{app_name}/config-vars",
             headers=headers,
@@ -413,6 +427,13 @@ jobs:
                 file=sys.stderr,
             )
             sys.exit(1)
+
+        # Normalize scheme: Heroku sets postgres://, Prisma 5 requires postgresql://
+        if db_url.startswith("postgres://"):
+            db_url = "postgresql://" + db_url[len("postgres://"):]
+            self._set_config_vars(headers, app_name, {"DATABASE_URL": db_url})
+            print("  [Heroku] Normalized DATABASE_URL scheme to postgresql:// (dyno will restart)")
+
         return db_url
 
     def _set_config_vars(
@@ -541,6 +562,24 @@ jobs:
             print(".", end="", flush=True)
             time.sleep(poll_s)
         print(f"\n  [Heroku] Warning: dyno did not become healthy within {timeout_s}s. Tests may fail.", file=sys.stderr)
+
+    def _docker_push_with_retry(self, image: str) -> None:
+        """Push a Docker image, retrying on transient network failures."""
+        delay = _PUSH_BACKOFF_BASE_S
+        for attempt in range(1, _PUSH_MAX_RETRIES + 2):
+            result = subprocess.run(["docker", "push", image])
+            if result.returncode == 0:
+                return
+            if attempt > _PUSH_MAX_RETRIES:
+                print("\nDocker push failed after all retries.", file=sys.stderr)
+                sys.exit(1)
+            print(
+                f"\n  [Heroku] Docker push failed (attempt {attempt}/{_PUSH_MAX_RETRIES + 1}). "
+                f"Retrying in {delay}s...",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+            delay *= 2
 
     def _run(self, cmd: list[str]) -> None:
         result = subprocess.run(cmd, capture_output=True)

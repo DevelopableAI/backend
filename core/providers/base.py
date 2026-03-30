@@ -173,12 +173,29 @@ class BaseProvider(ABC):
         }
 
     def slug(self, spec: dict[str, Any]) -> str:
-        """Derive a DNS-safe project slug from the spec (e.g. 'user-api')."""
+        """
+        Derive a DNS-safe project slug from the spec.
+
+        Priority:
+        1. Schema filename stem (e.g. blog.prisma → blog-api).
+           Skipped when the stem is a generic placeholder like "schema".
+        2. First entity name (e.g. User → user-api).
+        3. Hard-coded fallback "generated-api".
+        """
+        schema_path = spec.get("schema_path", "")
+        if schema_path:
+            stem = Path(schema_path).stem.lower()
+            for suffix in ("_schema", "-schema", "_prisma", "-prisma"):
+                if stem.endswith(suffix):
+                    stem = stem[: -len(suffix)]
+                    break
+            name = stem.replace("_", "-")
+            if name and name not in ("schema", "prisma", "database", "db"):
+                return name + "-api"
         entities = spec.get("entities", [])
         if entities:
             return entities[0]["name_lower"] + "-api"
-        schema_path = spec.get("schema_path", "schema")
-        return Path(schema_path).stem.replace("_", "-").lower() + "-api"
+        return "generated-api"
 
     def wait_for_ready(self, endpoint: str) -> None:
         """
