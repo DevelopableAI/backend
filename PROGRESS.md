@@ -301,3 +301,9 @@ python main.py ... --contribute   # or eng.contribute_templates()
 | Template gap fill — first use | 1 (generate full `.j2`) | ~$0.02–0.05 |
 | Template gap fill — subsequent uses (cached) | 0 | $0.00 |
 | Community template (post-contribution) | 0 | $0.00 |
+
+# 03/30/2026:
+- Successful deployment of blog schema based REST API on heroku
+- Ability to insert secrets to github repo to enable CI/CD pipeline.
+- Noticed lack of retry or intelligent mitigation of heroku app-name related issue
+- Noticed lack of rollback of all changes in case something unexpected occurs
