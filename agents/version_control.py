@@ -7,32 +7,7 @@ import requests
 
 from core.vc_planner import VCPlanner
 from core.assembler import Assembler
-
-GITIGNORE_CONTENT = """\
-# Dependencies
-node_modules/
-
-# Build output
-dist/
-
-# Environment — never commit secrets
-.env
-
-# TypeScript build info
-*.tsbuildinfo
-*.js.map
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-npm-debug.log*
-
-# Prisma generated client (regenerated on install)
-prisma/generated/
-"""
+from core.gitignore import DEFAULT_GITIGNORE_CONTENT
 
 
 class VersionControl:
@@ -103,7 +78,7 @@ class VersionControl:
         self.assembler.assemble(spec, plan)
 
     def _write_gitignore(self) -> None:
-        (self.out_dir / ".gitignore").write_text(GITIGNORE_CONTENT)
+        (self.out_dir / ".gitignore").write_text(DEFAULT_GITIGNORE_CONTENT)
 
     def _init_git(self) -> None:
         self._git("init")

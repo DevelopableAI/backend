@@ -59,11 +59,34 @@ def _load_system_prompt() -> str:
     return "You generate test data as JSON arrays. Return only valid JSON."
 
 
+_ENUM_LIKE_DEFAULTS: dict[str, str] = {
+    "role": "admin",
+    "type": "standard",
+    "status": "pending",
+    "category": "general",
+    "state": "active",
+    "kind": "standard",
+    "mode": "normal",
+    "tier": "basic",
+    "level": "beginner",
+    "priority": "medium",
+}
+
+
 def _build_prompt(entity_name: str, fields: list[dict]) -> str:
-    field_lines = "\n".join(f"  {f['name']} ({f['ts_type']})" for f in fields)
+    field_lines = []
+    for f in fields:
+        line = f"  {f['name']} ({f['ts_type']})"
+        if f.get("is_enum") and f.get("enum_values"):
+            line += f" — one of: {', '.join(f['enum_values'])}"
+        elif f.get("default") and isinstance(f.get("default"), str):
+            d = f["default"]
+            if d.startswith('"') and d.endswith('"'):
+                line += f" — default: {d[1:-1]}"
+        field_lines.append(line)
     return (
         f"Entity: {entity_name}\n"
-        f"Fields:\n{field_lines}\n\n"
+        f"Fields:\n" + "\n".join(field_lines) + "\n\n"
         f"Return a JSON array of 3 test data objects for this entity."
     )
 
@@ -71,9 +94,25 @@ def _build_prompt(entity_name: str, fields: list[dict]) -> str:
 def _fallback_values(fields: list[dict]) -> list[dict[str, Any]]:
     """Deterministic fallback used when --no-llm or the API call fails."""
     return [
-        {f["name"]: _default_val(f["name"], f["ts_type"], i) for f in fields}
+        {f["name"]: _field_val(f, i) for f in fields}
         for i in range(1, 4)
     ]
+
+
+def _field_val(field: dict, n: int) -> Any:
+    """Pick a deterministic test value honouring enum constraints and field defaults."""
+    # Real Prisma enum → cycle through declared values
+    if field.get("is_enum") and field.get("enum_values"):
+        values = field["enum_values"]
+        return values[(n - 1) % len(values)]
+
+    # String field with a @default("value") → use that value (always passes Zod enum)
+    default = field.get("default")
+    if default and isinstance(default, str) and field.get("ts_type") == "string":
+        if default.startswith('"') and default.endswith('"'):
+            return default[1:-1]
+
+    return _default_val(field["name"], field.get("ts_type", "string"), n)
 
 
 def _default_val(name: str, ts_type: str, n: int) -> Any:
@@ -98,4 +137,7 @@ def _default_val(name: str, ts_type: str, n: int) -> Any:
         return f"Test description {n}"
     if "name" in low:
         return f"Test Name {n}"
+    # Enum-like field names — return a value that passes LLM-generated Zod enum validators
+    if low in _ENUM_LIKE_DEFAULTS:
+        return _ENUM_LIKE_DEFAULTS[low]
     return f"Test Value {n}"

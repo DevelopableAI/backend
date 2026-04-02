@@ -65,7 +65,7 @@ class TestPlanner:
             # 01 Register
             _register_seed = generate_test_data(
                 entity_name=auth_entity["name"],
-                fields=[{"name": f["name"], "ts_type": f["ts_type"]} for f in required_scalar + optional_scalar],
+                fields=required_scalar + optional_scalar,
                 use_llm=self.use_llm,
             )
             modules.append({
@@ -154,7 +154,7 @@ class TestPlanner:
             # seed_get
             _seed_values = generate_test_data(
                 entity_name=entity["name"],
-                fields=[{"name": f["name"], "ts_type": f["ts_type"]} for f in required_scalar + optional_scalar],
+                fields=required_scalar + optional_scalar,
                 use_llm=self.use_llm,
             )
             modules.append({

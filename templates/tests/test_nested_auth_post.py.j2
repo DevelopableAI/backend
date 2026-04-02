@@ -82,7 +82,15 @@ def run(ctx: TestContext) -> None:
                        token=token1,
                        body={
 {% for other in child_required_scalar_fields if other.name != f.name %}
+{% if other.is_enum %}
+                           "{{ other.name }}": "{{ other.enum_values[0] }}",
+{% elif other.ts_type == "number" %}
+                           "{{ other.name }}": 1,
+{% elif other.ts_type == "boolean" %}
+                           "{{ other.name }}": True,
+{% else %}
                            "{{ other.name }}": "Missing field test",
+{% endif %}
 {% endfor %}
 {% for sfk in child_secondary_fk_fields %}
                            "{{ sfk.fk_field }}": {{ sfk.related_entity_lower }}1_id,
