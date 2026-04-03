@@ -42,37 +42,25 @@ def run(ctx: TestContext) -> None:
 
     # {{ section_num }}-2  POST with auth — {{ nested_route.fk_field }} injected from token
     nested_child_id = None
-/* LLM_SECTION_START */
-# Create ONE {{ child_entity.name }} via POST /api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }} using token1.
-# This post is used for the PUT/DELETE ownership tests below; it will be deleted at the end.
-# IMPORTANT: Do NOT use ctx.state["{{ child_entity.name_lower }}1_id"] or overwrite any existing state keys.
-# Store the created ID ONLY as ctx.state["nested_{{ child_entity.name_lower }}_id"].
-#
-# token1 and {{ auth_entity.name_lower }}1_id are available in scope.
-# The {{ nested_route.fk_field }} is injected from the JWT — do NOT include it in the body.
-#
-# Required scalar body fields:
+    if token1:
+        resp = ctx.req("POST", "/api/{{ auth_entity.name_plural }}/{{ nested_route.relation_name }}",
+                       token=token1,
+                       body={
 {% for f in child_required_scalar_fields %}
-#   {{ f.name }}: {{ f.ts_type }}
+                           "{{ f.name }}": {{ child_seed_values[0][f.name] | topython }},
 {% endfor %}
-{% for f in child_optional_scalar_fields %}
-#   {{ f.name }}: {{ f.ts_type }} (optional)
-{% endfor %}
-{% if child_secondary_fk_fields %}
-#
-# REQUIRED FK fields that MUST be included in the body (NOT server-injected):
 {% for sfk in child_secondary_fk_fields %}
-#   "{{ sfk.fk_field }}": {{ sfk.related_entity_lower }}1_id  ← variable already declared above
+                           "{{ sfk.fk_field }}": {{ sfk.related_entity_lower }}1_id,
 {% endfor %}
-{% endif %}
-#
-# After creating:
-#   - Wrap in `if token1:` (at 0 indent; the block body at 4 indent)
-#   - ctx.assert_status(resp, 201, "Seed: Create nested {{ child_entity.name }} (ownership test)")
-#   - nested_child_id = data.get("id")
-#   - ctx.state["nested_{{ child_entity.name_lower }}_id"] = nested_child_id
-#   - Assert: data.get("{{ nested_route.fk_field }}") == {{ auth_entity.name_lower }}1_id → ctx.ok/ctx.fail
-/* LLM_SECTION_END */
+                       })
+        if ctx.assert_status(resp, 201, "Seed: Create nested {{ child_entity.name }} (ownership test)"):
+            data = ctx.safe_json(resp)
+            nested_child_id = data.get("id")
+            ctx.state["nested_{{ child_entity.name_lower }}_id"] = nested_child_id
+            if data.get("{{ nested_route.fk_field }}") == {{ auth_entity.name_lower }}1_id:
+                ctx.ok("{{ nested_route.fk_field }} injected correctly from JWT")
+            else:
+                ctx.fail(f"{{ nested_route.fk_field }} mismatch: expected {{ '{' }}{{ auth_entity.name_lower }}1_id{{ '}' }}, got {data.get('{{ nested_route.fk_field }}')}")
 
 {% if child_required_scalar_fields %}
     # {{ section_num }}-3  POST missing required fields → 400

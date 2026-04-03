@@ -16,7 +16,7 @@ Rules:
   - Include the owner FK field with user2_id in the body while using token1
   - Use `ctx.assert_status` and store the created id in `ctx.state["spoofed_<entity_lower>_id"]`
 - Do NOT generate a PUT/update test — that is handled by the template separately
-- Do NOT include FK fields in any request body
+- Include any secondary FK fields listed in the placeholder's "Secondary FK fields" block in EVERY request body — these are NOT server-injected; the test must supply them. Do NOT include the owner FK or primary parent FK (those are server-injected)
 - Variable names: token1, token2, <entity_lower>1_id, <entity_lower>2_id, etc. are already declared — use them exactly as listed in the placeholder. Do NOT invent new variable names like nested_*_id.
 - IMPORTANT: Use the `body=` keyword argument (NOT `json=`) for request bodies in ctx.req()
 - CRITICAL INDENTATION: Every outermost statement — including `if token1:`, `resp =`, comments, and `ctx.state[...]` — MUST start at column 0 (zero leading spaces). Only code nested INSIDE an `if` or `for` block uses 4-space relative indent.

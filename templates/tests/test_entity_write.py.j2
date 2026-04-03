@@ -29,6 +29,9 @@ def run(ctx: TestContext) -> None:
 {% else %}
     _create_path = "{{ canonical_create_path }}"
 {% endif %}
+{% for sfk in secondary_fk_fields %}
+    {{ sfk.related_entity_lower }}1_id = ctx.state.get("{{ sfk.state_key }}")
+{% endfor %}
 
     # {{ section_num }}-1  POST (canonical create path) without auth → 401
 {% if auth_entity %}
@@ -65,9 +68,17 @@ def run(ctx: TestContext) -> None:
 # Otherwise, for EACH required field, generate one test:
 #   - Omit only that field from the body
 #   - Include all other required fields with sensible values
+#   - MUST also include every secondary FK listed below in the body (they are required by the API)
 #   - Expect HTTP 400: ctx.assert_status(resp, 400, "POST {{ entity.name_lower }} missing <field> → 400")
 #   - Wrap in `if token1:` guard
 #
+{% if secondary_fk_fields %}
+# Secondary FK fields — MUST appear in every request body (NOT server-injected; test must supply them):
+{% for sfk in secondary_fk_fields %}
+#   "{{ sfk.fk_field }}": {{ sfk.related_entity_lower }}1_id  ← variable already declared above
+{% endfor %}
+#
+{% endif %}
 # Then generate ONE ownership spoofing test for the owner FK (if present):
 {% if owner_fk_field %}
 #   - Include "{{ owner_fk_field }}": <user2_id> in the body while using token1
@@ -82,6 +93,9 @@ def run(ctx: TestContext) -> None:
 #   {{ auth_entity.name_lower }}1_id, {{ auth_entity.name_lower }}2_id
 {% endif %}
 #   {{ entity.name_lower }}1_id, {{ entity.name_lower }}2_id, {{ entity.name_lower }}3_id
+{% for sfk in secondary_fk_fields %}
+#   {{ sfk.related_entity_lower }}1_id
+{% endfor %}
 /* LLM_SECTION_END */
 
 {#- Field selection priority for the PUT happy-path update:

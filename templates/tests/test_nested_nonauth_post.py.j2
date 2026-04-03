@@ -100,37 +100,32 @@ def run(ctx: TestContext) -> None:
 
     # {{ section_num }}-6  POST with auth — {{ nested_route.fk_field }} injected from URL
     parent_nested_child_id = None
-/* LLM_SECTION_START */
-# Generate ONE successful nested POST call.
-# Endpoint: POST /api/{{ parent_entity.name_plural }}/<parent_id>/{{ nested_route.relation_name }}
-# The {{ nested_route.fk_field }} is injected from the URL param (do NOT include in body).
-{% if child_owner_fk_field %}
-# The {{ child_owner_fk_field }} is injected from the JWT (do NOT include in body).
-{% endif %}
-#
-# Required scalar body fields:
+    if {{ parent_entity.name_lower }}1_id and token1:
+        resp = ctx.req("POST",
+                       "/api/{{ parent_entity.name_plural }}/" + str({{ parent_entity.name_lower }}1_id) + "/{{ nested_route.relation_name }}",
+                       token=token1,
+                       body={
 {% for f in child_required_scalar_fields %}
-#   {{ f.name }}: {{ f.ts_type }}
+                           "{{ f.name }}": {{ child_seed_values[0][f.name] | topython }},
 {% endfor %}
-{% for f in child_optional_scalar_fields %}
-#   {{ f.name }}: {{ f.ts_type }} (optional)
-{% endfor %}
-{% if child_secondary_fk_fields %}
-#
-# REQUIRED FK fields that MUST be included in the body (NOT server-injected):
 {% for sfk in child_secondary_fk_fields %}
-#   "{{ sfk.fk_field }}": {{ sfk.related_entity_lower }}1_id  ← variable already declared above
+                           "{{ sfk.fk_field }}": {{ sfk.related_entity_lower }}1_id,
 {% endfor %}
-{% endif %}
-#
-# Wrap in `if {{ parent_entity.name_lower }}1_id and token1:` (4-space indent; block body at 8-space indent).
-# After success:
-#   - Store: parent_nested_child_id = data.get("id"); ctx.state["parent_nested_{{ child_entity.name_lower }}_id"] = parent_nested_child_id
-#   - Assert: data.get("{{ nested_route.fk_field }}") == {{ parent_entity.name_lower }}1_id → ctx.ok/ctx.fail
+                       })
+        if ctx.assert_status(resp, 201, "Seed: Create nested {{ child_entity.name }} (parent-scoped)"):
+            data = ctx.safe_json(resp)
+            parent_nested_child_id = data.get("id")
+            ctx.state["parent_nested_{{ child_entity.name_lower }}_id"] = parent_nested_child_id
+            if data.get("{{ nested_route.fk_field }}") == {{ parent_entity.name_lower }}1_id:
+                ctx.ok("{{ nested_route.fk_field }} injected correctly from URL param")
+            else:
+                ctx.fail(f"{{ nested_route.fk_field }} mismatch: expected {{ '{' }}{{ parent_entity.name_lower }}1_id{{ '}' }}, got {data.get('{{ nested_route.fk_field }}')}")
 {% if child_owner_fk_field %}
-#   - Assert: data.get("{{ child_owner_fk_field }}") == {{ auth_entity.name_lower }}1_id → ctx.ok/ctx.fail
+            if data.get("{{ child_owner_fk_field }}") == {{ auth_entity.name_lower }}1_id:
+                ctx.ok("{{ child_owner_fk_field }} injected correctly from JWT")
+            else:
+                ctx.fail(f"{{ child_owner_fk_field }} mismatch: expected {{ '{' }}{{ auth_entity.name_lower }}1_id{{ '}' }}, got {data.get('{{ child_owner_fk_field }}')}")
 {% endif %}
-/* LLM_SECTION_END */
 
 {% if child_owner_fk_field %}
     # {{ section_num }}-7  Security: owner FK spoofing via nested route

@@ -466,25 +466,32 @@ jobs:
             db_url = "postgresql://" + db_url[len("postgres://"):]
 
         # Always write DATABASE_URL back so the dyno uses the correct remote URL.
-        self._set_config_vars(headers, app_name, {"DATABASE_URL": db_url})
-        print("  [Heroku] DATABASE_URL set to remote Heroku Postgres (dyno will restart)")
+        # Heroku manages DATABASE_URL as an attachment variable when an addon sets it;
+        # a PATCH may return 422 "Cannot overwrite attachment values" — that is expected
+        # and means Heroku is already serving the correct URL automatically.
+        set_resp = self._set_config_vars(headers, app_name, {"DATABASE_URL": db_url})
+        if set_resp.ok:
+            print("  [Heroku] DATABASE_URL set to remote Heroku Postgres (dyno will restart)")
+        elif set_resp.status_code == 422:
+            print("  [Heroku] DATABASE_URL is addon-managed — Heroku Postgres URL applied automatically")
 
         return db_url
 
     def _set_config_vars(
         self, headers: dict, app_name: str, config_vars: dict[str, str]
-    ) -> None:
+    ) -> requests.Response:
         resp = requests.patch(
             f"{_HEROKU_API}/apps/{app_name}/config-vars",
             headers=headers,
             json=config_vars,
             timeout=30,
         )
-        if not resp.ok:
+        if not resp.ok and resp.status_code != 422:
             print(
                 f"\nWarning: Could not set config vars ({resp.status_code}): {resp.text}",
                 file=sys.stderr,
             )
+        return resp
 
     def _docker_login(self, api_key: str) -> None:
         result = subprocess.run(
