@@ -1,9 +1,13 @@
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import requests
+
+_PUSH_MAX_RETRIES = 3
+_PUSH_BACKOFF_BASE_S = 2
 
 from core.vc_planner import VCPlanner
 from core.assembler import Assembler
@@ -131,25 +135,70 @@ class VersionControl:
             sys.exit(1)
 
         data = response.json()
+        self._verify_repo_accessible(headers)
         return data["html_url"], data["clone_url"]
 
+    def _verify_repo_accessible(self, headers: dict) -> None:
+        """
+        Poll GET /repos/{owner}/{repo} until GitHub confirms the repo is visible.
+
+        GitHub's API returns 201 before the repository fully propagates across
+        its edge nodes. A git push issued within the same second can hit a node
+        that does not yet know the repo exists, returning "Repository not found".
+        Polling with a short backoff (up to ~30s) avoids this race condition.
+        """
+        url = f"https://api.github.com/repos/{self.github_user}/{self.repo_name}"
+        delay = 1
+        elapsed = 0
+        max_wait = 30
+        while elapsed < max_wait:
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.ok:
+                return
+            time.sleep(delay)
+            elapsed += delay
+            delay = min(delay * 2, 16)
+        print(
+            f"\nWarning: repo https://github.com/{self.github_user}/{self.repo_name} "
+            "was created but is not yet accessible — the push may fail.\n"
+            "If it does, wait 30s and retry:\n"
+            f"  cd {self.out_dir}\n  git push -u origin main",
+            file=sys.stderr,
+        )
+
     def _push_to_github(self, clone_url: str) -> None:
-        """Push main branch. Embeds token in URL to avoid interactive auth."""
+        """Push main branch with retry. Embeds token in URL to avoid interactive auth."""
         # Turn https://github.com/user/repo.git
         # into  https://<token>@github.com/user/repo.git
         authed_url = clone_url.replace("https://", f"https://{self.github_token}@")
         self._git("remote", "add", "origin", authed_url)
-        try:
-            self._git("push", "-u", "origin", "main")
-        except subprocess.CalledProcessError as exc:
-            print(
-                "\nPush failed. You can retry manually:\n"
-                f"  cd {self.out_dir}\n"
-                "  git push -u origin main",
-                file=sys.stderr,
-            )
-            print(exc.stderr, file=sys.stderr)
-            sys.exit(1)
+        delay = _PUSH_BACKOFF_BASE_S
+        for attempt in range(1, _PUSH_MAX_RETRIES + 1):
+            try:
+                self._git("push", "-u", "origin", "main")
+                return
+            except subprocess.CalledProcessError as exc:
+                if attempt == _PUSH_MAX_RETRIES:
+                    print(
+                        "\nPush to GitHub failed after retries.\n"
+                        "Common causes:\n"
+                        "  1. Token lacks 'repo' scope (classic PAT) or "
+                        "Contents:write (fine-grained PAT)\n"
+                        f"  2. Verify repo exists: "
+                        f"https://github.com/{self.github_user}/{self.repo_name}\n"
+                        "To retry manually:\n"
+                        f"  cd {self.out_dir}\n  git push -u origin main",
+                        file=sys.stderr,
+                    )
+                    print(exc.stderr, file=sys.stderr)
+                    sys.exit(1)
+                print(
+                    f"  Push attempt {attempt}/{_PUSH_MAX_RETRIES} failed, "
+                    f"retrying in {delay}s...",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                delay *= 2
 
     def _git(self, *args: str) -> str:
         """Run a git command in the output directory."""
