@@ -60,10 +60,14 @@ def _default_val(name: str, ts_type: str, n: int) -> Any:
         return True
     if "email" in low:
         return f"user{n}@example.com"
-    if "url" in low:
+    # URL-like field names: url, website, link, href, avatar, image, photo, picture, icon, thumbnail
+    if any(w in low for w in ("url", "website", "link", "href", "avatar", "image", "photo", "picture", "icon", "thumbnail")):
         return f"https://example.com/{n}"
     if "phone" in low:
         return f"555-000{n}"
+    # Slug fields: must be lowercase alphanumeric with hyphens
+    if "slug" in low:
+        return f"test-slug-{n}"
     if "username" in low:
         return f"testuser{n}"
     if "title" in low:
