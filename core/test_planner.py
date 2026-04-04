@@ -248,7 +248,7 @@ class TestPlanner:
                 )
                 _child_seed_values = generate_test_data(
                     entity_name=child_entity["name"],
-                    fields=[{"name": f["name"], "ts_type": f["ts_type"]} for f in child_req_scalar + child_opt_scalar],
+                    fields=child_req_scalar + child_opt_scalar,
                     use_llm=self.use_llm,
                 )
 
@@ -291,7 +291,7 @@ class TestPlanner:
                 )
                 _child_seed_values = generate_test_data(
                     entity_name=child_entity["name"],
-                    fields=[{"name": f["name"], "ts_type": f["ts_type"]} for f in child_req_scalar + child_opt_scalar],
+                    fields=child_req_scalar + child_opt_scalar,
                     use_llm=self.use_llm,
                 )
 
