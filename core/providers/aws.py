@@ -67,6 +67,8 @@ class AWSProvider(BaseProvider):
         self._vpc_id: str = ""
         self._subnet_ids: list[str] = []
         self._ecs_sg_id: str = ""
+        # Set by provision_database(); used by deploy() to lock down after ECS is running
+        self._rds_sg_id: str = ""
 
     # ── Credential handling ────────────────────────────────────────────────────
 
@@ -172,6 +174,7 @@ class AWSProvider(BaseProvider):
 
         print(f"  [AWS] Ensuring RDS security group for port 5432...")
         rds_sg_id = self._ensure_rds_sg(ec2, project_name, self._vpc_id)
+        self._rds_sg_id = rds_sg_id  # saved so deploy() can lock it to ECS-only after migration
 
         print(f"  [AWS] Creating RDS PostgreSQL instance '{instance_id}' (db.t3.micro)...")
         print(f"        This typically takes 5–10 minutes. Please wait...")
@@ -276,6 +279,11 @@ class AWSProvider(BaseProvider):
                 "  [AWS] Warning: could not resolve public IP yet. "
                 "Check ECS console for task status."
             )
+
+        # Lock RDS SG to ECS-only now that Prisma migration is done and ECS is running
+        if self._rds_sg_id:
+            print(f"  [AWS] Locking RDS security group to ECS-only access...")
+            self._lock_rds_to_ecs(ec2, self._rds_sg_id, self._ecs_sg_id)
 
         resources = [
             {"type": "ecr_repository", "id": project_name, "arn": repo_arn},
@@ -409,6 +417,49 @@ jobs:
                 )["SecurityGroups"]
                 return sgs[0]["GroupId"]
             raise
+
+    def _lock_rds_to_ecs(self, ec2: Any, rds_sg_id: str, ecs_sg_id: str) -> None:
+        """
+        Replace the 0.0.0.0/0 inbound rule on the RDS security group with a
+        rule that allows TCP 5432 only from the ECS security group.
+        Called after apply_schema() and ECS deployment are both complete.
+        Both operations are idempotent — safe to call on re-deploys.
+        """
+        from botocore.exceptions import ClientError
+
+        # Remove the open-world rule (may already be gone on a re-deploy)
+        try:
+            ec2.revoke_security_group_ingress(
+                GroupId=rds_sg_id,
+                IpPermissions=[{
+                    "IpProtocol": "tcp",
+                    "FromPort": 5432,
+                    "ToPort": 5432,
+                    "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+                }],
+            )
+            print(f"  [AWS] Revoked 0.0.0.0/0 ingress from RDS security group.")
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "InvalidPermission.NotFound":
+                raise
+            # Rule already removed (e.g. previous deploy run) — that's fine
+
+        # Allow traffic from the ECS security group only
+        try:
+            ec2.authorize_security_group_ingress(
+                GroupId=rds_sg_id,
+                IpPermissions=[{
+                    "IpProtocol": "tcp",
+                    "FromPort": 5432,
+                    "ToPort": 5432,
+                    "UserIdGroupPairs": [{"GroupId": ecs_sg_id}],
+                }],
+            )
+            print(f"  [AWS] RDS security group now only allows traffic from ECS SG ({ecs_sg_id}).")
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "InvalidPermission.Duplicate":
+                raise
+            # Rule already exists (re-deploy) — no action needed
 
     def _ensure_rds_instance(
         self,
