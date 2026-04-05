@@ -36,6 +36,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+_PUSH_MAX_RETRIES = 4
+_PUSH_BACKOFF_BASE_S = 2
+
 import requests
 
 from .base import BaseProvider
@@ -88,7 +91,14 @@ class HerokuProvider(BaseProvider):
             print("Error: Heroku API Key is required.", file=sys.stderr)
             sys.exit(1)
 
-        return {"api_key": api_key, "app_name": self._app_name}
+        app_name = self._app_name
+        if not app_name:
+            entered = input(
+                "  Heroku app name (leave blank to auto-generate from schema name): "
+            ).strip()
+            app_name = entered or None
+
+        return {"api_key": api_key, "app_name": app_name}
 
     # ── Database provisioning ──────────────────────────────────────────────────
 
@@ -168,8 +178,11 @@ class HerokuProvider(BaseProvider):
         self._set_container_stack(headers, app_name)
 
         # 2. Set config vars (env vars + Developable tracking vars)
+        #    Exclude DATABASE_URL — the local .env value points to localhost
+        #    and would override the real Heroku Postgres URL. The addon sets
+        #    DATABASE_URL automatically; we update it after provisioning.
         print(f"  [Heroku] Setting config vars...")
-        config_vars = dict(env_vars)
+        config_vars = {k: v for k, v in env_vars.items() if k != "DATABASE_URL"}
         config_vars["DEVELOPABLE_PROJECT_NAME"] = project_name
         config_vars["DEVELOPABLE_DEPLOYMENT_ID"] = deployment_id
         self._set_config_vars(headers, app_name, config_vars)
@@ -182,10 +195,7 @@ class HerokuProvider(BaseProvider):
         heroku_image = f"{_HEROKU_REGISTRY}/{app_name}/web"
         print(f"  [Heroku] Pushing image to {heroku_image}...")
         self._run(["docker", "tag", image_tag, heroku_image])
-        push = subprocess.run(["docker", "push", heroku_image])
-        if push.returncode != 0:
-            print("\nDocker push failed.", file=sys.stderr)
-            sys.exit(1)
+        self._docker_push_with_retry(heroku_image)
 
         # 5. Get the image config digest from the manifest.
         #    With `docker buildx`, `docker inspect --format={{.Id}}` returns the
@@ -262,12 +272,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Verify HEROKU_API_KEY secret is configured
+        run: |
+          if [ -z "$HEROKU_API_KEY" ]; then
+            echo "::error::HEROKU_API_KEY secret is not set."
+            echo "Add it at: GitHub repo → Settings → Secrets and variables → Actions → New repository secret"
+            echo "Get your token at: https://dashboard.heroku.com/account"
+            exit 1
+          fi
+        env:
+          HEROKU_API_KEY: ${{{{ secrets.HEROKU_API_KEY }}}}
+
       - name: Log in to Heroku Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: registry.heroku.com
-          username: _
-          password: ${{{{ secrets.HEROKU_API_KEY }}}}
+        run: echo "$HEROKU_API_KEY" | docker login registry.heroku.com --username=_ --password-stdin
+        env:
+          HEROKU_API_KEY: ${{{{ secrets.HEROKU_API_KEY }}}}
 
       - name: Build and push image
         run: |
@@ -280,8 +299,10 @@ jobs:
           curl -f -s -X PATCH https://api.heroku.com/apps/{app_name}/formation \\
             -H "Content-Type: application/json" \\
             -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \\
-            -H "Authorization: Bearer ${{{{ secrets.HEROKU_API_KEY }}}}" \\
+            -H "Authorization: Bearer $HEROKU_API_KEY" \\
             -d "{{\\"updates\\":[{{\\"type\\":\\"web\\",\\"docker_image\\":\\"$IMAGE_ID\\"}}]}}"
+        env:
+          HEROKU_API_KEY: ${{{{ secrets.HEROKU_API_KEY }}}}
 """
 
     # ── Private helpers ────────────────────────────────────────────────────────
@@ -394,7 +415,19 @@ jobs:
         sys.exit(1)
 
     def _get_database_url(self, headers: dict, app_name: str) -> str:
-        """Retrieve DATABASE_URL from Heroku config vars."""
+        """
+        Retrieve the Heroku Postgres URL and set it as DATABASE_URL.
+
+        Heroku Postgres sets the addon URL under HEROKU_POSTGRESQL_*_URL, not
+        necessarily DATABASE_URL — if we previously set DATABASE_URL to a local
+        .env value, Heroku will not override it. We read the addon-specific key
+        directly so we always get the real remote URL.
+
+        Heroku also uses the legacy `postgres://` scheme; Prisma 5 requires
+        `postgresql://`, so we normalize and write the corrected value back to
+        DATABASE_URL. This triggers a dyno restart so the running app picks up
+        the correct URL.
+        """
         resp = requests.get(
             f"{_HEROKU_API}/apps/{app_name}/config-vars",
             headers=headers,
@@ -406,29 +439,59 @@ jobs:
                 file=sys.stderr,
             )
             sys.exit(1)
-        db_url = resp.json().get("DATABASE_URL", "")
+
+        config = resp.json()
+
+        # Prefer the addon-specific key (HEROKU_POSTGRESQL_*_URL) — this is the
+        # authoritative source and is unaffected by any DATABASE_URL we set earlier.
+        db_url = ""
+        for key, value in config.items():
+            if key.startswith("HEROKU_POSTGRESQL_") and key.endswith("_URL") and value:
+                db_url = value
+                break
+
+        # Fall back to DATABASE_URL if the addon key is absent
+        if not db_url:
+            db_url = config.get("DATABASE_URL", "")
+
         if not db_url:
             print(
-                "\nHeroku Postgres addon provisioned but DATABASE_URL not found in config vars.",
+                "\nHeroku Postgres addon provisioned but no DATABASE_URL found in config vars.",
                 file=sys.stderr,
             )
             sys.exit(1)
+
+        # Normalize scheme: Heroku sets postgres://, Prisma 5 requires postgresql://
+        if db_url.startswith("postgres://"):
+            db_url = "postgresql://" + db_url[len("postgres://"):]
+
+        # Always write DATABASE_URL back so the dyno uses the correct remote URL.
+        # Heroku manages DATABASE_URL as an attachment variable when an addon sets it;
+        # a PATCH may return 422 "Cannot overwrite attachment values" — that is expected
+        # and means Heroku is already serving the correct URL automatically.
+        set_resp = self._set_config_vars(headers, app_name, {"DATABASE_URL": db_url})
+        if set_resp.ok:
+            print("  [Heroku] DATABASE_URL set to remote Heroku Postgres (dyno will restart)")
+        elif set_resp.status_code == 422:
+            print("  [Heroku] DATABASE_URL is addon-managed — Heroku Postgres URL applied automatically")
+
         return db_url
 
     def _set_config_vars(
         self, headers: dict, app_name: str, config_vars: dict[str, str]
-    ) -> None:
+    ) -> requests.Response:
         resp = requests.patch(
             f"{_HEROKU_API}/apps/{app_name}/config-vars",
             headers=headers,
             json=config_vars,
             timeout=30,
         )
-        if not resp.ok:
+        if not resp.ok and resp.status_code != 422:
             print(
                 f"\nWarning: Could not set config vars ({resp.status_code}): {resp.text}",
                 file=sys.stderr,
             )
+        return resp
 
     def _docker_login(self, api_key: str) -> None:
         result = subprocess.run(
@@ -541,6 +604,24 @@ jobs:
             print(".", end="", flush=True)
             time.sleep(poll_s)
         print(f"\n  [Heroku] Warning: dyno did not become healthy within {timeout_s}s. Tests may fail.", file=sys.stderr)
+
+    def _docker_push_with_retry(self, image: str) -> None:
+        """Push a Docker image, retrying on transient network failures."""
+        delay = _PUSH_BACKOFF_BASE_S
+        for attempt in range(1, _PUSH_MAX_RETRIES + 2):
+            result = subprocess.run(["docker", "push", image])
+            if result.returncode == 0:
+                return
+            if attempt > _PUSH_MAX_RETRIES:
+                print("\nDocker push failed after all retries.", file=sys.stderr)
+                sys.exit(1)
+            print(
+                f"\n  [Heroku] Docker push failed (attempt {attempt}/{_PUSH_MAX_RETRIES + 1}). "
+                f"Retrying in {delay}s...",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+            delay *= 2
 
     def _run(self, cmd: list[str]) -> None:
         result = subprocess.run(cmd, capture_output=True)

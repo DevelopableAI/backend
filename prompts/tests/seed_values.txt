@@ -20,4 +20,6 @@ Rules:
     number       → a small positive integer
     boolean      → true
 - Make each instance slightly different (vary names, titles, numbers).
+- CRITICAL: Every object MUST include ALL fields listed below. Never omit a field.
+- CRITICAL: For enum fields (marked "— one of: X, Y, Z"), you MUST use EXACTLY one of the listed values. Do NOT invent variants (e.g. if valid values are "in_progress" and "todo", never write "in-progress" or "In Progress").
 - Do NOT include any fields not listed in the entity fields below.

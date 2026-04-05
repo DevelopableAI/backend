@@ -28,7 +28,10 @@ class TestPlanner:
         entities = spec["entities"]
         auth_entity = next((e for e in entities if e.get("is_auth_entity")), None)
         auth_entity_name = spec.get("auth_entity_name")
-        non_auth_entities = [e for e in entities if not e.get("is_auth_entity")]
+        non_auth_entities = self._topo_sort_entities(
+            [e for e in entities if not e.get("is_auth_entity")],
+            auth_entity_name,
+        )
 
         # Extract per-entity route contexts from the API plan.
         # Each routes file plan has context with: entity, routes, owner_fk_field,
@@ -65,7 +68,7 @@ class TestPlanner:
             # 01 Register
             _register_seed = generate_test_data(
                 entity_name=auth_entity["name"],
-                fields=[{"name": f["name"], "ts_type": f["ts_type"]} for f in required_scalar + optional_scalar],
+                fields=required_scalar + optional_scalar,
                 use_llm=self.use_llm,
             )
             modules.append({
@@ -154,7 +157,7 @@ class TestPlanner:
             # seed_get
             _seed_values = generate_test_data(
                 entity_name=entity["name"],
-                fields=[{"name": f["name"], "ts_type": f["ts_type"]} for f in required_scalar + optional_scalar],
+                fields=required_scalar + optional_scalar,
                 use_llm=self.use_llm,
             )
             modules.append({
@@ -243,6 +246,11 @@ class TestPlanner:
                     nested_route.get("fk_field"),
                     child_owner_fk,
                 )
+                _child_seed_values = generate_test_data(
+                    entity_name=child_entity["name"],
+                    fields=child_req_scalar + child_opt_scalar,
+                    use_llm=self.use_llm,
+                )
 
                 modules.append({
                     "path": f"test_{num:02d}_nested_{auth_entity['name_lower']}_{nested_route['relation_name']}.py",
@@ -257,12 +265,9 @@ class TestPlanner:
                         "child_required_scalar_fields": child_req_scalar,
                         "child_optional_scalar_fields": child_opt_scalar,
                         "child_secondary_fk_fields": child_secondary_fk,
+                        "child_seed_values": _child_seed_values,
                     },
-                    "needs_llm": True,
-                    "llm_task": "seed_data",
-                    "llm_model": "fast",
-                    "llm_entity": child_entity,
-                    "prompt_subdir": "tests",
+                    "needs_llm": False,
                 })
                 num += 1
 
@@ -284,6 +289,11 @@ class TestPlanner:
                     nested_route.get("fk_field"),
                     child_owner_fk,
                 )
+                _child_seed_values = generate_test_data(
+                    entity_name=child_entity["name"],
+                    fields=child_req_scalar + child_opt_scalar,
+                    use_llm=self.use_llm,
+                )
 
                 modules.append({
                     "path": f"test_{num:02d}_nested_{entity['name_lower']}_{nested_route['relation_name']}.py",
@@ -299,12 +309,9 @@ class TestPlanner:
                         "child_required_scalar_fields": child_req_scalar,
                         "child_optional_scalar_fields": child_opt_scalar,
                         "child_secondary_fk_fields": child_secondary_fk,
+                        "child_seed_values": _child_seed_values,
                     },
-                    "needs_llm": True,
-                    "llm_task": "seed_data",
-                    "llm_model": "fast",
-                    "llm_entity": child_entity,
-                    "prompt_subdir": "tests",
+                    "needs_llm": False,
                 })
                 num += 1
 
@@ -612,6 +619,63 @@ class TestPlanner:
             if rel["type"] == "many_to_one" and rel["related_entity"] == parent_name:
                 return rel.get("fk_field")
         return None
+
+    def _topo_sort_entities(
+        self, entities: list[dict], auth_entity_name: str | None
+    ) -> list[dict]:
+        """
+        Sort non-auth entities in dependency order using Kahn's algorithm.
+
+        An edge A → B means "A must be seeded before B" (B has a FK pointing to A).
+        This ensures that when entity B's seed POST fires, the state keys it needs
+        (e.g. product1_id) have already been populated by entity A's seed module.
+
+        Falls back to the original order on cycles (should not occur in valid schemas).
+        """
+        if len(entities) <= 1:
+            return entities
+
+        name_map = {e["name"]: e for e in entities}
+
+        # deps[child] = set of parent names that must be seeded first
+        deps: dict[str, set[str]] = {e["name"]: set() for e in entities}
+        for e in entities:
+            for rel in e.get("relations", []):
+                if rel["type"] != "many_to_one" or not rel.get("fk_field"):
+                    continue
+                parent = rel["related_entity"]
+                if parent == auth_entity_name:
+                    continue  # auth entity is always seeded first; skip
+                if parent in name_map:
+                    deps[e["name"]].add(parent)
+
+        # Build adjacency list (parent → set of children) and in-degree map
+        graph: dict[str, set[str]] = {n: set() for n in name_map}
+        in_degree: dict[str, int] = {n: 0 for n in name_map}
+        for child, parents in deps.items():
+            for parent in parents:
+                graph[parent].add(child)
+                in_degree[child] += 1
+
+        # Kahn's algorithm — use sorted queue for deterministic output
+        queue = sorted(
+            [e for e in entities if in_degree[e["name"]] == 0],
+            key=lambda e: e["name"],
+        )
+        result: list[dict] = []
+        while queue:
+            node = queue.pop(0)
+            result.append(node)
+            for child_name in sorted(graph[node["name"]]):
+                in_degree[child_name] -= 1
+                if in_degree[child_name] == 0:
+                    queue.append(name_map[child_name])
+                    queue.sort(key=lambda e: e["name"])
+
+        # If a cycle exists (shouldn't in valid Prisma schemas), fall back to original order
+        if len(result) != len(entities):
+            return entities
+        return result
 
     def _find_write_endpoint(
         self,

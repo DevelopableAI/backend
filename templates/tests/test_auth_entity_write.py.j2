@@ -67,11 +67,11 @@ def run(ctx: TestContext) -> None:
 {% elif update_field.name in _auth_enum_defaults %}
         _auth_update_val = "{{ _auth_enum_defaults[update_field.name] }}"
 {% elif update_field.name in _auth_username_like %}
-        _auth_update_val = "updated_{{ auth_entity.name_lower }}_01"
+        _auth_update_val = f"updated_{{ auth_entity.name_lower }}_{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}}"
 {% elif 'slug' in update_field.name.lower() %}
-        _auth_update_val = "updated-{{ auth_entity.name_lower }}-01"
+        _auth_update_val = f"updated-{{ auth_entity.name_lower }}-{{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}}"
 {% else %}
-        _auth_update_val = "Updated {{ auth_entity.name }}"
+        _auth_update_val = f"Updated {{ auth_entity.name }} {{"{"}}{{ auth_entity.name_lower }}1_id{{"}"}}"
 {% endif %}
         resp = ctx.req("PUT", "/api/{{ auth_entity.name_plural }}/" + str({{ auth_entity.name_lower }}1_id),
                        token=token1,
