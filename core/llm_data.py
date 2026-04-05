@@ -58,6 +58,8 @@ def _default_val(name: str, ts_type: str, n: int) -> Any:
         return n
     if ts_type == "boolean":
         return True
+    if ts_type in ("Record<string, any>", "object", "Json"):
+        return {}
     if "email" in low:
         return f"user{n}@example.com"
     # URL-like field names: url, website, link, href, avatar, image, photo, picture, icon, thumbnail
