@@ -189,8 +189,6 @@ class Deployment:
             print(f"\n  Applying Prisma schema to remote database...")
             provider.apply_schema(db_url)
 
-            provider.wait_for_ready(record["endpoint"])
-
             # Build image
             image_tag = f"developable/{project_name}:latest"
             print(f"\n  Building Docker image '{image_tag}'...")
