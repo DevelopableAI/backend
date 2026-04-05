@@ -164,7 +164,7 @@ class BaseProvider(ABC):
         spec: dict[str, Any],
     ) -> dict[str, str]:
         """Return the standard tag dict applied to all managed resources."""
-        entity_names = ",".join(e["name"] for e in spec.get("entities", []))
+        entity_names = " ".join(e["name"] for e in spec.get("entities", []))
         return {
             self.TAG_MANAGED_BY: self.TAG_MANAGED_VALUE,
             self.TAG_PROJECT: project_name,
