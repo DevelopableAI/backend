@@ -255,8 +255,14 @@ class AWSProvider(BaseProvider):
         print(f"  [AWS] Ensuring IAM execution role '{_EXECUTION_ROLE_NAME}'...")
         role_arn = self._ensure_execution_role(iam)
 
-        # Task definition
+        # CloudWatch log group (pre-create so execution role doesn't need logs:CreateLogGroup,
+        # which is not included in AmazonECSTaskExecutionRolePolicy)
         td_family = f"{project_name}-task"
+        log_group = f"/ecs/{td_family}"
+        print(f"  [AWS] Ensuring CloudWatch log group '{log_group}'...")
+        self._ensure_log_group(session, log_group, tags, region)
+
+        # Task definition
         print(f"  [AWS] Registering task definition '{td_family}'...")
         td_arn = self._register_task_definition(
             ecs, td_family, image_uri, role_arn, env_vars, tags, region
@@ -554,6 +560,27 @@ jobs:
         self._run(["docker", "tag", local_tag, image_uri])
         self._run(["docker", "push", image_uri])
 
+    def _ensure_log_group(
+        self, session: Any, log_group: str, tags: dict[str, str], region: str
+    ) -> None:
+        """
+        Pre-create the CloudWatch log group so the ECS execution role doesn't
+        need logs:CreateLogGroup (not included in AmazonECSTaskExecutionRolePolicy).
+        Idempotent — silently skips if the group already exists.
+        """
+        from botocore.exceptions import ClientError
+
+        logs = session.client("logs", region_name=region)
+        try:
+            logs.create_log_group(
+                logGroupName=log_group,
+                tags=tags,
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ResourceAlreadyExistsException":
+                raise
+            # Group already exists (re-deploy) — no action needed
+
     def _ensure_cluster(
         self, ecs: Any, cluster_name: str, tags: dict[str, str]
     ) -> str:
@@ -679,7 +706,6 @@ jobs:
                         "awslogs-group": f"/ecs/{family}",
                         "awslogs-region": region,
                         "awslogs-stream-prefix": "ecs",
-                        "awslogs-create-group": "true",
                     },
                 },
             }],

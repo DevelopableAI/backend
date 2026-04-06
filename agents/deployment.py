@@ -75,8 +75,8 @@ _SECRETS_INSTRUCTIONS: dict[str, list[str]] = {
 _PROVIDER_GITHUB_SECRETS: dict[str, dict[str, str]] = {
     "heroku": {"HEROKU_API_KEY": "api_key"},
     "aws": {
-        "AWS_ACCESS_KEY_ID": "access_key_id",
-        "AWS_SECRET_ACCESS_KEY": "secret_access_key",
+        "AWS_ACCESS_KEY_ID": "access_key",
+        "AWS_SECRET_ACCESS_KEY": "secret_key",
     },
     "gcp": {"GCP_CREDENTIALS": "credentials_b64"},
 }
