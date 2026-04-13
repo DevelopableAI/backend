@@ -1,0 +1,164 @@
+"""
+Section {{ section_num }} — Auth: Register.
+
+Populates ctx.state with:
+  {{ auth_entity.name_lower }}1_token, {{ auth_entity.name_lower }}1_id
+  {{ auth_entity.name_lower }}2_token, {{ auth_entity.name_lower }}2_id
+  {{ auth_entity.name_lower }}3_token, {{ auth_entity.name_lower }}3_id  (temporary, deleted in cleanup)
+{% if login_field %}
+  {{ login_field.name }}1 ({{ login_field.ts_type }} used for login)
+{% endif %}
+"""
+
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · AUTH — REGISTER")
+
+{% if login_field and login_field.name == "email" %}
+    email1 = ctx.unique_email("alice")
+    email2 = ctx.unique_email("bob")
+    email3 = ctx.unique_email("charlie")
+
+    # Persist login credentials so the login section can reuse them
+    ctx.state["{{ login_field.name }}1"] = email1
+    ctx.state["{{ login_field.name }}2"] = email2
+{% endif %}
+
+    # --- Valid registrations ---
+
+/* LLM_SECTION_START */
+# Generate 3 valid registration calls for entity "{{ auth_entity.name }}".
+# Endpoint: POST /auth/register
+# Required fields (besides sensitive/login):
+{% for f in required_scalar_fields %}
+#   {{ f.name }}: {{ f.ts_type }}
+{% endfor %}
+{% for f in optional_scalar_fields %}
+#   {{ f.name }}: {{ f.ts_type }} (optional)
+{% endfor %}
+{% if login_field %}
+# Login field: {{ login_field.name }} ({{ login_field.ts_type }}) — use email1/email2/email3 if email, else generate unique values
+{% endif %}
+{% for sf in sensitive_fields %}
+# Sensitive field: {{ sf.name }} — use a strong password like "SecurePass1!" for user1, "AnotherPass9#" for user2
+{% endfor %}
+#
+# For user1 registration:
+#   - Assert: resp.status_code == 201, response has "token" and "{{ auth_entity.name_lower }}" fields
+#   - Store: ctx.state["{{ auth_entity.name_lower }}1_token"] = data.get("token", "")
+#   - Store: ctx.state["{{ auth_entity.name_lower }}1_id"] = data.get("{{ auth_entity.name_lower }}", {}).get("id")
+{% for sf in sensitive_fields %}
+#   - Check: ctx.no_sensitive_field_in(data, "{{ sf.name }}", "register response") — pass "{{ sf.name }}" as a STRING, call ctx.warn() if it returns False
+#   - Check JWT: payload = ctx.decode_jwt(ctx.state["{{ auth_entity.name_lower }}1_token"]); ctx.no_sensitive_field_in(payload, "{{ sf.name }}", "JWT payload") — call ctx.warn() if False
+{% endfor %}
+# For user2: store token and id similarly
+# For user3: store token and id similarly (this user is deleted in cleanup)
+{% if optional_scalar_fields %}
+# For one registration (user3 or a 4th call): include optional fields and verify they are returned
+{% endif %}
+/* LLM_SECTION_END */
+
+    # --- Duplicate login field → 409 ---
+{% if login_field and login_field.name == "email" %}
+    resp = ctx.req("POST", "/auth/register", body={
+        "{{ login_field.name }}": email1,
+{% for sf in sensitive_fields %}
+        "{{ sf.name }}": "SecurePass1!",
+{% endfor %}
+{% for f in required_scalar_fields %}
+        "{{ f.name }}": "Duplicate Test",
+{% endfor %}
+    })
+    ctx.assert_status(resp, 409, "Register duplicate {{ login_field.name }} → 409")
+{% endif %}
+
+    # --- Missing required fields → 400 ---
+{% for f in required_scalar_fields %}
+    resp = ctx.req("POST", "/auth/register", body={
+{% for other in required_scalar_fields if other.name != f.name %}
+        "{{ other.name }}": "Test Value",
+{% endfor %}
+{% for sf in sensitive_fields %}
+        "{{ sf.name }}": "SecurePass1!",
+{% endfor %}
+{% if login_field %}
+        "{{ login_field.name }}": ctx.unique_email("no_{{ f.name }}"),
+{% endif %}
+    })
+    ctx.assert_status(resp, 400, "Register without {{ f.name }} → 400")
+{% endfor %}
+
+{% for sf in sensitive_fields %}
+    # Missing {{ sf.name }} → 400
+    resp = ctx.req("POST", "/auth/register", body={
+{% if login_field %}
+        "{{ login_field.name }}": ctx.unique_email("no_pw"),
+{% endif %}
+{% for f in required_scalar_fields %}
+        "{{ f.name }}": "Test Value",
+{% endfor %}
+    })
+    ctx.assert_status(resp, 400, "Register without {{ sf.name }} → 400")
+{% endfor %}
+
+    # Empty body → 400
+    resp = ctx.req("POST", "/auth/register", body={})
+    ctx.assert_status(resp, 400, "Register with empty body → 400")
+
+{% if login_field and login_field.name == "email" %}
+    # Invalid email format → 400
+    resp = ctx.req("POST", "/auth/register", body={
+        "{{ login_field.name }}": "not-an-email",
+{% for sf in sensitive_fields %}
+        "{{ sf.name }}": "SecurePass1!",
+{% endfor %}
+{% for f in required_scalar_fields %}
+        "{{ f.name }}": "Test Value",
+{% endfor %}
+    })
+    ctx.assert_status(resp, 400, "Register with invalid email format → 400")
+{% endif %}
+
+{% for sf in sensitive_fields %}
+    # {{ sf.name }} too short → 400
+    resp = ctx.req("POST", "/auth/register", body={
+{% if login_field %}
+        "{{ login_field.name }}": ctx.unique_email("short_pw"),
+{% endif %}
+        "{{ sf.name }}": "1234567",
+{% for f in required_scalar_fields %}
+        "{{ f.name }}": "Test Value",
+{% endfor %}
+    })
+    ctx.assert_status(resp, 400, "Register with {{ sf.name }} <8 chars → 400")
+
+    # Empty {{ sf.name }} → 400
+    resp = ctx.req("POST", "/auth/register", body={
+{% if login_field %}
+        "{{ login_field.name }}": ctx.unique_email("empty_pw"),
+{% endif %}
+        "{{ sf.name }}": "",
+{% for f in required_scalar_fields %}
+        "{{ f.name }}": "Test Value",
+{% endfor %}
+    })
+    ctx.assert_status(resp, 400, "Register with empty {{ sf.name }} → 400")
+{% endfor %}
+
+    # Extra / unknown fields should be silently ignored → 201
+    resp = ctx.req("POST", "/auth/register", body={
+{% if login_field %}
+        "{{ login_field.name }}": ctx.unique_email("extra"),
+{% endif %}
+{% for sf in sensitive_fields %}
+        "{{ sf.name }}": "ExtraFields1!",
+{% endfor %}
+{% for f in required_scalar_fields %}
+        "{{ f.name }}": "Extra Fields Test",
+{% endfor %}
+        "role": "admin",
+        "isAdmin": True,
+    })
+    ctx.assert_status(resp, 201, "Register with extra/unknown fields → 201 (stripped)")

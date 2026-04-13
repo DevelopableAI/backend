@@ -1,0 +1,35 @@
+Generate Python seed data creation code for an integration test section.
+
+The placeholder comment describes the entity, its canonical create path, required/optional fields,
+and the state keys to populate. Read it carefully.
+
+Rules:
+- Create exactly 3 instances of the entity:
+    entity1: use token1 (owned by user1)
+    entity2: use token2 (owned by user2)
+    entity3: use token1 again (owned by user1, include optional fields if any)
+  EXCEPTION: if the placeholder says to create only ONE instance and store as "nested_<entity>_id", follow those instructions exactly — do NOT create 3, do NOT write to entity1_id/entity2_id/entity3_id
+- Use realistic, human-readable values (e.g. "Hello World", "My first post", "Alice Tester")
+- Infer data format from the field name: fields named "email" → valid email like "alice@example.com"; fields named "url" or ending in "Url"/"URL" → valid URL like "https://example.com"; fields named "phone" → "555-1234"; fields named "username" → lowercase alphanumeric like "alice_tester"; fields named "title" → short title sentence; fields named "content" or "body" → a longer sentence or paragraph; fields named "name" → a proper name like "Alice Tester"
+- Do NOT include server-injected FK fields in the body — they are injected by the server from the JWT (owner FK) or URL param (primary parent FK), and are listed under "Server-injected FK fields (omit from body)"
+- DO include any FK fields listed under "Required FK fields that MUST be included in the request body" — these are NOT server-injected and must appear in every request body, using the variable shown (e.g. body={"quantity": 2, "productId": product1_id})
+- Use ctx.assert_status(resp, 201, "Seed: Create <entity><n>") for each seed call
+- Store IDs: ctx.state["<entity_lower>1_id"] = data.get("id"), etc.
+- If owner_fk_field is mentioned: assert data.get(owner_fk_field) == <auth_var>_id and call ctx.ok() or ctx.fail() with a message
+- If parent_fk_field is mentioned: assert data.get(parent_fk_field) == <parent_var>_id and call ctx.ok() or ctx.fail()
+- Wrap each creation in `if ctx.assert_status(resp, 201, ...):` before accessing data
+- Variable names for state are already declared above the LLM section — use them directly
+- IMPORTANT: Use the `body=` keyword argument (NOT `json=`) for request bodies in ctx.req()
+- IMPORTANT: When calling ctx.no_sensitive_field_in(), pass the field name as a STRING (e.g. "password"), never as a list
+- CRITICAL INDENTATION: Every outermost statement — including `resp =`, `if ...:`, comments, and `ctx.state[...]` — MUST start at column 0 (zero leading spaces). Only code nested INSIDE an `if` or `for` block uses 4-space relative indent.
+  WRONG (do NOT do this):
+      resp = ctx.req(...)       ← 4 leading spaces on an outermost statement
+      if ctx.assert_status(...):
+          data = ...
+  RIGHT:
+  resp = ctx.req(...)            ← 0 leading spaces
+  if ctx.assert_status(...):
+      data = ...                 ← 4 spaces, nested inside the if
+
+Output only the Python code for the seed creation calls, starting immediately with `resp = ctx.req(...)` at column 0.
+No function definitions, no imports, no section headers.

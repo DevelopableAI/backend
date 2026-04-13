@@ -1,0 +1,44 @@
+import { Router } from 'express';
+import { {{ entity.name }}Controller } from '../controllers/{{ entity.name_lower }}.controller.js';
+{% if auth_entity_name %}
+import { authenticate } from '../lib/auth.js';
+{% endif %}
+
+const router = Router();
+const controller = new {{ entity.name }}Controller();
+
+{% for route in routes %}
+{% if route.method in ['PUT', 'DELETE'] and auth_entity_name %}
+{% if owner_fk_field %}
+// {{ route.description }} (requires authentication + ownership)
+{% else %}
+// {{ route.description }} (requires authentication)
+{% endif %}
+router.{{ route.method | lower }}('{{ route.path | replace('/' + entity.name_plural, '') or '/' }}', authenticate, controller.{{ route.handler }}.bind(controller));
+{% elif route.method == 'POST' and auth_entity_name %}
+// {{ route.description }} (requires authentication)
+router.{{ route.method | lower }}('{{ route.path | replace('/' + entity.name_plural, '') or '/' }}', authenticate, controller.{{ route.handler }}.bind(controller));
+{% else %}
+// {{ route.description }}
+router.{{ route.method | lower }}('{{ route.path | replace('/' + entity.name_plural, '') or '/' }}', controller.{{ route.handler }}.bind(controller));
+{% endif %}
+{% endfor %}
+{% for nested in nested_routes %}
+
+// --- Nested routes: {{ nested.related_entity_plural }} under {{ entity.name }} ---
+// List all {{ nested.related_entity_plural }} for a {{ entity.name_lower }} (always available)
+router.get('/:id/{{ nested.relation_name }}', controller.get{{ nested.related_entity }}sFor{{ entity.name }}.bind(controller));
+{% if nested.is_primary_parent %}
+// Create a {{ nested.related_entity_lower }} — canonical create route (primary parent: {{ entity.name }})
+{% if entity.is_auth_entity %}
+// Parent ID is taken from the auth token, not the URL
+router.post('/{{ nested.relation_name }}', authenticate, controller.create{{ nested.related_entity }}For{{ entity.name }}.bind(controller));
+{% elif auth_entity_name %}
+router.post('/:id/{{ nested.relation_name }}', authenticate, controller.create{{ nested.related_entity }}For{{ entity.name }}.bind(controller));
+{% else %}
+router.post('/:id/{{ nested.relation_name }}', controller.create{{ nested.related_entity }}For{{ entity.name }}.bind(controller));
+{% endif %}
+{% endif %}
+{% endfor %}
+
+export { router as {{ entity.name_plural }}Router };

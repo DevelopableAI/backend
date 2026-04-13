@@ -1,0 +1,168 @@
+import { Request, Response, NextFunction } from 'express';
+import { {{ entity.name }}Repository } from '../repositories/{{ entity.name_lower }}.repository.js';
+import { validate{{ entity.name }}Create, validate{{ entity.name }}Update } from '../validators/{{ entity.name_lower }}.validator.js';
+import { parsePagination, buildPaginatedResponse } from '../lib/pagination.js';
+import { NotFoundError, AppError } from '../lib/errors.js';
+{% for nested in nested_routes %}
+import { {{ nested.related_entity }}Repository } from '../repositories/{{ nested.related_entity_lower }}.repository.js';
+import { validate{{ nested.related_entity }}Create{% if nested.has_parent_fk_schema %}, validate{{ nested.related_entity }}CreateNested{% endif %}, validate{{ nested.related_entity }}Update } from '../validators/{{ nested.related_entity_lower }}.validator.js';
+{% endfor %}
+
+export class {{ entity.name }}Controller {
+  private repository: {{ entity.name }}Repository;
+{% for nested in nested_routes %}
+  private {{ nested.related_entity_lower }}Repository: {{ nested.related_entity }}Repository;
+{% endfor %}
+
+  constructor() {
+    this.repository = new {{ entity.name }}Repository();
+{% for nested in nested_routes %}
+    this.{{ nested.related_entity_lower }}Repository = new {{ nested.related_entity }}Repository();
+{% endfor %}
+  }
+
+  async getAll(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const pagination = parsePagination(req);
+      const { data, total } = await this.repository.findMany(pagination);
+      res.json(buildPaginatedResponse(data, total, pagination));
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async getById(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = this._parseId(req.params.id);
+      const record = await this.repository.findById(id);
+      if (!record) {
+        throw new NotFoundError('{{ entity.name }}', id);
+      }
+      res.json(record);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async create(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const data = validate{{ entity.name }}Create(req.body);
+{% if owner_fk_field %}
+      // Inject the authenticated user's ID as the owner FK
+      const record = await this.repository.create({ ...data, {{ owner_fk_field }}: req.user!.id });
+{% else %}
+      const record = await this.repository.create(data);
+{% endif %}
+      res.status(201).json(record);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async update(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = this._parseId(req.params.id);
+{% if entity.is_auth_entity and auth_entity_name %}
+      if (id !== req.user!.id) {
+        throw new AppError(403, 'Forbidden');
+      }
+{% elif owner_fk_field %}
+      const existing = await this.repository.findById(id);
+      if (!existing) {
+        throw new NotFoundError('{{ entity.name }}', id);
+      }
+      if (existing.{{ owner_fk_field }} !== req.user!.id) {
+        throw new AppError(403, 'Forbidden');
+      }
+{% endif %}
+      const data = validate{{ entity.name }}Update(req.body);
+      const record = await this.repository.update(id, data);
+      if (!record) {
+        throw new NotFoundError('{{ entity.name }}', id);
+      }
+      res.json(record);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async remove(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = this._parseId(req.params.id);
+{% if entity.is_auth_entity and auth_entity_name %}
+      if (id !== req.user!.id) {
+        throw new AppError(403, 'Forbidden');
+      }
+{% elif owner_fk_field %}
+      const existing = await this.repository.findById(id);
+      if (!existing) {
+        throw new NotFoundError('{{ entity.name }}', id);
+      }
+      if (existing.{{ owner_fk_field }} !== req.user!.id) {
+        throw new AppError(403, 'Forbidden');
+      }
+{% endif %}
+      const deleted = await this.repository.delete(id);
+      if (!deleted) {
+        throw new NotFoundError('{{ entity.name }}', id);
+      }
+      res.status(204).send();
+    } catch (err) {
+      next(err);
+    }
+  }
+{% for nested in nested_routes %}
+
+  // --- Nested: {{ nested.related_entity }} under {{ entity.name }} ---
+
+  async get{{ nested.related_entity }}sFor{{ entity.name }}(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const parentId = this._parseId(req.params.id);
+      const pagination = parsePagination(req);
+      const { data, total } = await this.{{ nested.related_entity_lower }}Repository.findManyBy{{ nested.fk_field[0] | upper ~ nested.fk_field[1:] }}(parentId, pagination);
+      res.json(buildPaginatedResponse(data, total, pagination));
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async create{{ nested.related_entity }}For{{ entity.name }}(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+{% if entity.is_auth_entity %}
+      // Parent ID comes from the authenticated user's token, not the URL
+      const parentId = req.user!.id;
+{% else %}
+      const parentId = this._parseId(req.params.id);
+{% endif %}
+{% if nested.use_nested_schema %}
+      // Use the nested schema: parent FK ({{ nested.fk_field }}) is injected from URL, not expected in body
+      const data = validate{{ nested.related_entity }}CreateNested(req.body);
+{% else %}
+      const data = validate{{ nested.related_entity }}Create(req.body);
+{% endif %}
+      // Inject the parent FK; ignore any {{ nested.fk_field }} provided in the body
+{% if nested.child_owner_fk_field %}
+      // Also inject the owner FK ({{ nested.child_owner_fk_field }}) from the authenticated user's token
+      const record = await this.{{ nested.related_entity_lower }}Repository.create({ ...data, {{ nested.fk_field }}: parentId, {{ nested.child_owner_fk_field }}: req.user!.id });
+{% else %}
+      const record = await this.{{ nested.related_entity_lower }}Repository.create({ ...data, {{ nested.fk_field }}: parentId });
+{% endif %}
+      res.status(201).json(record);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+{% endfor %}
+
+  private _parseId(raw: string): number {
+    if (!/^\d+$/.test(raw)) {
+      throw new AppError(400, 'Invalid ID format');
+    }
+    const id = Number(raw);
+    if (id > Number.MAX_SAFE_INTEGER) {
+      throw new AppError(400, 'ID out of range');
+    }
+    return id;
+  }
+}

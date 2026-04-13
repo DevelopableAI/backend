@@ -1,0 +1,108 @@
+"""
+Section {{ section_num }} — Token edge cases and JWT security.
+
+Requires ctx.state: {{ auth_entity_name | lower if auth_entity_name else 'user' }}1_token,
+                    {{ write_endpoint.state_id_key }} (from seed section).
+"""
+
+import requests as _requests
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · TOKEN EDGE CASES & SECURITY")
+
+    target_id = ctx.state.get("{{ write_endpoint.state_id_key }}")
+    raw_token = ctx.state.get("{{ auth_entity_name | lower if auth_entity_name else 'user' }}1_token", "")
+
+    def _write_path() -> str:
+        return "{{ write_endpoint.path }}" + str(target_id)
+
+    # {{ section_num }}-1  Malformed token (not a JWT) → 401
+    if target_id:
+        resp = ctx.req("{{ write_endpoint.method }}", _write_path(),
+                       token="not.a.valid.jwt",
+                       body={"title": "Malformed token attempt"})
+        ctx.assert_status(resp, 401, "Request with malformed JWT → 401", auth_fail=True)
+
+    # {{ section_num }}-2  Tampered signature (flip last char) → 401
+    if target_id and raw_token and raw_token.count(".") == 2:
+        parts = raw_token.split(".")
+        sig = parts[2]
+        tampered = sig[:-1] + ("A" if sig[-1] != "A" else "B")
+        tampered_token = ".".join(parts[:2] + [tampered])
+        resp = ctx.req("{{ write_endpoint.method }}", _write_path(),
+                       token=tampered_token,
+                       body={"title": "Tampered token"})
+        ctx.assert_status(resp, 401, "Request with tampered JWT signature → 401", auth_fail=True)
+
+    # {{ section_num }}-3  Empty Bearer value → 401
+    if target_id:
+        resp = ctx.req("{{ write_endpoint.method }}", _write_path(),
+                       token="",
+                       body={"title": "Empty token"})
+        ctx.assert_status(resp, 401, "Request with empty token string → 401", auth_fail=True)
+
+    # {{ section_num }}-4  Token with only two segments (missing signature) → 401
+    if target_id and raw_token:
+        two_part = ".".join(raw_token.split(".")[:2])
+        resp = ctx.req("{{ write_endpoint.method }}", _write_path(),
+                       token=two_part,
+                       body={"title": "Two-segment JWT"})
+        ctx.assert_status(resp, 401, "Two-segment JWT (no signature) → 401", auth_fail=True)
+
+    # {{ section_num }}-5  Authorization header without "Bearer" scheme → 401
+    if target_id and raw_token:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": raw_token,  # Raw token, no "Bearer " prefix
+        }
+        url = f"{ctx.base_url}{{ write_endpoint.path }}{target_id}"
+        print(f"  🚀  {{ write_endpoint.method }} {{ write_endpoint.path }}<id> (Authorization without 'Bearer' prefix)")
+        try:
+            resp = _requests.request(
+                "{{ write_endpoint.method }}", url,
+                headers=headers, json={"title": "No bearer"}, timeout=10
+            )
+            if resp.status_code == 401:
+                ctx.ok("Missing 'Bearer' prefix → 401")
+            else:
+                ctx.warn(
+                    f"Authorization without 'Bearer' prefix returned HTTP {resp.status_code} "
+                    "— middleware should require the 'Bearer' scheme explicitly"
+                )
+        except Exception as exc:
+            ctx.fail(f"Request failed: {exc}")
+
+    # {{ section_num }}-6  JWT payload should not contain sensitive fields
+    if raw_token:
+        payload = ctx.decode_jwt(raw_token)
+        if payload is None:
+            ctx.fail("Could not decode JWT payload for inspection")
+        else:
+            if "password" in payload:
+                ctx.warn(
+                    "SECURITY: JWT payload contains 'password' field. "
+                    "Tokens are base64-decodable without a secret and should "
+                    "never carry credentials."
+                )
+            else:
+                ctx.ok("JWT payload does NOT contain 'password'")
+
+    # {{ section_num }}-7  JWT should have an 'exp' claim
+    if raw_token:
+        payload = ctx.decode_jwt(raw_token)
+        if payload:
+            if "exp" not in payload:
+                ctx.warn("JWT payload has no 'exp' claim — tokens never expire!")
+            else:
+                ctx.ok(f"JWT has 'exp' claim (expiry timestamp: {payload['exp']})")
+
+    # {{ section_num }}-8  JWT should have an 'iat' claim (issued-at)
+    if raw_token:
+        payload = ctx.decode_jwt(raw_token)
+        if payload:
+            if "iat" not in payload:
+                ctx.warn("JWT payload is missing 'iat' (issued-at) claim")
+            else:
+                ctx.ok("JWT has 'iat' claim")

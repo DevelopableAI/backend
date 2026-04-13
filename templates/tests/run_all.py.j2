@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""
+run_all.py — API test suite runner.
+
+Executes all test sections sequentially, sharing a single TestContext so that
+state (auth tokens, created IDs) flows naturally from each section to the next.
+
+Usage:
+  python run_all.py [base_url]
+
+  base_url defaults to $API_URL env-var or http://localhost:3000
+
+Legend:
+  🚀  Sending API request
+  ✅  Test passed
+  ❌  Test failed
+  ⛔️  Auth / authorization issue
+  ⚠️  Security warning
+"""
+
+import sys
+import os
+
+# Allow imports from this directory
+sys.path.insert(0, os.path.dirname(__file__))
+
+from helpers import TestContext, section
+
+{% for name in module_names %}
+import {{ name }}
+{% endfor %}
+
+
+SECTIONS = [
+{% for name in module_names %}
+    {{ name }},
+{% endfor %}
+]
+
+
+def main() -> None:
+    base_url = (
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else os.getenv("API_URL", "http://localhost:3000")
+    )
+
+    print("╔══════════════════════════════════════════════════════════════╗")
+    print("║          Developable — Comprehensive Test Suite              ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
+    print(f"  Target  : {base_url}")
+    print(f"  Sections: {len(SECTIONS)}")
+
+    ctx = TestContext(base_url)
+
+    for module in SECTIONS:
+        try:
+            module.run(ctx)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            ctx.fail(f"Unhandled exception in {module.__name__}: {exc}")
+
+    # ------------------------------------------------------------------
+    # Final summary
+    # ------------------------------------------------------------------
+    total = ctx.pass_count + ctx.fail_count + ctx.skip_count
+    print(f"\n{'═' * 64}")
+    print(f"  FINAL RESULTS")
+    print(f"{'═' * 64}")
+    print(f"  ✅  Passed   : {ctx.pass_count}")
+    print(f"  ❌  Failed   : {ctx.fail_count}")
+    print(f"  ⏭️   Skipped  : {ctx.skip_count}")
+    print(f"  ⚠️   Warnings : {ctx.warn_count}")
+    print(f"  Total        : {total}  (passed + failed + skipped)")
+    print(f"{'═' * 64}")
+
+    if ctx.fail_count > 0:
+        print(f"\n  {ctx.fail_count} test(s) FAILED. Review the ❌ / ⛔️ entries above.")
+        if ctx.skip_count > 0:
+            print(f"  {ctx.skip_count} test(s) were skipped due to missing prerequisite state.")
+        sys.exit(1)
+    else:
+        executed = ctx.pass_count + ctx.fail_count
+        print(f"\n  All {executed} executed tests passed! 🎉")
+        if ctx.skip_count > 0:
+            print(f"  {ctx.skip_count} test(s) were skipped (prerequisite data not available).")
+        if ctx.warn_count > 0:
+            print(f"  Review the {ctx.warn_count} ⚠️  security warning(s) above.")
+
+
+if __name__ == "__main__":
+    main()

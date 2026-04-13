@@ -1,0 +1,34 @@
+Generate Zod schemas for this entity: one for CREATE (direct route), one for nested CREATE (if applicable), and one for UPDATE.
+
+Rules:
+- For CREATE: required fields are required. Optional fields and fields with defaults are optional.
+- For UPDATE: all fields are optional (partial update pattern).
+- SERVER-INJECTED fields: if you see a comment like "SERVER-INJECTED (always): fieldName ...", omit that field entirely from ALL schemas — it is injected by the controller and must never be accepted from user input.
+- PARENT-FK fields: if you see a comment like "PARENT-FK: fieldName is required in the request body for direct POST ..." then:
+  - Include fieldName as required in ${entityNameLower}CreateSchema (direct route needs it from the body)
+  - CRITICAL: Do NOT include fieldName anywhere in ${entityNameLower}CreateNestedSchema — it is injected from the URL param, not the body. The nested schema must not have this field at all (not required, not optional).
+- Apply sensible constraints based on field names and types:
+  - email → z.string().email({ message: 'Please provide a valid email address' })
+      NOTE: do NOT add .min(1) or .nonempty() to email fields — .email() already rejects empty strings
+  - password → z.string().min(8).max(128) with complexity note if needed
+  - url / website → z.string().url()
+  - name / title → z.string().min(1).max(255).trim()
+  - description / body / content → z.string().min(1).max(10000)
+  - age → z.number().int().min(0).max(150)
+  - numeric quantities (price, amount, cost, total, count, quantity, fee, balance, rate, score) → z.number().min(0)
+  - boolean fields → z.boolean()
+  - datetime fields → z.string().datetime() or z.coerce.date()
+  - enums → z.enum([...]) if values are obvious from the field name
+  - unique fields → no special schema change needed, the database handles uniqueness
+- IMPORTANT — always match the Zod type to the TypeScript type shown in the field list:
+  - If the field's ts_type is `number`, always use z.number(). NEVER use z.string(), z.emoji(), or any other non-numeric validator for a number field.
+  - If the field's ts_type is `string`, use z.string() with appropriate string constraints.
+  - If the field's ts_type is `boolean`, use z.boolean().
+  - Never apply string-specific validators (.emoji(), .uuid(), .url(), .email(), .regex()) to number fields.
+- Use .trim() on string inputs where appropriate.
+- Do not add .optional() to the update schema fields individually — wrap the whole object with .partial() instead.
+
+Output only the schema const declarations, nothing else. Use exactly these variable names:
+- `${entityNameLower}CreateSchema` — always required
+- `${entityNameLower}CreateNestedSchema` — only when PARENT-FK comments are present; must exclude ALL PARENT-FK fields entirely (they are URL-injected)
+- `${entityNameLower}UpdateSchema` — always required

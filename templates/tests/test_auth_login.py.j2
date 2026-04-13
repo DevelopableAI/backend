@@ -1,0 +1,83 @@
+"""
+Section {{ section_num }} — Auth: Login.
+
+Refreshes ctx.state['{{ auth_entity.name_lower }}1_token'] with a freshly-issued token.
+Requires ctx.state: {{ login_field.name if login_field else 'login credential' }}1, {{ auth_entity.name_lower }}1_token (from previous section).
+"""
+
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · AUTH — LOGIN")
+
+{% if login_field %}
+    {{ login_field.name }}1 = ctx.state.get("{{ login_field.name }}1", "")
+{% endif %}
+
+    # {{ section_num }}-1  Valid login
+{% if login_field and login_field.name == "email" %}
+    resp = ctx.req("POST", "/auth/login", body={"{{ login_field.name }}": {{ login_field.name }}1, "password": "SecurePass1!"})
+{% else %}
+    resp = ctx.req("POST", "/auth/login", body={"{{ login_field.name if login_field else 'email' }}": {{ (login_field.name if login_field else 'email') + '1' }}, "password": "SecurePass1!"})
+{% endif %}
+    if ctx.assert_status(resp, 200, "Login {{ auth_entity.name_lower }}1 (valid credentials)"):
+        data = ctx.safe_json(resp)
+        ctx.assert_field(data, "token", "Login response has token")
+{% for sf in sensitive_fields %}
+        if not ctx.no_sensitive_field_in(data, "{{ sf.name }}", "login response"):
+            ctx.warn("{{ sf.name | capitalize }} field leaked in /auth/login response")
+        else:
+            ctx.ok("{{ sf.name | capitalize }} NOT present in login response")
+{% endfor %}
+        if "token" in data:
+            ctx.state["{{ auth_entity.name_lower }}1_token"] = data["token"]  # refresh
+
+    # {{ section_num }}-2  Wrong password → 401
+{% if login_field and login_field.name == "email" %}
+    resp = ctx.req("POST", "/auth/login", body={"{{ login_field.name }}": {{ login_field.name }}1, "password": "WrongPass!!"})
+{% else %}
+    resp = ctx.req("POST", "/auth/login", body={"{{ login_field.name if login_field else 'email' }}": {{ (login_field.name if login_field else 'email') + '1' }}, "password": "WrongPass!!"})
+{% endif %}
+    ctx.assert_status(resp, 401, "Login with wrong password → 401", auth_fail=True)
+
+    # {{ section_num }}-3  Non-existent user → 401
+{% if login_field and login_field.name == "email" %}
+    resp = ctx.req("POST", "/auth/login", body={
+        "{{ login_field.name }}": ctx.unique_email("ghost"), "password": "SecurePass1!",
+    })
+{% else %}
+    resp = ctx.req("POST", "/auth/login", body={
+        "{{ login_field.name if login_field else 'email' }}": "nonexistent_ghost_user", "password": "SecurePass1!",
+    })
+{% endif %}
+    ctx.assert_status(resp, 401, "Login with non-existent credential → 401", auth_fail=True)
+
+    # {{ section_num }}-4  Missing login field → 400
+    resp = ctx.req("POST", "/auth/login", body={"password": "SecurePass1!"})
+    ctx.assert_status(resp, 400, "Login without {{ login_field.name if login_field else 'login field' }} → 400")
+
+    # {{ section_num }}-5  Missing password → 400
+{% if login_field %}
+    resp = ctx.req("POST", "/auth/login", body={"{{ login_field.name }}": {{ login_field.name }}1})
+{% else %}
+    resp = ctx.req("POST", "/auth/login", body={})
+{% endif %}
+    ctx.assert_status(resp, 400, "Login without password → 400")
+
+    # {{ section_num }}-6  Empty body → 400
+    resp = ctx.req("POST", "/auth/login", body={})
+    ctx.assert_status(resp, 400, "Login with empty body → 400")
+
+{% if login_field and login_field.name == "email" %}
+    # {{ section_num }}-7  Malformed email → 400
+    resp = ctx.req("POST", "/auth/login", body={"{{ login_field.name }}": "bad@@email", "password": "SecurePass1!"})
+    ctx.assert_status(resp, 400, "Login with malformed email → 400")
+
+    # {{ section_num }}-8  Correct email, empty password string → 400 or 401
+    resp = ctx.req("POST", "/auth/login", body={"{{ login_field.name }}": {{ login_field.name }}1, "password": ""})
+    if resp.status_code in (400, 401):
+        ctx.ok(f"Login with empty password string → HTTP {resp.status_code} (acceptable)")
+    else:
+        ctx.fail(f"Login with empty password string → unexpected HTTP {resp.status_code}")
+{% endif %}

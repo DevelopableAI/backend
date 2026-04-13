@@ -1,0 +1,11 @@
+export interface {{ entity.name }}CreateInput {
+{% for field in scalar_fields %}
+{% if not field.is_optional and not field.default %}
+  {{ field.name }}: {{ field.ts_type }};
+{% else %}
+  {{ field.name }}?: {{ field.ts_type }};
+{% endif %}
+{% endfor %}
+}
+
+export type {{ entity.name }}UpdateInput = Partial<{{ entity.name }}CreateInput>;

@@ -1,0 +1,161 @@
+"""
+Section {{ section_num }} — Nested routes: GET/POST /api/{{ parent_entity.name_plural }}/:id/{{ nested_route.relation_name }}.
+
+{{ parent_entity.name }} is the primary parent of {{ child_entity.name }}. The {{ nested_route.fk_field }}
+is injected from the URL param. The {{ child_owner_fk_field }} (if present) is injected from JWT.
+
+Populates ctx.state: parent_nested_{{ child_entity.name_lower }}_id.
+Requires ctx.state:
+{% if auth_entity %}
+  {{ auth_entity.name_lower }}1_id, {{ auth_entity.name_lower }}1_token, {{ auth_entity.name_lower }}2_id, {{ auth_entity.name_lower }}2_token
+{% endif %}
+  {{ parent_entity.name_lower }}1_id, {{ parent_entity.name_lower }}3_id (from {{ parent_entity.name_plural }} seed section)
+{% for sfk in child_secondary_fk_fields %}
+  {{ sfk.state_key }} (for {{ sfk.fk_field }} in request body)
+{% endfor %}
+"""
+
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · NESTED ROUTES — /api/{{ parent_entity.name_plural }}/:id/{{ nested_route.relation_name }}")
+
+{% if auth_entity %}
+    {{ auth_entity.name_lower }}1_id = ctx.state.get("{{ auth_entity.name_lower }}1_id")
+    {{ auth_entity.name_lower }}2_id = ctx.state.get("{{ auth_entity.name_lower }}2_id")
+    token1 = ctx.state.get("{{ auth_entity.name_lower }}1_token")
+    token2 = ctx.state.get("{{ auth_entity.name_lower }}2_token")
+{% endif %}
+    {{ parent_entity.name_lower }}1_id = ctx.state.get("{{ parent_entity.name_lower }}1_id")
+    {{ parent_entity.name_lower }}3_id = ctx.state.get("{{ parent_entity.name_lower }}3_id")
+{% for sfk in child_secondary_fk_fields %}
+    {{ sfk.related_entity_lower }}1_id = ctx.state.get("{{ sfk.state_key }}")
+{% endfor %}
+
+    # {{ section_num }}-1  GET → 200 paginated, scoped to parent
+    if {{ parent_entity.name_lower }}1_id:
+        resp = ctx.req("GET",
+                       "/api/{{ parent_entity.name_plural }}/" + str({{ parent_entity.name_lower }}1_id) + "/{{ nested_route.relation_name }}")
+        if ctx.assert_status(resp, 200,
+                             f"GET /api/{{ parent_entity.name_plural }}/{{"{"}}{{ parent_entity.name_lower }}1_id{{"}"}}/{{ nested_route.relation_name }} → 200"):
+            data = ctx.safe_json(resp)
+            ctx.assert_paginated(data, f"GET /api/{{ parent_entity.name_plural }}/{{"{"}}{{ parent_entity.name_lower }}1_id{{"}"}}/{{ nested_route.relation_name }}")
+            items = data.get("data", [])
+            wrong = [item for item in items if item.get("{{ nested_route.fk_field }}") != {{ parent_entity.name_lower }}1_id]
+            if wrong:
+                ctx.fail(f"{{ child_entity.name_plural }} list contains items for other parents: {wrong}")
+            else:
+                ctx.ok(f"All {{ nested_route.relation_name }} correctly scoped to {{ parent_entity.name_lower }}1")
+
+    # {{ section_num }}-2  GET pagination
+    if {{ parent_entity.name_lower }}1_id:
+        resp = ctx.req("GET",
+                       "/api/{{ parent_entity.name_plural }}/" + str({{ parent_entity.name_lower }}1_id) + "/{{ nested_route.relation_name }}",
+                       params={"limit": 1})
+        if ctx.assert_status(resp, 200,
+                             f"GET /api/{{ parent_entity.name_plural }}/{{"{"}}{{ parent_entity.name_lower }}1_id{{"}"}}/{{ nested_route.relation_name }}?limit=1"):
+            meta = ctx.safe_json(resp).get("meta", {})
+            if meta.get("limit") == 1:
+                ctx.ok("limit=1 respected on parent-nested {{ nested_route.relation_name }}")
+
+    # {{ section_num }}-3  Non-existent parent → empty list (not 404)
+    resp = ctx.req("GET", "/api/{{ parent_entity.name_plural }}/9999999/{{ nested_route.relation_name }}")
+    if ctx.assert_status(resp, 200,
+                         "GET /api/{{ parent_entity.name_plural }}/9999999/{{ nested_route.relation_name }} → 200 empty"):
+        total = ctx.safe_json(resp).get("meta", {}).get("total", -1)
+        if total == 0:
+            ctx.ok("Non-existent parent's {{ nested_route.relation_name }} returns total=0")
+
+    # {{ section_num }}-4  POST without auth → 401
+    if {{ parent_entity.name_lower }}1_id:
+        resp = ctx.req("POST",
+                       "/api/{{ parent_entity.name_plural }}/" + str({{ parent_entity.name_lower }}1_id) + "/{{ nested_route.relation_name }}",
+                       body={
+{% for f in child_required_scalar_fields %}
+                           "{{ f.name }}": "Anonymous attempt",
+{% endfor %}
+                       })
+        ctx.assert_status(resp, 401,
+                          f"POST /api/{{ parent_entity.name_plural }}/{{"{"}}{{ parent_entity.name_lower }}1_id{{"}"}}/{{ nested_route.relation_name }} without auth → 401",
+                          auth_fail=True)
+
+    # {{ section_num }}-5  POST with auth, missing required fields → 400
+{% for f in child_required_scalar_fields %}
+    if {{ parent_entity.name_lower }}1_id and token1:
+        resp = ctx.req("POST",
+                       "/api/{{ parent_entity.name_plural }}/" + str({{ parent_entity.name_lower }}1_id) + "/{{ nested_route.relation_name }}",
+                       token=token1,
+                       body={
+{% for other in child_required_scalar_fields if other.name != f.name %}
+                           "{{ other.name }}": "Missing field test",
+{% endfor %}
+{% for sfk in child_secondary_fk_fields %}
+                           "{{ sfk.fk_field }}": {{ sfk.related_entity_lower }}1_id,
+{% endfor %}
+                       })
+        ctx.assert_status(resp, 400,
+                          f"POST nested {{ nested_route.relation_name }} missing {{ f.name }} → 400")
+{% endfor %}
+
+    # {{ section_num }}-6  POST with auth — {{ nested_route.fk_field }} injected from URL
+    parent_nested_child_id = None
+/* LLM_SECTION_START */
+# Generate ONE successful nested POST call.
+# Endpoint: POST /api/{{ parent_entity.name_plural }}/<parent_id>/{{ nested_route.relation_name }}
+# The {{ nested_route.fk_field }} is injected from the URL param (do NOT include in body).
+{% if child_owner_fk_field %}
+# The {{ child_owner_fk_field }} is injected from the JWT (do NOT include in body).
+{% endif %}
+#
+# Required scalar body fields:
+{% for f in child_required_scalar_fields %}
+#   {{ f.name }}: {{ f.ts_type }}
+{% endfor %}
+{% for f in child_optional_scalar_fields %}
+#   {{ f.name }}: {{ f.ts_type }} (optional)
+{% endfor %}
+{% if child_secondary_fk_fields %}
+#
+# REQUIRED FK fields that MUST be included in the body (NOT server-injected):
+{% for sfk in child_secondary_fk_fields %}
+#   "{{ sfk.fk_field }}": {{ sfk.related_entity_lower }}1_id  ← variable already declared above
+{% endfor %}
+{% endif %}
+#
+# Wrap in `if {{ parent_entity.name_lower }}1_id and token1:` (4-space indent; block body at 8-space indent).
+# After success:
+#   - Store: parent_nested_child_id = data.get("id"); ctx.state["parent_nested_{{ child_entity.name_lower }}_id"] = parent_nested_child_id
+#   - Assert: data.get("{{ nested_route.fk_field }}") == {{ parent_entity.name_lower }}1_id → ctx.ok/ctx.fail
+{% if child_owner_fk_field %}
+#   - Assert: data.get("{{ child_owner_fk_field }}") == {{ auth_entity.name_lower }}1_id → ctx.ok/ctx.fail
+{% endif %}
+/* LLM_SECTION_END */
+
+{% if child_owner_fk_field %}
+    # {{ section_num }}-7  Security: owner FK spoofing via nested route
+    if {{ parent_entity.name_lower }}1_id and token1 and {{ auth_entity.name_lower }}2_id:
+        resp = ctx.req("POST",
+                       "/api/{{ parent_entity.name_plural }}/" + str({{ parent_entity.name_lower }}1_id) + "/{{ nested_route.relation_name }}",
+                       token=token1,
+                       body={
+{% for f in child_required_scalar_fields %}
+                           "{{ f.name }}": "Claimed by user2",
+{% endfor %}
+{% for sfk in child_secondary_fk_fields %}
+                           "{{ sfk.fk_field }}": {{ sfk.related_entity_lower }}1_id,
+{% endfor %}
+                           "{{ child_owner_fk_field }}": "SPOOFED_VALUE",
+                       })
+        if resp.status_code == 201:
+            data = ctx.safe_json(resp)
+            spoofed_id = ctx.state.get("parent_nested_{{ child_entity.name_lower }}_id")
+            if data.get("{{ child_owner_fk_field }}") == {{ auth_entity.name_lower }}2_id:
+                ctx.warn(
+                    f"SECURITY: POST /api/{{ parent_entity.name_plural }}/:id/{{ nested_route.relation_name }} allows arbitrary {{ child_owner_fk_field }} — "
+                    "should inject from JWT instead."
+                )
+                ctx.state["spoofed_{{ child_entity.name_lower }}_id"] = data.get("id")
+            elif data.get("{{ child_owner_fk_field }}") == {{ auth_entity.name_lower }}1_id:
+                ctx.ok("POST nested: {{ child_owner_fk_field }} spoof ignored, set from token")
+{% endif %}

@@ -1,0 +1,48 @@
+# test_schema_pm.rules.yaml — business rules for the project management schema
+# Usage: python main.py test_schema_pm.prisma --out ./output_pm --rules test_schema_pm.rules.yaml
+
+entities:
+  User:
+    constraints:
+      - "Users can only modify their own profile"
+      - "Email and username must be unique; username must be alphanumeric with underscores only"
+      - "Password must be at least 8 characters; never returned in any API response"
+
+  Organization:
+    constraints:
+      - "Name and slug must be unique across all organizations"
+      - "slug must be lowercase, alphanumeric with hyphens only"
+      - "website is optional and must be a valid URL when provided"
+
+  Membership:
+    # userId → User is auth FK; organizationId → Organization is primary parent (first non-auth FK)
+    # Canonical create: POST /api/organizations/:id/memberships
+    # GET /api/users/:id/memberships is generated as a filtered read
+    constraints:
+      - "role must be one of: owner, admin, member"
+      - "A user can only have one membership per organization"
+
+  Project:
+    # organizationId → Organization is the only parent (no auth FK on Project itself)
+    # Canonical create: POST /api/organizations/:id/projects
+    constraints:
+      - "name must be non-empty and trimmed"
+      - "description is optional free text"
+      - "archived defaults to false; can be updated to archive a project"
+
+  Task:
+    # projectId → Project is primary parent (first non-auth FK)
+    # Canonical create: POST /api/projects/:id/tasks
+    # assigneeId is optional and points to User (auth entity)
+    constraints:
+      - "title must be non-empty and trimmed"
+      - "status must be one of: todo, in_progress, done"
+      - "priority must be an integer from 1 (lowest) to 5 (highest)"
+      - "assigneeId is optional; when provided it must reference an existing User"
+
+  TaskComment:
+    # taskId → Task is primary parent (first non-auth FK)
+    # Canonical create: POST /api/tasks/:id/taskComments
+    # GET /api/users/:id/taskComments is generated as a filtered read (via authorId)
+    constraints:
+      - "body must be non-empty"

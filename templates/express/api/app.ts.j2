@@ -1,0 +1,33 @@
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+{% for entity in entities %}
+import { {{ entity.name_plural }}Router } from './routes/{{ entity.name_plural }}.routes.js';
+{% endfor %}
+{% if auth_entity_name %}
+import { authRouter } from './routes/auth.routes.js';
+{% endif %}
+import { errorHandler } from './lib/errors.js';
+
+const app = express();
+
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
+app.use(morgan('dev'));
+
+{% if auth_entity_name %}
+app.use('/auth', authRouter);
+{% endif %}
+{% for entity in entities %}
+app.use('/api/{{ entity.name_plural }}', {{ entity.name_plural }}Router);
+{% endfor %}
+
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok' });
+});
+
+app.use(errorHandler);
+
+export default app;

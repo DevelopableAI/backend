@@ -1,0 +1,51 @@
+"""
+Section {{ section_num }} — Cleanup: delete all test data created during the suite.
+
+Order: child entities first (reverse dependency order).
+"""
+
+from helpers import TestContext, section
+
+
+def run(ctx: TestContext) -> None:
+    section("{{ section_num }} · CLEANUP — Remove test data")
+
+{% if auth_entity %}
+    token1 = ctx.state.get("{{ auth_entity.name_lower }}1_token")
+    token2 = ctx.state.get("{{ auth_entity.name_lower }}2_token")
+{% endif %}
+
+    def _delete(path: str, token: str | None, label: str) -> None:
+        if not token:
+            ctx.warn(f"Cleanup: no token for {label}, skipping")
+            return
+        resp = ctx.req("DELETE", path, token=token)
+        if resp.status_code == 403:
+            # First token didn't own this resource; try the other user's token
+{% if auth_entity %}
+            fallback = token2 if token is token1 else token1
+            if fallback:
+                resp = ctx.req("DELETE", path, token=fallback)
+{% endif %}
+        if resp.status_code in (204, 404):
+            ctx.ok(f"Cleanup: {label} removed (HTTP {resp.status_code})")
+        elif resp.status_code == 403:
+            ctx.warn(f"Cleanup: {label} → 403 Forbidden (neither token owns this resource)")
+        else:
+            ctx.warn(f"Cleanup: {label} → unexpected HTTP {resp.status_code}")
+
+{% for target in cleanup_targets %}
+    # Cleanup {{ target.entity.name_plural }}
+    {{ target.entity.name_lower }}_cleanups = [
+{% for key in target.state_id_keys %}
+        (ctx.state.get("{{ key }}"), token1, "{{ key }}"),
+{% endfor %}
+{% for key in target.extra_state_keys %}
+        (ctx.state.get("{{ key }}"), token1, "{{ key }}"),
+{% endfor %}
+    ]
+    for eid, tok, label in {{ target.entity.name_lower }}_cleanups:
+        if eid:
+            _delete("{{ target.api_path_prefix }}" + str(eid), tok, label)
+
+{% endfor %}

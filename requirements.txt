@@ -1,9 +1,15 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
-anthropic==0.40.0
+anthropic>=0.49.0
 python-multipart==0.0.6
 sqlparse==0.4.4
 jinja2==3.1.2
 python-dotenv==1.0.0
-httpx==0.25.1
+requests>=2.31.0
+
+# Deployment Agent — cloud provider SDKs (installed on demand)
+boto3>=1.34.0                  # AWS ECS Fargate + ECR
+docker>=7.0.0                  # Docker image build/push (all providers)
+google-cloud-run>=0.10.0       # GCP Cloud Run
+google-auth>=2.0.0             # GCP authentication

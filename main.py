@@ -1,306 +1,276 @@
-from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from models.schemas import (
-    ProjectInput, ArchitectureProposal, HumanFeedback,
-    GeneratedCode, WorkflowState
-)
-from services.claude_service import ClaudeService
-from agents.schema_analyzer import SchemaAnalyzer
-from agents.architecture_proposer import ArchitectureProposer
-from agents.code_generator import CodeGenerator
-from agents.tests_generator import TestsGenerator
-from typing import Dict
-import uuid
+import argparse
+import getpass
 import os
-from dotenv import load_dotenv
+import sys
+from pathlib import Path
 
-from utils.parsers import parse_schema
-
-load_dotenv()
-
-app = FastAPI(
-    title="Agentic Backend Generator",
-    description="AI-powered backend application generator with human-in-the-loop",
-    version="1.0.0"
-)
-
-# CORS configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# In-memory session storage (use Redis in production)
-workflow_sessions: Dict[str, WorkflowState] = {}
-
-# Initialize services
-claude_service = ClaudeService()
-schema_analyzer = SchemaAnalyzer(claude_service)
-architecture_proposer = ArchitectureProposer(claude_service)
-code_generator = CodeGenerator(claude_service)
-tests_generator = TestsGenerator(claude_service)
+from core.parser import PrismaParser
+from core.rules_parser import BusinessRulesParser
+from agents.developer import Developer
+from agents.tester import Tester
+from generators.llm import get_session_summary, reset_session
 
 
-@app.get("/")
-async def root():
-    return {
-        "message": "Agentic Backend Generator API",
-        "version": "1.0.0",
-        "endpoints": {
-            "parse_schema": "/api/parse-schema (POST) - Parse SQL/JSON/Mongoose schemas",
-            "analyze": "/api/analyze",
-            "propose": "/api/propose",
-            "feedback": "/api/feedback",
-            "generate": "/api/generate",
-            "status": "/api/status/{session_id}"
-        }
-    }
+def collect_env_values(env_vars: list[str]) -> dict[str, str]:
+    """Prompt the user for values of env variables referenced in the schema."""
+    values: dict[str, str] = {}
+
+    if env_vars:
+        print("\nThe schema references environment variables needed for the generated API.")
+        print("Please provide a value for each (press Enter to skip):\n")
+
+        for var in env_vars:
+            value = input(f"  {var}: ").strip()
+            values[var] = value
+
+    # Add standard runtime defaults if not already covered by the schema
+    if "PORT" not in values:
+        values["PORT"] = "3000"
+    if "NODE_ENV" not in values:
+        values["NODE_ENV"] = "development"
+
+    return values
 
 
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
-
-class SchemaParseRequest(BaseModel):
-    """Request to parse schema from raw text"""
-    schema_text: str
-    format: str = "auto"  # auto, sql, json, mongoose, sqlalchemy
-    
-
-@app.post("/api/parse-schema", response_model=dict)
-async def parse_schema_endpoint(request: SchemaParseRequest):
+def collect_github_config(args: argparse.Namespace, spec: dict) -> dict:
     """
-    Parse schema from various formats (SQL DDL, JSON, Mongoose, SQLAlchemy)
-    This is a helper endpoint to convert raw schemas before analysis
-    """
-    try:
-        # Parse the schema
-        parsed_schema = parse_schema(request.schema_text, format=request.format)
-        
-        if not parsed_schema:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Failed to parse schema. Please check the format and try again."
-            )
-        
-        # Return the parsed schema in a format compatible with EntitySchema
-        return {
-            "entity_schema": {
-                "entity_name": parsed_schema.entity_name,
-                "fields": [
-                    {
-                        "name": field.name,
-                        "type": field.type,
-                        "constraints": field.constraints,
-                        "description": field.description
-                    }
-                    for field in parsed_schema.fields
-                ],
-                "primary_key": parsed_schema.primary_key,
-                "indexes": parsed_schema.indexes or [],
-                "relationships": parsed_schema.relationships or {}
-            },
-            "message": f"Successfully parsed {request.format} schema",
-            "detected_format": request.format
-        }
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error parsing schema: {str(e)}")
+    Interactively collect any missing GitHub configuration.
 
-
-
-@app.post("/api/analyze", response_model=dict)
-async def analyze_project(project_input: ProjectInput):
+    Falls back to env vars (GITHUB_TOKEN, GITHUB_USER), then prompts the user
+    for anything still missing — mirrors the collect_env_values() pattern.
     """
-    Step 1: Analyze the entity schema and business requirements
-    """
-    try:
-        # Create new workflow session
-        session_id = str(uuid.uuid4())
-        
-        # Analyze the schema
-        analysis = await schema_analyzer.analyze(project_input)
-        
-        # Create workflow state
-        workflow_state = WorkflowState(
-            session_id=session_id,
-            project_input=project_input,
-            current_step="analyzed"
-        )
-        
-        workflow_sessions[session_id] = workflow_state
-        
-        return {
-            "session_id": session_id,
-            "analysis": analysis,
-            "message": "Schema analyzed successfully. Proceed to architecture proposal."
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    from config import GITHUB_TOKEN, GITHUB_USER
 
+    default_repo = spec["entities"][0]["name_lower"] + "-api"
 
-@app.post("/api/propose/{session_id}", response_model=ArchitectureProposal)
-async def propose_architecture(session_id: str):
-    """
-    Step 2: Propose architecture based on analysis
-    This is where the AI suggests what to build
-    """
-    try:
-        if session_id not in workflow_sessions:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        workflow_state = workflow_sessions[session_id]
-        
-        if workflow_state.current_step != "analyzed":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid workflow step. Current: {workflow_state.current_step}"
-            )
-        
-        # Get entity analysis
-        analysis = await schema_analyzer.analyze(workflow_state.project_input)
-        
-        # Generate architecture proposal
-        proposal = await architecture_proposer.propose(
-            workflow_state.project_input,
-            analysis
-        )
-        
-        # Update workflow state
-        workflow_state.architecture_proposal = proposal
-        workflow_state.current_step = "proposed"
-        workflow_sessions[session_id] = workflow_state
-        
-        return proposal
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    token = getattr(args, "github_token", None) or GITHUB_TOKEN
+    user = getattr(args, "github_user", None) or GITHUB_USER
 
+    print("\nVersion Control Agent — GitHub configuration")
+    print("(Defaults shown in brackets; press Enter to accept)\n")
 
-@app.post("/api/feedback/{session_id}")
-async def submit_human_feedback(session_id: str, feedback: HumanFeedback):
-    """
-    Step 3: Human-in-the-loop - Developer reviews and modifies the proposal
-    """
-    try:
-        if session_id not in workflow_sessions:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        workflow_state = workflow_sessions[session_id]
-        
-        if workflow_state.current_step != "proposed":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid workflow step. Current: {workflow_state.current_step}"
-            )
-        
-        # Store human feedback
-        workflow_state.human_feedback = feedback
-        workflow_state.current_step = "feedback_received"
-        workflow_sessions[session_id] = workflow_state
-        
-        return {
-            "message": "Feedback received. Ready to generate code.",
-            "session_id": session_id,
-            "approved": feedback.approved
-        }
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if not token:
+        token = getpass.getpass("  GitHub Personal Access Token: ").strip()
+        if not token:
+            print("Error: a GitHub Personal Access Token is required.", file=sys.stderr)
+            sys.exit(1)
 
+    if not user:
+        user = input("  GitHub username or org: ").strip()
+        if not user:
+            print("Error: GitHub username/org is required.", file=sys.stderr)
+            sys.exit(1)
 
-@app.post("/api/generate/{session_id}", response_model=GeneratedCode)
-async def generate_code(session_id: str, background_tasks: BackgroundTasks):
-    """
-    Step 4: Generate the actual code based on approved architecture
-    """
-    try:
-        if session_id not in workflow_sessions:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        workflow_state = workflow_sessions[session_id]
-        
-        if workflow_state.current_step != "feedback_received":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid workflow step. Current: {workflow_state.current_step}"
-            )
-        
-        if not workflow_state.human_feedback.approved:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot generate code without approval"
-            )
-        
-        # Generate code
-        generated_code = await code_generator.generate(
-            workflow_state.project_input,
-            workflow_state.architecture_proposal,
-            workflow_state.human_feedback
-        )
-        
-        # Update workflow state
-        workflow_state.generated_code = generated_code
-        workflow_state.current_step = "completed"
-        workflow_sessions[session_id] = workflow_state
-        
-        return generated_code
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
-@app.post("/api/generate-tests/{session_id}")
-async def generate_tests(session_id: str):
-    # Use TestsGenerator agent
-    test_files = await tests_generator.generate(...)
-    return {"test_files": test_files}
+    repo = getattr(args, "github_repo", None) or ""
+    if not repo:
+        repo = input(f"  Repository name [{default_repo}]: ").strip() or default_repo
 
-
-@app.get("/api/status/{session_id}")
-async def get_workflow_status(session_id: str):
-    """
-    Get the current status of a workflow session
-    """
-    if session_id not in workflow_sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    workflow_state = workflow_sessions[session_id]
-    
-    return {
-        "session_id": session_id,
-        "current_step": workflow_state.current_step,
-        "has_proposal": workflow_state.architecture_proposal is not None,
-        "has_feedback": workflow_state.human_feedback is not None,
-        "has_code": workflow_state.generated_code is not None
-    }
-
-
-@app.delete("/api/session/{session_id}")
-async def delete_session(session_id: str):
-    """
-    Clean up a workflow session
-    """
-    if session_id in workflow_sessions:
-        del workflow_sessions[session_id]
-        return {"message": "Session deleted successfully"}
+    if getattr(args, "private", False):
+        private = True
     else:
-        raise HTTPException(status_code=404, detail="Session not found")
+        vis = input("  Visibility — public or private? [public]: ").strip().lower()
+        private = vis == "private"
+
+    return {"token": token, "user": user, "repo": repo, "private": private}
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Developable Backend Engineer — generates production-ready backend services from a Prisma schema"
+    )
+    parser.add_argument("schema", help="Path to schema.prisma")
+    parser.add_argument(
+        "--out", default="./output",
+        help="Output directory for the generated API (default: ./output)",
+    )
+    parser.add_argument(
+        "--no-llm", action="store_true",
+        help="Skip LLM calls, use placeholder logic only",
+    )
+    parser.add_argument(
+        "--rules", default=None,
+        help="Path to a schema.rules.yaml file with business logic constraints",
+    )
+    parser.add_argument(
+        "--tests-out", default=None, metavar="DIR",
+        help="If set, generate integration test suite into this directory",
+    )
+
+    # ── Version Control agent flags ───────────────────────────────────────────
+    parser.add_argument(
+        "--github", action="store_true",
+        help="Publish the generated project to a new GitHub repository",
+    )
+    parser.add_argument(
+        "--github-token", default=None, metavar="TOKEN",
+        help="GitHub Personal Access Token (fallback: GITHUB_TOKEN env var)",
+    )
+    parser.add_argument(
+        "--github-user", default=None, metavar="USER",
+        help="GitHub username or org to create the repo under (fallback: GITHUB_USER env var)",
+    )
+    parser.add_argument(
+        "--github-repo", default=None, metavar="NAME",
+        help="Repository name to create (default: <first-entity>-api)",
+    )
+    parser.add_argument(
+        "--private", action="store_true",
+        help="Create the GitHub repository as private",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help=(
+            "Overwrite all files, including ones you have modified since the last commit. "
+            "By default, re-runs skip files that differ from HEAD in the output git repo."
+        ),
+    )
+
+    # ── Deployment agent flags ─────────────────────────────────────────────────
+    parser.add_argument(
+        "--deploy-to", default=None, metavar="PROVIDER",
+        choices=["aws", "heroku", "gcp"],
+        help="Deploy the generated API to a cloud provider: aws | heroku | gcp",
+    )
+    parser.add_argument(
+        "--aws-region", default=None, metavar="REGION",
+        help="AWS region for ECS Fargate deployment (default: us-east-1 or from ~/.aws/config)",
+    )
+    parser.add_argument(
+        "--heroku-app", default=None, metavar="NAME",
+        help="Heroku app name (default: <project-name>)",
+    )
+    parser.add_argument(
+        "--gcp-project", default=None, metavar="PROJECT_ID",
+        help="GCP project ID for Cloud Run deployment",
+    )
+    parser.add_argument(
+        "--gcp-region", default=None, metavar="REGION",
+        help="GCP region for Cloud Run deployment (default: us-central1)",
+    )
+
+    args = parser.parse_args()
+
+    schema_path = Path(args.schema)
+    if not schema_path.exists():
+        print(f"Error: {schema_path} not found")
+        sys.exit(1)
+
+    out_dir = Path(args.out)
+
+    print(f"Parsing {schema_path.name}...")
+    spec = PrismaParser().parse(schema_path)
+    print(f"Found {len(spec['entities'])} entities: {', '.join(e['name'] for e in spec['entities'])}")
+
+    if args.rules:
+        rules_path = Path(args.rules)
+        if not rules_path.exists():
+            print(f"Error: rules file {rules_path} not found")
+            sys.exit(1)
+        print(f"Loading business rules from {rules_path.name}...")
+        BusinessRulesParser().merge(spec, rules_path)
+
+    env_values = collect_env_values(spec.get("env_vars", []))
+
+    # ── Developer agent: generate the Express API ─────────────────────────────
+    print(f"\n[Developer] Generating Express API into {out_dir}/...")
+    developer = Developer(out_dir=out_dir, use_llm=not args.no_llm, force=args.force)
+    api_plan = developer.generate(spec, env_values=env_values)
+
+    print(f"\nDone. Your project is at {out_dir}/")
+    print("Next steps:")
+    print("  cd", out_dir)
+    print("  npm install")
+    print("  npx prisma migrate dev")
+    print("  npm run dev")
+
+    # ── Tester agent: generate the integration test suite ─────────────────────
+    # When --github is used without --tests-out, put tests inside the output
+    # directory so they are included in the git repository.
+    tests_out = args.tests_out
+    if args.github and not tests_out:
+        tests_out = str(out_dir / "tests")
+
+    if tests_out:
+        tests_dir = Path(tests_out)
+        print(f"\n[Tester] Generating integration test suite into {tests_dir}/...")
+        tester = Tester(tests_dir=tests_dir, use_llm=not args.no_llm, force=args.force)
+        tester.generate(spec, api_plan)
+
+        print(f"\nTest suite at {tests_dir}/")
+        print("Run tests:")
+        print(f"  pip install requests")
+        print(f"  python {tests_dir}/run_all.py [API_BASE_URL]")
+
+    # ── Version Control agent: publish to GitHub ──────────────────────────────
+    if args.github:
+        from agents.version_control import VersionControl
+
+        gh = collect_github_config(args, spec)
+        print(f"\n[Version Control] Publishing to GitHub...")
+        vc = VersionControl(
+            out_dir=out_dir,
+            github_token=gh["token"],
+            github_user=gh["user"],
+            repo_name=gh["repo"],
+            private=gh["private"],
+        )
+        repo_url = vc.publish(spec, api_plan)
+        print(f"\nRepository published: {repo_url}")
+        print("GitHub Actions CI will run automatically on every push.")
+        print("For local development with pgAdmin:")
+        print(f"  cd {out_dir}")
+        print("  cp .env.example .env  # fill in your values")
+        print("  docker compose up")
+
+    # ── Deployment agent: deploy to cloud ─────────────────────────────────────
+    if args.deploy_to:
+        from agents.deployment import Deployment
+
+        print(f"\n[Deployment] Deploying to {args.deploy_to.upper()}...")
+        deployer = Deployment(
+            out_dir=out_dir,
+            provider=args.deploy_to,
+            aws_region=args.aws_region,
+            heroku_app=args.heroku_app,
+            gcp_project=args.gcp_project,
+            gcp_region=args.gcp_region,
+        )
+        record = deployer.deploy(spec, api_plan)
+        print(f"\n✓ Deployment complete!")
+        print(f"  Endpoint : {record['endpoint']}")
+        if record.get("region"):
+            print(f"  Region   : {record['region']}")
+        print(f"  Provider : {record['provider']}")
+        print(f"  State    : {out_dir}/.developable/state.json")
+
+    # ── LLM usage summary ──────────────────────────────────────────────────────
+    if not args.no_llm:
+        _print_usage_summary()
+
+
+def _print_usage_summary():
+    summary = get_session_summary()
+    if not summary:
+        return
+
+    calls = summary["calls"]
+    hits = summary["cache_hits"]
+    api_calls = calls - hits
+    total_in = summary["input_tokens"]
+    total_out = summary["output_tokens"]
+    cache_write = summary["cache_write_tokens"]
+    cache_read = summary["cache_read_tokens"]
+    cost = summary["estimated_cost_usd"]
+
+    print("\n── LLM usage ────────────────────────────────────────────")
+    print(f"  API calls       : {api_calls}  (+ {hits} response cache hits, 0 cost)")
+    print(f"  Input tokens    : {total_in:,}  (uncached)")
+    print(f"  Cache write     : {cache_write:,}  tokens")
+    print(f"  Cache read      : {cache_read:,}  tokens  (billed at 10% rate)")
+    print(f"  Output tokens   : {total_out:,}")
+    print(f"  Estimated cost  : ${cost:.4f}")
+    print("─────────────────────────────────────────────────────────")
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    main()
