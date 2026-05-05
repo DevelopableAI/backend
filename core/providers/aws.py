@@ -393,9 +393,16 @@ jobs:
                 raise
 
     def _ensure_rds_sg(self, ec2: Any, project_name: str, vpc_id: str) -> str:
-        """Create (or reuse) a security group that allows inbound TCP 5432."""
+        """Create (or reuse) a security group that allows inbound TCP 5432 from all IPs.
+
+        The open rule is required so apply_schema() can reach the DB from the local
+        machine. _lock_rds_to_ecs() removes it after ECS is deployed; on re-runs this
+        method restores it so subsequent apply_schema() calls still work.
+        """
         from botocore.exceptions import ClientError
         sg_name = f"{project_name}-rds-sg"
+
+        # Create or reuse the security group
         try:
             sg = ec2.create_security_group(
                 GroupName=sg_name,
@@ -403,6 +410,20 @@ jobs:
                 VpcId=vpc_id,
             )
             sg_id = sg["GroupId"]
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "InvalidGroup.Duplicate":
+                raise
+            sgs = ec2.describe_security_groups(
+                Filters=[
+                    {"Name": "group-name", "Values": [sg_name]},
+                    {"Name": "vpc-id", "Values": [vpc_id]},
+                ]
+            )["SecurityGroups"]
+            sg_id = sgs[0]["GroupId"]
+
+        # Ensure 0.0.0.0/0 rule is present so the local machine can run apply_schema().
+        # On re-runs _lock_rds_to_ecs() will have removed it — restore it here.
+        try:
             ec2.authorize_security_group_ingress(
                 GroupId=sg_id,
                 IpPermissions=[{
@@ -412,17 +433,12 @@ jobs:
                     "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
                 }],
             )
-            return sg_id
         except ClientError as exc:
-            if exc.response["Error"]["Code"] == "InvalidGroup.Duplicate":
-                sgs = ec2.describe_security_groups(
-                    Filters=[
-                        {"Name": "group-name", "Values": [sg_name]},
-                        {"Name": "vpc-id", "Values": [vpc_id]},
-                    ]
-                )["SecurityGroups"]
-                return sgs[0]["GroupId"]
-            raise
+            if exc.response["Error"]["Code"] != "InvalidPermission.Duplicate":
+                raise
+            # Rule already present — no action needed
+
+        return sg_id
 
     def _lock_rds_to_ecs(self, ec2: Any, rds_sg_id: str, ecs_sg_id: str) -> None:
         """
