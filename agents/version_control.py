@@ -86,6 +86,9 @@ class VersionControl:
 
     def _init_git(self) -> None:
         self._git("init")
+        # Set repo-scoped identity so git commit works even when global config is absent
+        self._git("config", "user.email", "generated@developable.ai")
+        self._git("config", "user.name", "Developable")
         self._git("add", ".")
         self._git(
             "commit", "-m",
