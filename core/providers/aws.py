@@ -67,6 +67,8 @@ class AWSProvider(BaseProvider):
         self._vpc_id: str = ""
         self._subnet_ids: list[str] = []
         self._ecs_sg_id: str = ""
+        # Set by provision_database(); used by deploy() to lock down after ECS is running
+        self._rds_sg_id: str = ""
 
     # ── Credential handling ────────────────────────────────────────────────────
 
@@ -172,6 +174,7 @@ class AWSProvider(BaseProvider):
 
         print(f"  [AWS] Ensuring RDS security group for port 5432...")
         rds_sg_id = self._ensure_rds_sg(ec2, project_name, self._vpc_id)
+        self._rds_sg_id = rds_sg_id  # saved so deploy() can lock it to ECS-only after migration
 
         print(f"  [AWS] Creating RDS PostgreSQL instance '{instance_id}' (db.t3.micro)...")
         print(f"        This typically takes 5–10 minutes. Please wait...")
@@ -252,8 +255,14 @@ class AWSProvider(BaseProvider):
         print(f"  [AWS] Ensuring IAM execution role '{_EXECUTION_ROLE_NAME}'...")
         role_arn = self._ensure_execution_role(iam)
 
-        # Task definition
+        # CloudWatch log group (pre-create so execution role doesn't need logs:CreateLogGroup,
+        # which is not included in AmazonECSTaskExecutionRolePolicy)
         td_family = f"{project_name}-task"
+        log_group = f"/ecs/{td_family}"
+        print(f"  [AWS] Ensuring CloudWatch log group '{log_group}'...")
+        self._ensure_log_group(session, log_group, tags, region)
+
+        # Task definition
         print(f"  [AWS] Registering task definition '{td_family}'...")
         td_arn = self._register_task_definition(
             ecs, td_family, image_uri, role_arn, env_vars, tags, region
@@ -276,6 +285,11 @@ class AWSProvider(BaseProvider):
                 "  [AWS] Warning: could not resolve public IP yet. "
                 "Check ECS console for task status."
             )
+
+        # Lock RDS SG to ECS-only now that Prisma migration is done and ECS is running
+        if self._rds_sg_id:
+            print(f"  [AWS] Locking RDS security group to ECS-only access...")
+            self._lock_rds_to_ecs(ec2, self._rds_sg_id, self._ecs_sg_id)
 
         resources = [
             {"type": "ecr_repository", "id": project_name, "arn": repo_arn},
@@ -379,9 +393,16 @@ jobs:
                 raise
 
     def _ensure_rds_sg(self, ec2: Any, project_name: str, vpc_id: str) -> str:
-        """Create (or reuse) a security group that allows inbound TCP 5432."""
+        """Create (or reuse) a security group that allows inbound TCP 5432 from all IPs.
+
+        The open rule is required so apply_schema() can reach the DB from the local
+        machine. _lock_rds_to_ecs() removes it after ECS is deployed; on re-runs this
+        method restores it so subsequent apply_schema() calls still work.
+        """
         from botocore.exceptions import ClientError
         sg_name = f"{project_name}-rds-sg"
+
+        # Create or reuse the security group
         try:
             sg = ec2.create_security_group(
                 GroupName=sg_name,
@@ -389,6 +410,20 @@ jobs:
                 VpcId=vpc_id,
             )
             sg_id = sg["GroupId"]
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "InvalidGroup.Duplicate":
+                raise
+            sgs = ec2.describe_security_groups(
+                Filters=[
+                    {"Name": "group-name", "Values": [sg_name]},
+                    {"Name": "vpc-id", "Values": [vpc_id]},
+                ]
+            )["SecurityGroups"]
+            sg_id = sgs[0]["GroupId"]
+
+        # Ensure 0.0.0.0/0 rule is present so the local machine can run apply_schema().
+        # On re-runs _lock_rds_to_ecs() will have removed it — restore it here.
+        try:
             ec2.authorize_security_group_ingress(
                 GroupId=sg_id,
                 IpPermissions=[{
@@ -398,17 +433,55 @@ jobs:
                     "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
                 }],
             )
-            return sg_id
         except ClientError as exc:
-            if exc.response["Error"]["Code"] == "InvalidGroup.Duplicate":
-                sgs = ec2.describe_security_groups(
-                    Filters=[
-                        {"Name": "group-name", "Values": [sg_name]},
-                        {"Name": "vpc-id", "Values": [vpc_id]},
-                    ]
-                )["SecurityGroups"]
-                return sgs[0]["GroupId"]
-            raise
+            if exc.response["Error"]["Code"] != "InvalidPermission.Duplicate":
+                raise
+            # Rule already present — no action needed
+
+        return sg_id
+
+    def _lock_rds_to_ecs(self, ec2: Any, rds_sg_id: str, ecs_sg_id: str) -> None:
+        """
+        Replace the 0.0.0.0/0 inbound rule on the RDS security group with a
+        rule that allows TCP 5432 only from the ECS security group.
+        Called after apply_schema() and ECS deployment are both complete.
+        Both operations are idempotent — safe to call on re-deploys.
+        """
+        from botocore.exceptions import ClientError
+
+        # Remove the open-world rule (may already be gone on a re-deploy)
+        try:
+            ec2.revoke_security_group_ingress(
+                GroupId=rds_sg_id,
+                IpPermissions=[{
+                    "IpProtocol": "tcp",
+                    "FromPort": 5432,
+                    "ToPort": 5432,
+                    "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+                }],
+            )
+            print(f"  [AWS] Revoked 0.0.0.0/0 ingress from RDS security group.")
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "InvalidPermission.NotFound":
+                raise
+            # Rule already removed (e.g. previous deploy run) — that's fine
+
+        # Allow traffic from the ECS security group only
+        try:
+            ec2.authorize_security_group_ingress(
+                GroupId=rds_sg_id,
+                IpPermissions=[{
+                    "IpProtocol": "tcp",
+                    "FromPort": 5432,
+                    "ToPort": 5432,
+                    "UserIdGroupPairs": [{"GroupId": ecs_sg_id}],
+                }],
+            )
+            print(f"  [AWS] RDS security group now only allows traffic from ECS SG ({ecs_sg_id}).")
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "InvalidPermission.Duplicate":
+                raise
+            # Rule already exists (re-deploy) — no action needed
 
     def _ensure_rds_instance(
         self,
@@ -502,6 +575,27 @@ jobs:
                   input=password.encode())
         self._run(["docker", "tag", local_tag, image_uri])
         self._run(["docker", "push", image_uri])
+
+    def _ensure_log_group(
+        self, session: Any, log_group: str, tags: dict[str, str], region: str
+    ) -> None:
+        """
+        Pre-create the CloudWatch log group so the ECS execution role doesn't
+        need logs:CreateLogGroup (not included in AmazonECSTaskExecutionRolePolicy).
+        Idempotent — silently skips if the group already exists.
+        """
+        from botocore.exceptions import ClientError
+
+        logs = session.client("logs", region_name=region)
+        try:
+            logs.create_log_group(
+                logGroupName=log_group,
+                tags=tags,
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ResourceAlreadyExistsException":
+                raise
+            # Group already exists (re-deploy) — no action needed
 
     def _ensure_cluster(
         self, ecs: Any, cluster_name: str, tags: dict[str, str]
@@ -628,7 +722,6 @@ jobs:
                         "awslogs-group": f"/ecs/{family}",
                         "awslogs-region": region,
                         "awslogs-stream-prefix": "ecs",
-                        "awslogs-create-group": "true",
                     },
                 },
             }],

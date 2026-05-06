@@ -16,9 +16,13 @@ Providers are responsible for:
 
 import os
 import subprocess
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
+
+_SCHEMA_APPLY_RETRIES = 4
+_SCHEMA_APPLY_BACKOFF_S = 20  # RDS DNS propagation can take ~30–60s after "available"
 
 
 class BaseProvider(ABC):
@@ -129,11 +133,12 @@ class BaseProvider(ABC):
 
     def apply_schema(self, remote_db_url: str) -> None:
         """
-        Run `npx --yes prisma db push --accept-data-loss` in out_dir
-        against the remote database URL.
+        Run `prisma db push --accept-data-loss` in out_dir against the remote
+        database URL. Retries up to _SCHEMA_APPLY_RETRIES times with backoff to
+        handle RDS DNS propagation delay (instance reports "available" before its
+        endpoint is resolvable).
 
-        Requires Node.js + npx to be available on the local machine.
-        Prints a manual fallback instruction if npx is not found.
+        Requires Node.js to be available on the local machine.
         """
         print(f"  Applying Prisma schema to remote database...")
         env = {**os.environ, "DATABASE_URL": remote_db_url}
@@ -143,19 +148,28 @@ class BaseProvider(ABC):
         # v7), which dropped support for `url = env(...)` in schema.prisma.
         subprocess.run(["npm", "install"], cwd=self.out_dir, capture_output=True)
 
-        result = subprocess.run(
-            ["./node_modules/.bin/prisma", "db", "push", "--accept-data-loss"],
-            cwd=self.out_dir,
-            env=env,
-        )
-        if result.returncode != 0:
-            print(
-                "\n  Warning: Prisma schema migration failed (exit code "
-                f"{result.returncode}).\n"
-                "  Apply it manually with:\n"
-                f"    DATABASE_URL='{remote_db_url}' npx prisma db push --accept-data-loss\n"
-                f"  (run from: {self.out_dir})"
+        for attempt in range(1, _SCHEMA_APPLY_RETRIES + 1):
+            result = subprocess.run(
+                ["./node_modules/.bin/prisma", "db", "push", "--accept-data-loss"],
+                cwd=self.out_dir,
+                env=env,
             )
+            if result.returncode == 0:
+                return
+            if attempt < _SCHEMA_APPLY_RETRIES:
+                print(
+                    f"  Schema migration failed (attempt {attempt}/{_SCHEMA_APPLY_RETRIES}), "
+                    f"retrying in {_SCHEMA_APPLY_BACKOFF_S}s..."
+                )
+                time.sleep(_SCHEMA_APPLY_BACKOFF_S)
+
+        print(
+            "\n  Warning: Prisma schema migration failed after "
+            f"{_SCHEMA_APPLY_RETRIES} attempts.\n"
+            "  Apply it manually with:\n"
+            f"    DATABASE_URL='{remote_db_url}' npx prisma db push --accept-data-loss\n"
+            f"  (run from: {self.out_dir})"
+        )
 
     def build_tags(
         self,
@@ -164,7 +178,7 @@ class BaseProvider(ABC):
         spec: dict[str, Any],
     ) -> dict[str, str]:
         """Return the standard tag dict applied to all managed resources."""
-        entity_names = ",".join(e["name"] for e in spec.get("entities", []))
+        entity_names = " ".join(e["name"] for e in spec.get("entities", []))
         return {
             self.TAG_MANAGED_BY: self.TAG_MANAGED_VALUE,
             self.TAG_PROJECT: project_name,

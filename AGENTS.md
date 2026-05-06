@@ -2,11 +2,25 @@
 
 ## Purpose
 
+### What This Repo Is Solving
+
+When a developer gives an LLM a set of requirements — through a CLAUDE.md, a system prompt, or plain English — the LLM makes its own decisions about file structure, security patterns, validation strategies, and OOP conventions. Those decisions are inconsistent across sessions, teams, and projects. There is no guarantee that the auth checks are right, that ownership is enforced, or that sensitive fields are handled correctly. The developer has to trust that the model happened to make good choices.
+
+Developable exists to remove that trust requirement. It provides a **stable, opinionated template** that encodes exactly how a backend should be built: which files exist, what lives in each one, what security invariants hold unconditionally, how controllers delegate to repositories, and how auth and ownership are enforced. These decisions are made once, validated against real schemas, and encoded in `templates/express/`. They are not suggestions — they are the standard.
+
+### What This Repo Does Today
+
 This repository is a Python CLI code generator. It takes a Prisma schema, optionally merges business rules, and generates:
 
-- An Express + TypeScript REST API
-- An optional Python integration test suite
+- An Express + TypeScript REST API following the Developable template exactly
+- An optional Python integration test suite verifying the template's invariants hold
 - Optional version-control/bootstrap artifacts for GitHub publishing
+
+The CLI is how the template gets proven. Every generation run and integration test is a validation pass that the template is correct.
+
+### Where This Is Going
+
+Once the template is stable, it ships as a **publishable Claude Code skill** — a slash command that any developer installs and uses in any project. The skill packages the template as instructions for Claude Code, so that any agentic system working on a backend follows the Developable standard rather than guessing. See `CLAUDE.md` for the full migration plan.
 
 Treat this file as the fast working guide for agents and contributors. `CLAUDE.md` is the deeper architecture narrative; this file is the task-oriented entrypoint.
 
@@ -124,6 +138,33 @@ High-level flow:
 - Start from templates when behavior is presentational or file-shape specific.
 - Inspect test templates and `core/test_planner.py` early for any change that affects routes, payload shapes, auth, or relation handling.
 - Prefer repo-consistent extension over one-off fixes in generated output, since this codebase exists to regenerate systems repeatably.
+
+## Upcoming Architectural Direction: Claude Code Skill
+
+This repo is being converted into a **publishable Claude Code skill**. Understand this before making significant structural changes.
+
+### What This Means
+
+- The Python CLI (`main.py` + agents) will be superseded by a skill definition file at `.claude/commands/developable.md`.
+- Users will invoke `/developable` inside Claude Code instead of running `python main.py schema.prisma --out ./my-api`.
+- Claude Code's native file-writing tools replace `Assembler` + `LLMGenerator`; the model writes output files directly rather than through the Anthropic SDK.
+- The Jinja2 templates in `templates/express/` stay as structural guides but are no longer rendered programmatically — the skill prompt instructs Claude to follow the same patterns.
+- Schema annotations (`@auth_entity`, `@llm sensitive`, `@llm hints`) and all security invariants carry over unchanged into the skill prompt.
+
+### Migration Work Items
+
+- [ ] Create `.claude/commands/developable.md` skill scaffold encoding the generation pipeline as prompt instructions
+- [ ] Convert Jinja2 templates to inline examples or embedded reference content the skill can follow
+- [ ] Publish skill manifest and update `README.md` quickstart for `/developable` install
+- [ ] Achieve feature parity with the Python CLI before deprecating `main.py`
+
+### What To Preserve During Migration
+
+- All security invariants listed in `CLAUDE.md` (ID validation, owner FK injection, auth checks, sensitive-field hashing) must be encoded verbatim into the skill prompt — they are non-negotiable.
+- The parse → plan → assemble mental model stays; it becomes reasoning steps in the skill rather than Python classes.
+- Keep `templates/express/` accurate — they are the canonical reference the skill will use for output structure.
+
+---
 
 ## Default Assumptions For Future Agent Work
 
