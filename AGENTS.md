@@ -2,11 +2,25 @@
 
 ## Purpose
 
+### What This Repo Is Solving
+
+When a developer gives an LLM a set of requirements — through a CLAUDE.md, a system prompt, or plain English — the LLM makes its own decisions about file structure, security patterns, validation strategies, and OOP conventions. Those decisions are inconsistent across sessions, teams, and projects. There is no guarantee that the auth checks are right, that ownership is enforced, or that sensitive fields are handled correctly. The developer has to trust that the model happened to make good choices.
+
+Developable exists to remove that trust requirement. It provides a **stable, opinionated template** that encodes exactly how a backend should be built: which files exist, what lives in each one, what security invariants hold unconditionally, how controllers delegate to repositories, and how auth and ownership are enforced. These decisions are made once, validated against real schemas, and encoded in `templates/express/`. They are not suggestions — they are the standard.
+
+### What This Repo Does Today
+
 This repository is a Python CLI code generator. It takes a Prisma schema, optionally merges business rules, and generates:
 
-- An Express + TypeScript REST API
-- An optional Python integration test suite
+- An Express + TypeScript REST API following the Developable template exactly
+- An optional Python integration test suite verifying the template's invariants hold
 - Optional version-control/bootstrap artifacts for GitHub publishing
+
+The CLI is how the template gets proven. Every generation run and integration test is a validation pass that the template is correct.
+
+### Where This Is Going
+
+Once the template is stable, it ships as a **publishable Claude Code skill** — a slash command that any developer installs and uses in any project. The skill packages the template as instructions for Claude Code, so that any agentic system working on a backend follows the Developable standard rather than guessing. See `CLAUDE.md` for the full migration plan.
 
 Treat this file as the fast working guide for agents and contributors. `CLAUDE.md` is the deeper architecture narrative; this file is the task-oriented entrypoint.
 
