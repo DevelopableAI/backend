@@ -25,6 +25,7 @@ GCP labels must match [a-z][a-z0-9_-]* and be ≤63 chars.
 We normalise tag keys/values to lowercase and replace invalid characters.
 """
 
+import base64
 import getpass
 import json
 import os
@@ -85,6 +86,7 @@ class GCPProvider(BaseProvider):
                 "credentials_type": "service_account",
                 "project_id": project_id or self._read_project_from_sa(sa_path),
                 "region": self._region,
+                "credentials_b64": self._encode_sa_file(sa_path),
             }
 
         try:
@@ -97,6 +99,7 @@ class GCPProvider(BaseProvider):
                 "credentials_type": "adc",
                 "project_id": pid,
                 "region": self._region,
+                "credentials_b64": "",
             }
         except Exception:
             return None
@@ -126,11 +129,13 @@ class GCPProvider(BaseProvider):
 
         region = self._region or input(f"  Region [{_DEFAULT_REGION}]: ").strip() or _DEFAULT_REGION
 
+        resolved_sa = str(Path(sa_path).expanduser()) if sa_path else None
         return {
-            "credentials_file": str(Path(sa_path).expanduser()) if sa_path else None,
+            "credentials_file": resolved_sa,
             "credentials_type": "service_account" if sa_path else "adc",
             "project_id": project_id,
             "region": region,
+            "credentials_b64": self._encode_sa_file(resolved_sa) if resolved_sa else "",
         }
 
     # ── Database provisioning ──────────────────────────────────────────────────
@@ -240,7 +245,7 @@ class GCPProvider(BaseProvider):
             {
                 "type": "cloud_run_service",
                 "id": project_name,
-                "url": service_url,
+                "url": service_url or "pending",
                 "project": project_id,
                 "region": region,
             },
@@ -328,6 +333,11 @@ jobs:
     ) -> None:
         """Create a Cloud SQL PostgreSQL 15 instance if it doesn't exist."""
         try:
+            from googleapiclient.errors import HttpError as GApiHttpError
+        except ImportError:
+            GApiHttpError = Exception  # type: ignore[misc,assignment]
+
+        try:
             sqladmin.instances().insert(
                 project=project_id,
                 body={
@@ -346,18 +356,21 @@ jobs:
                     },
                 },
             ).execute()
-        except Exception as exc:
-            # 409 Conflict = instance already exists
-            if "409" in str(exc) or "already exists" in str(exc).lower():
+        except GApiHttpError as exc:
+            if exc.resp.status == 409:
                 print(f"  [GCP] Cloud SQL instance '{instance_name}' already exists — reusing.")
             else:
                 print(f"\nCloud SQL instance creation failed: {exc}", file=sys.stderr)
                 sys.exit(1)
+        except Exception as exc:
+            print(f"\nCloud SQL instance creation failed: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     def _wait_for_cloud_sql(
         self, sqladmin: Any, project_id: str, instance_name: str
     ) -> str:
         """Poll until the instance is RUNNABLE. Returns public IP."""
+        _TERMINAL_STATES = {"FAILED", "SUSPENDED", "MAINTENANCE"}
         deadline = time.time() + _CLOUDSQL_WAIT_TIMEOUT_S
         while time.time() < deadline:
             try:
@@ -365,11 +378,25 @@ jobs:
                     project=project_id, instance=instance_name
                 ).execute()
                 state = inst.get("state", "")
+                if state in _TERMINAL_STATES:
+                    print(
+                        f"\n  [GCP] Cloud SQL instance entered terminal state '{state}'.\n"
+                        "  Check your GCP quota, billing, and region availability.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
                 if state == "RUNNABLE":
                     for addr in inst.get("ipAddresses", []):
                         if addr.get("type") == "PRIMARY":
                             return addr["ipAddress"]
-                print(f"  [GCP] Cloud SQL state: {state} — waiting...", end="\r", flush=True)
+                    # RUNNABLE but no PRIMARY IP yet — keep polling
+                    print(
+                        f"  [GCP] Cloud SQL RUNNABLE but no public IP yet — waiting...",
+                        end="\r",
+                        flush=True,
+                    )
+                else:
+                    print(f"  [GCP] Cloud SQL state: {state} — waiting...", end="\r", flush=True)
             except Exception:
                 pass
             time.sleep(_CLOUDSQL_POLL_INTERVAL_S)
@@ -384,14 +411,21 @@ jobs:
         self, sqladmin: Any, project_id: str, instance_name: str, db_name: str
     ) -> None:
         try:
+            from googleapiclient.errors import HttpError as GApiHttpError
+        except ImportError:
+            GApiHttpError = Exception  # type: ignore[misc,assignment]
+
+        try:
             sqladmin.databases().insert(
                 project=project_id,
                 instance=instance_name,
                 body={"name": db_name},
             ).execute()
-        except Exception as exc:
-            if "already exists" in str(exc).lower() or "409" in str(exc):
+        except GApiHttpError as exc:
+            if exc.resp.status == 409:
                 return
+            print(f"  [GCP] Warning: could not create database '{db_name}': {exc}")
+        except Exception as exc:
             print(f"  [GCP] Warning: could not create database '{db_name}': {exc}")
 
     def _create_db_user(
@@ -403,13 +437,18 @@ jobs:
         password: str,
     ) -> None:
         try:
+            from googleapiclient.errors import HttpError as GApiHttpError
+        except ImportError:
+            GApiHttpError = Exception  # type: ignore[misc,assignment]
+
+        try:
             sqladmin.users().insert(
                 project=project_id,
                 instance=instance_name,
                 body={"name": username, "password": password},
             ).execute()
-        except Exception as exc:
-            if "already exists" in str(exc).lower() or "409" in str(exc):
+        except GApiHttpError as exc:
+            if exc.resp.status == 409:
                 # Update password for existing user
                 try:
                     sqladmin.users().update(
@@ -422,6 +461,8 @@ jobs:
                     pass
             else:
                 print(f"  [GCP] Warning: could not create DB user '{username}': {exc}")
+        except Exception as exc:
+            print(f"  [GCP] Warning: could not create DB user '{username}': {exc}")
 
     # ── Private helpers: Cloud Run / GCR ──────────────────────────────────────
 
@@ -455,10 +496,19 @@ jobs:
                 )
                 sys.exit(1)
         else:
-            subprocess.run(
+            gcloud_result = subprocess.run(
                 ["gcloud", "auth", "configure-docker", "--quiet"],
                 capture_output=True,
             )
+            if gcloud_result.returncode != 0:
+                print(
+                    "\n  [GCP] gcloud auth configure-docker failed.\n"
+                    "  Ensure gcloud is installed and you have run:\n"
+                    "    gcloud auth application-default login\n"
+                    f"  Error: {gcloud_result.stderr.decode('utf-8', errors='replace').strip()}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
         self._run(["docker", "tag", local_tag, image_uri])
         self._run(["docker", "push", image_uri])
@@ -482,6 +532,11 @@ jobs:
                 file=sys.stderr,
             )
             sys.exit(1)
+
+        try:
+            from google.api_core.exceptions import NotFound as GCPNotFound
+        except ImportError:
+            GCPNotFound = Exception  # type: ignore[misc,assignment]
 
         client = run_v2.ServicesClient(credentials=gcp_creds)
         parent = f"projects/{project_id}/locations/{region}"
@@ -508,12 +563,20 @@ jobs:
             client.get_service(name=service_path)
             service.name = service_path
             op = client.update_service(service=service)
-        except Exception:
+        except GCPNotFound:
             op = client.create_service(
                 parent=parent, service=service, service_id=service_name
             )
 
-        result = op.result(timeout=300)
+        try:
+            result = op.result(timeout=300)
+        except Exception as exc:
+            print(
+                f"\n  [GCP] Cloud Run deployment timed out or failed: {exc}\n"
+                "  Check the Cloud Run console for service status.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         return result.uri
 
     def _allow_unauthenticated(
@@ -534,10 +597,12 @@ jobs:
             client.set_iam_policy(
                 request=iam_policy_pb2.SetIamPolicyRequest(resource=resource, policy=policy)
             )
-        except Exception:
+        except Exception as exc:
             print(
-                "  [GCP] Warning: could not set unauthenticated IAM policy. "
-                "Set it manually in Cloud Console if needed."
+                f"  [GCP] Warning: could not set unauthenticated IAM policy: {exc}\n"
+                "  The service may require authentication. Set it manually:\n"
+                f"  gcloud run services add-iam-policy-binding {service_name} \\\n"
+                f"    --region={region} --member=allUsers --role=roles/run.invoker"
             )
 
     def _read_project_from_sa(self, sa_path: str) -> str:
@@ -546,12 +611,24 @@ jobs:
         except Exception:
             return ""
 
+    def _encode_sa_file(self, sa_path: str) -> str:
+        """Return the base64-encoded contents of a service account JSON file."""
+        try:
+            return base64.b64encode(Path(sa_path).read_bytes()).decode()
+        except Exception:
+            return ""
+
     def _normalise_labels(self, tags: dict[str, str]) -> dict[str, str]:
-        """GCP label keys/values must be lowercase [a-z0-9_-]* ≤63 chars."""
+        """GCP label keys/values must be lowercase [a-z][a-z0-9_-]* ≤63 chars."""
         result: dict[str, str] = {}
         for k, v in tags.items():
             key = re.sub(r"[^a-z0-9_-]", "-", k.lower())[:63]
             val = re.sub(r"[^a-z0-9_-]", "-", v.lower())[:63]
+            # Keys and values must start with a lowercase letter
+            if key and not key[0].isalpha():
+                key = "x" + key[:62]
+            if val and not val[0].isalpha():
+                val = "x" + val[:62]
             result[key] = val
         return result
 

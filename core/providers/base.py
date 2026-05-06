@@ -146,7 +146,15 @@ class BaseProvider(ABC):
         # Ensure node_modules are present so the project's own Prisma version
         # is used. `npx --yes prisma` downloads the latest release (currently
         # v7), which dropped support for `url = env(...)` in schema.prisma.
-        subprocess.run(["npm", "install"], cwd=self.out_dir, capture_output=True)
+        npm_result = subprocess.run(
+            ["npm", "install"], cwd=self.out_dir, capture_output=True
+        )
+        if npm_result.returncode != 0:
+            print(
+                f"  Warning: npm install failed (exit {npm_result.returncode}):\n"
+                f"  {npm_result.stderr.decode('utf-8', errors='replace').strip()}\n"
+                "  Prisma schema migration may fail if node_modules are missing."
+            )
 
         for attempt in range(1, _SCHEMA_APPLY_RETRIES + 1):
             result = subprocess.run(
