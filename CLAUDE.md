@@ -474,6 +474,52 @@ Key variables available in each template category:
 
 ---
 
+## Planned Migration: Claude Code Skill
+
+The next major architectural direction for Developable is to repackage it as a **publishable Claude Code skill** — a slash command (e.g. `/developable`) that users invoke directly inside Claude Code rather than running a Python CLI.
+
+### Why
+
+- **Zero install friction** — no Python runtime, no `pip install`, no `ANTHROPIC_API_KEY` setup; Claude Code supplies the model.
+- **Native tool use** — Claude Code's built-in `Write`/`Edit`/`Bash` tools replace the `Assembler` + `LLMGenerator` layer; Claude writes files directly.
+- **Composable** — skills compose naturally with other Claude Code workflows (code review, PR creation, deployment commands).
+- **Publishable** — skills ship as a single markdown file checked into a public repo; discovery and install are one command.
+
+### What Changes
+
+| Current (Python CLI) | Future (Claude Code Skill) |
+|---|---|
+| `python main.py schema.prisma --out ./my-api` | `/developable` in Claude Code |
+| `pip install developable` | Claude Code skill install |
+| `LLMGenerator` fills `LLM_SECTION` markers via Anthropic SDK | Claude Code writes files directly using its native tools |
+| `Assembler` orchestrates template rendering + LLM | Skill prompt instructs Claude to follow the same generation invariants |
+| `VersionControl` agent pushes to GitHub via REST API | Claude Code's GitHub MCP or `gh` CLI |
+| Python 3.11 + Node 18 required on user machine | Claude Code only |
+
+### What Stays the Same
+
+- The **Jinja2 templates** in `templates/express/` remain the source of truth for generated file shapes; the skill prompt instructs Claude to follow them.
+- The **schema annotations** (`@auth_entity`, `@llm sensitive`, `@llm hints`) remain unchanged — the skill parses the same Prisma schema format.
+- The **security invariants** (ID validation, owner FK injection, auth middleware, sensitive field hashing) are encoded into the skill prompt and enforced identically.
+- The **generation pipeline** logic (parse → plan → assemble) is preserved as reasoning instructions in the skill rather than Python code.
+
+### Migration Phases
+
+1. **Skill scaffold** — Create `.claude/commands/developable.md` as the skill entry point; encode the generation pipeline, security invariants, and schema annotation rules as prompt instructions.
+2. **Template encoding** — Convert Jinja2 templates to inline examples or referenced files the skill uses as structural guides when writing output.
+3. **Skill publishing** — Package the repo for Claude Code skill distribution (skill manifest, README quickstart for `/developable`, test schema examples).
+4. **Deprecate Python CLI** — Once the skill reaches feature parity, `main.py` and the Python agent layer become optional legacy; the skill is the primary interface.
+
+### Skill File Location
+
+```
+.claude/
+└── commands/
+    └── developable.md    ← the publishable skill definition
+```
+
+---
+
 ## Known Limitations
 
 1. **Express only** — no FastAPI or other framework target yet

@@ -125,6 +125,33 @@ High-level flow:
 - Inspect test templates and `core/test_planner.py` early for any change that affects routes, payload shapes, auth, or relation handling.
 - Prefer repo-consistent extension over one-off fixes in generated output, since this codebase exists to regenerate systems repeatably.
 
+## Upcoming Architectural Direction: Claude Code Skill
+
+This repo is being converted into a **publishable Claude Code skill**. Understand this before making significant structural changes.
+
+### What This Means
+
+- The Python CLI (`main.py` + agents) will be superseded by a skill definition file at `.claude/commands/developable.md`.
+- Users will invoke `/developable` inside Claude Code instead of running `python main.py schema.prisma --out ./my-api`.
+- Claude Code's native file-writing tools replace `Assembler` + `LLMGenerator`; the model writes output files directly rather than through the Anthropic SDK.
+- The Jinja2 templates in `templates/express/` stay as structural guides but are no longer rendered programmatically — the skill prompt instructs Claude to follow the same patterns.
+- Schema annotations (`@auth_entity`, `@llm sensitive`, `@llm hints`) and all security invariants carry over unchanged into the skill prompt.
+
+### Migration Work Items
+
+- [ ] Create `.claude/commands/developable.md` skill scaffold encoding the generation pipeline as prompt instructions
+- [ ] Convert Jinja2 templates to inline examples or embedded reference content the skill can follow
+- [ ] Publish skill manifest and update `README.md` quickstart for `/developable` install
+- [ ] Achieve feature parity with the Python CLI before deprecating `main.py`
+
+### What To Preserve During Migration
+
+- All security invariants listed in `CLAUDE.md` (ID validation, owner FK injection, auth checks, sensitive-field hashing) must be encoded verbatim into the skill prompt — they are non-negotiable.
+- The parse → plan → assemble mental model stays; it becomes reasoning steps in the skill rather than Python classes.
+- Keep `templates/express/` accurate — they are the canonical reference the skill will use for output structure.
+
+---
+
 ## Default Assumptions For Future Agent Work
 
 - “Always attach it” means: always consult and rely on `AGENTS.md` while working in this repo.

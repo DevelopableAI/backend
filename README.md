@@ -81,10 +81,25 @@ model User {
 
 ---
 
+## Coming Soon: Claude Code Skill
+
+Developable is becoming a **publishable Claude Code skill**.
+
+Instead of running a Python CLI, you'll invoke `/developable` directly inside Claude Code — no Python runtime, no API key setup, no install beyond the skill itself. Claude Code writes the generated files natively using its built-in tools, following the same generation pipeline, security invariants, and schema annotations as today.
+
+```
+# Future usage (inside Claude Code)
+/developable path/to/schema.prisma
+```
+
+The Python CLI will remain available during the transition. Once the skill reaches feature parity, `/developable` becomes the primary interface.
+
+---
+
 ## Roadmap
 
+- [ ] **Claude Code skill** — `/developable` slash command; publishable, zero-install, Claude Code native
 - [ ] Refinement loop — request changes in plain English, developable patches the relevant files
 - [ ] Filter and sort on list endpoints
-- [ ] Relation-aware endpoints (`GET /users/:id/posts`)
 - [ ] UUID / cuid ID support
 - [ ] Fastify target
