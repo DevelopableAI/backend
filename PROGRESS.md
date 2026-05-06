@@ -307,3 +307,37 @@ python main.py ... --contribute   # or eng.contribute_templates()
 - Ability to insert secrets to github repo to enable CI/CD pipeline.
 - Noticed lack of retry or intelligent mitigation of heroku app-name related issue
 - Noticed lack of rollback of all changes in case something unexpected occurs
+
+# 05/06/2026 [Transition to Claude Code Skill]
+
+## Decision
+
+Developable will be repackaged as a **publishable Claude Code skill** — a slash command (`/developable`) that runs natively inside Claude Code rather than as a Python CLI.
+
+## Rationale
+
+- The Python CLI was the right first form factor for proving the generation pipeline. The agent architecture, Jinja2 templates, schema annotations, and security invariants are all solid.
+- Claude Code skills eliminate the install surface entirely: no Python runtime, no `pip install`, no Anthropic API key for the end user. Claude Code supplies the model.
+- Claude Code's native file-writing tools (`Write`, `Edit`, `Bash`) can replace `Assembler` + `LLMGenerator` with zero SDK overhead.
+- Skills are published as a single markdown file in a GitHub repo — distribution is trivially simpler than a PyPI package.
+
+## What Carries Over Unchanged
+
+- Schema annotation syntax (`@auth_entity`, `@llm sensitive`, `@llm hints`)
+- All security invariants (ID validation, owner FK injection, auth middleware, sensitive-field hashing, response filtering)
+- The parse → plan → assemble reasoning model (becomes prompt instructions rather than Python classes)
+- Jinja2 templates in `templates/express/` — remain the structural reference the skill follows when generating files
+
+## Migration Plan
+
+1. **Skill scaffold** — Create `.claude/commands/developable.md`; encode the full generation pipeline, schema annotation rules, and all security invariants as prompt instructions.
+2. **Template encoding** — Convert or reference Jinja2 templates as embedded examples in the skill prompt so Claude follows the correct output structure.
+3. **Skill publishing** — Add skill manifest, update `README.md` quickstart for `/developable`, include `test_schema.prisma` as an in-repo example.
+4. **Feature parity verification** — Generate the blog, e-commerce, and PM schemas using the skill; compare output against current Python CLI output.
+5. **Deprecate Python CLI** — Once parity is confirmed, `main.py` and the Python agent layer become legacy; skill is the primary interface.
+
+## Open Questions
+
+- How to handle `--deploy-to` (AWS/Heroku/GCP) in a skill context — likely delegate to `gh` CLI and provider CLIs via Claude Code's `Bash` tool.
+- Community template contribution workflow — consider a separate `/developable-contribute` skill.
+- Whether to keep the Python CLI as an optional power-user interface post-parity.
