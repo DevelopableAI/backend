@@ -45,6 +45,13 @@ _CONTAINER_PORT = 3000
 _CLOUDSQL_WAIT_TIMEOUT_S = 900   # 15 minutes
 _CLOUDSQL_POLL_INTERVAL_S = 20
 
+# GCP APIs that must be enabled before deployment can proceed.
+_REQUIRED_APIS = [
+    "sqladmin.googleapis.com",
+    "run.googleapis.com",
+    "containerregistry.googleapis.com",
+]
+
 
 class GCPProvider(BaseProvider):
     """Deploy to GCP Cloud Run with Cloud SQL PostgreSQL, using google-cloud-run SDK."""
@@ -155,6 +162,10 @@ class GCPProvider(BaseProvider):
         region: str = creds_info["region"]
 
         gcp_creds = self._load_credentials(creds_info)
+
+        print("  [GCP] Checking required APIs are enabled...")
+        self._ensure_apis_enabled(project_id, gcp_creds)
+
         tags = self.build_tags(project_name, deployment_id, spec)
         labels = self._normalise_labels(tags)
 
@@ -360,7 +371,11 @@ jobs:
             if exc.resp.status == 409:
                 print(f"  [GCP] Cloud SQL instance '{instance_name}' already exists — reusing.")
             else:
-                print(f"\nCloud SQL instance creation failed: {exc}", file=sys.stderr)
+                hint = self._api_not_enabled_hint(exc, project_id)
+                if hint:
+                    print(f"\n  [GCP] {hint}", file=sys.stderr)
+                else:
+                    print(f"\nCloud SQL instance creation failed: {exc}", file=sys.stderr)
                 sys.exit(1)
         except Exception as exc:
             print(f"\nCloud SQL instance creation failed: {exc}", file=sys.stderr)
@@ -560,13 +575,27 @@ jobs:
         )
 
         try:
-            client.get_service(name=service_path)
-            service.name = service_path
-            op = client.update_service(service=service)
-        except GCPNotFound:
-            op = client.create_service(
-                parent=parent, service=service, service_id=service_name
-            )
+            try:
+                client.get_service(name=service_path)
+                service.name = service_path
+                op = client.update_service(service=service)
+            except GCPNotFound:
+                op = client.create_service(
+                    parent=parent, service=service, service_id=service_name
+                )
+        except Exception as exc:
+            msg = str(exc)
+            if "SERVICE_DISABLED" in msg or "has not been used" in msg or "it is disabled" in msg:
+                print(
+                    f"\n  [GCP] Cloud Run API is not enabled in project '{project_id}'.\n"
+                    f"  Enable it at: https://console.cloud.google.com/apis/library/"
+                    f"run?project={project_id}\n"
+                    "  Then re-run the deployment.",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"\n  [GCP] Cloud Run service creation failed: {exc}", file=sys.stderr)
+            sys.exit(1)
 
         try:
             result = op.result(timeout=300)
@@ -604,6 +633,109 @@ jobs:
                 f"  gcloud run services add-iam-policy-binding {service_name} \\\n"
                 f"    --region={region} --member=allUsers --role=roles/run.invoker"
             )
+
+    def _ensure_apis_enabled(self, project_id: str, gcp_creds: Any) -> None:
+        """
+        Enable required GCP APIs via the Service Usage API before deployment.
+
+        If the service account lacks serviceusage.services.enable permission,
+        falls back to printing console URLs for manual enablement and continues
+        (individual API calls will fail with clearer messages if still disabled).
+        """
+        try:
+            from googleapiclient.discovery import build as gapi_build
+            from googleapiclient.errors import HttpError as GApiHttpError
+        except ImportError:
+            return
+
+        try:
+            svc = gapi_build("serviceusage", "v1", credentials=gcp_creds)
+        except Exception:
+            return
+
+        # Check which APIs are not yet enabled
+        disabled: list[str] = []
+        for api in _REQUIRED_APIS:
+            try:
+                state = (
+                    svc.services()
+                    .get(name=f"projects/{project_id}/services/{api}")
+                    .execute()
+                    .get("state", "")
+                )
+                if state != "ENABLED":
+                    disabled.append(api)
+            except Exception:
+                disabled.append(api)
+
+        if not disabled:
+            return
+
+        print(f"  [GCP] Enabling required APIs: {', '.join(disabled)}...")
+        try:
+            op = (
+                svc.services()
+                .batchEnable(
+                    parent=f"projects/{project_id}",
+                    body={"serviceIds": disabled},
+                )
+                .execute()
+            )
+            # Poll until the enablement operation completes (usually <30s)
+            op_name = op.get("name", "")
+            if op_name:
+                for _ in range(30):
+                    time.sleep(3)
+                    status = svc.operations().get(name=op_name).execute()
+                    if status.get("done"):
+                        break
+            print("  [GCP] APIs enabled. Waiting a moment for propagation...")
+            time.sleep(5)
+        except GApiHttpError as exc:
+            if exc.resp.status in (403, 401):
+                print(
+                    "\n  [GCP] Cannot auto-enable APIs — service account lacks "
+                    "serviceusage.services.enable permission.\n"
+                    "  Enable these APIs manually in the GCP Console, then re-run:\n"
+                )
+                for api in disabled:
+                    name = api.split(".")[0]
+                    print(
+                        f"    https://console.cloud.google.com/apis/library/"
+                        f"{name}?project={project_id}"
+                    )
+                print()
+            # Non-fatal: let individual API calls produce their own errors
+
+    def _api_not_enabled_hint(self, exc: Any, project_id: str) -> str | None:
+        """
+        If exc is a 403 accessNotConfigured HttpError, return a formatted hint
+        string with the console enable URL. Returns None for other errors.
+        """
+        try:
+            if exc.resp.status != 403:
+                return None
+            details = json.loads(exc.content.decode()).get("error", {}).get("errors", [])
+            for d in details:
+                if d.get("reason") == "accessNotConfigured":
+                    # Extract API name from the extended help URL if present
+                    help_url = d.get("extendedHelp", "")
+                    api_match = re.search(r"apis/api/([^/]+)/", d.get("message", ""))
+                    api_id = api_match.group(1) if api_match else ""
+                    if api_id:
+                        return (
+                            f"  GCP API not enabled: {api_id}\n"
+                            f"  Enable it at: https://console.cloud.google.com/apis/library/"
+                            f"{api_id.split('.')[0]}?project={project_id}\n"
+                            "  Then re-run the deployment."
+                        )
+                    return (
+                        f"  GCP API not enabled. Enable it and retry.\n"
+                        f"  {help_url}"
+                    )
+        except Exception:
+            pass
+        return None
 
     def _read_project_from_sa(self, sa_path: str) -> str:
         try:
