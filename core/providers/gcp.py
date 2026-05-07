@@ -451,33 +451,75 @@ jobs:
         username: str,
         password: str,
     ) -> None:
+        """
+        Set the password for a Cloud SQL database user.
+
+        Cloud SQL for PostgreSQL always pre-creates the `postgres` superuser with
+        no password, so `users.insert` for that user always returns 409. We skip
+        straight to `users.update` and retry up to 3 times to handle transient
+        failures. A short sleep after success gives Cloud SQL time to propagate
+        the credential change before Prisma attempts to connect.
+        """
         try:
             from googleapiclient.errors import HttpError as GApiHttpError
         except ImportError:
             GApiHttpError = Exception  # type: ignore[misc,assignment]
 
+        _MAX_ATTEMPTS = 3
+        _RETRY_SLEEP_S = 8
+
+        # Always try update first — the built-in postgres user already exists.
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                sqladmin.users().update(
+                    project=project_id,
+                    instance=instance_name,
+                    name=username,
+                    body={"name": username, "password": password},
+                ).execute()
+                print(f"  [GCP] Password set for database user '{username}'.")
+                # Allow Cloud SQL time to propagate the credential change.
+                time.sleep(8)
+                return
+            except GApiHttpError as exc:
+                if exc.resp.status == 404:
+                    # User genuinely doesn't exist — fall through to insert below.
+                    break
+                print(
+                    f"  [GCP] Password update attempt {attempt}/{_MAX_ATTEMPTS} failed "
+                    f"(HTTP {exc.resp.status}): {exc}"
+                )
+            except Exception as exc:
+                print(
+                    f"  [GCP] Password update attempt {attempt}/{_MAX_ATTEMPTS} failed: {exc}"
+                )
+            if attempt < _MAX_ATTEMPTS:
+                time.sleep(_RETRY_SLEEP_S)
+
+        # User did not exist — create it from scratch.
         try:
             sqladmin.users().insert(
                 project=project_id,
                 instance=instance_name,
                 body={"name": username, "password": password},
             ).execute()
+            print(f"  [GCP] Database user '{username}' created.")
+            time.sleep(8)
         except GApiHttpError as exc:
             if exc.resp.status == 409:
-                # Update password for existing user
-                try:
-                    sqladmin.users().update(
-                        project=project_id,
-                        instance=instance_name,
-                        name=username,
-                        body={"password": password},
-                    ).execute()
-                except Exception:
-                    pass
-            else:
-                print(f"  [GCP] Warning: could not create DB user '{username}': {exc}")
+                # Raced with another create — password was set by the earlier update loop.
+                return
+            print(
+                f"\n  [GCP] Fatal: could not create DB user '{username}': {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         except Exception as exc:
-            print(f"  [GCP] Warning: could not create DB user '{username}': {exc}")
+            print(
+                f"\n  [GCP] Fatal: could not create DB user '{username}': {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # ── Private helpers: Cloud Run / GCR ──────────────────────────────────────
 
