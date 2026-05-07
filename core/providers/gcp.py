@@ -49,8 +49,11 @@ _CLOUDSQL_POLL_INTERVAL_S = 20
 _REQUIRED_APIS = [
     "sqladmin.googleapis.com",
     "run.googleapis.com",
-    "containerregistry.googleapis.com",
+    "artifactregistry.googleapis.com",
 ]
+
+# Artifact Registry repository used for all Developable images in a project.
+_AR_REPO_ID = "developable"
 
 
 class GCPProvider(BaseProvider):
@@ -231,16 +234,21 @@ class GCPProvider(BaseProvider):
         tags = self.build_tags(project_name, deployment_id, spec)
         labels = self._normalise_labels(tags)
 
-        image_uri = f"gcr.io/{project_id}/{project_name}:latest"
+        ar_host = f"{region}-docker.pkg.dev"
+        image_uri = f"{ar_host}/{project_id}/{_AR_REPO_ID}/{project_name}:latest"
 
         print(f"  [GCP] Project: {project_id}  Region: {region}")
 
         gcp_creds = self._load_credentials(creds_info)
         self._gcp_creds = gcp_creds
 
-        # Push to GCR
+        # Ensure the Artifact Registry repository exists
+        print(f"  [GCP] Ensuring Artifact Registry repository '{_AR_REPO_ID}'...")
+        self._ensure_artifact_registry_repo(gcp_creds, project_id, region)
+
+        # Push to Artifact Registry
         print(f"  [GCP] Pushing image to {image_uri}...")
-        self._push_to_gcr(creds_info, image_tag, image_uri)
+        self._push_to_registry(creds_info, image_tag, image_uri, ar_host)
 
         # Deploy to Cloud Run
         print(f"  [GCP] Deploying to Cloud Run service '{project_name}'...")
@@ -261,9 +269,9 @@ class GCPProvider(BaseProvider):
                 "region": region,
             },
             {
-                "type": "gcr_image",
+                "type": "artifact_registry_image",
                 "id": image_uri,
-                "url": f"https://gcr.io/{project_id}/{project_name}",
+                "url": f"https://{region}-docker.pkg.dev/{project_id}/{_AR_REPO_ID}/{project_name}",
             },
         ]
 
@@ -288,6 +296,9 @@ class GCPProvider(BaseProvider):
         creds_info = self._credentials
         project_id = creds_info.get("project_id", "YOUR_GCP_PROJECT_ID")
         region = creds_info.get("region", _DEFAULT_REGION)
+
+        ar_host = f"{region}-docker.pkg.dev"
+        image_uri = f"{ar_host}/{project_id}/{_AR_REPO_ID}/{project_name}:latest"
 
         return f"""\
 name: Deploy to GCP Cloud Run
@@ -315,18 +326,18 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Docker for GCR
-        run: gcloud auth configure-docker --quiet
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker {ar_host} --quiet
 
       - name: Build and push image
         run: |
-          docker build -t gcr.io/{project_id}/{project_name}:latest .
-          docker push gcr.io/{project_id}/{project_name}:latest
+          docker build -t {image_uri} .
+          docker push {image_uri}
 
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy {project_name} \\
-            --image gcr.io/{project_id}/{project_name}:latest \\
+            --image {image_uri} \\
             --region {region} \\
             --platform managed \\
             --quiet
@@ -536,30 +547,73 @@ jobs:
         )
         return creds
 
-    def _push_to_gcr(
-        self, creds_info: dict[str, Any], local_tag: str, image_uri: str
+    def _ensure_artifact_registry_repo(
+        self, gcp_creds: Any, project_id: str, region: str
     ) -> None:
+        """Create the Artifact Registry Docker repository if it does not exist."""
+        try:
+            from googleapiclient.discovery import build as gapi_build
+            from googleapiclient.errors import HttpError as GApiHttpError
+        except ImportError:
+            return
+
+        try:
+            ar = gapi_build("artifactregistry", "v1", credentials=gcp_creds)
+            parent = f"projects/{project_id}/locations/{region}"
+            ar.projects().locations().repositories().create(
+                parent=parent,
+                repositoryId=_AR_REPO_ID,
+                body={
+                    "format": "DOCKER",
+                    "description": "Developable deployment images",
+                },
+            ).execute()
+            print(f"  [GCP] Artifact Registry repository '{_AR_REPO_ID}' created.")
+        except GApiHttpError as exc:
+            if exc.resp.status == 409:
+                pass  # already exists
+            elif exc.resp.status == 403:
+                print(
+                    f"\n  [GCP] Cannot create Artifact Registry repository — permission denied.\n"
+                    "  Grant the service account the 'Artifact Registry Administrator' role, or\n"
+                    "  create the repository manually:\n"
+                    f"    gcloud artifacts repositories create {_AR_REPO_ID} \\\n"
+                    f"      --repository-format=docker --location={region} \\\n"
+                    f"      --project={project_id}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            else:
+                print(f"  [GCP] Warning: could not create Artifact Registry repo: {exc}")
+        except Exception as exc:
+            print(f"  [GCP] Warning: could not verify Artifact Registry repo: {exc}")
+
+    def _push_to_registry(
+        self, creds_info: dict[str, Any], local_tag: str, image_uri: str, ar_host: str
+    ) -> None:
+        """Tag and push a local Docker image to Artifact Registry."""
         if creds_info["credentials_file"]:
             key_json = Path(creds_info["credentials_file"]).read_text()
             result = subprocess.run(
-                ["docker", "login", "-u", "_json_key", "--password-stdin", "https://gcr.io"],
+                ["docker", "login", "-u", "_json_key", "--password-stdin", f"https://{ar_host}"],
                 input=key_json.encode(),
                 capture_output=True,
             )
             if result.returncode != 0:
                 print(
-                    f"\nDocker login to GCR failed:\n{result.stderr.decode()}",
+                    f"\n  [GCP] Docker login to Artifact Registry failed:\n"
+                    f"  {result.stderr.decode('utf-8', errors='replace')}",
                     file=sys.stderr,
                 )
                 sys.exit(1)
         else:
             gcloud_result = subprocess.run(
-                ["gcloud", "auth", "configure-docker", "--quiet"],
+                ["gcloud", "auth", "configure-docker", ar_host, "--quiet"],
                 capture_output=True,
             )
             if gcloud_result.returncode != 0:
                 print(
-                    "\n  [GCP] gcloud auth configure-docker failed.\n"
+                    f"\n  [GCP] gcloud auth configure-docker {ar_host} failed.\n"
                     "  Ensure gcloud is installed and you have run:\n"
                     "    gcloud auth application-default login\n"
                     f"  Error: {gcloud_result.stderr.decode('utf-8', errors='replace').strip()}",
