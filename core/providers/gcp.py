@@ -792,18 +792,23 @@ jobs:
         _IAM_PROPAGATION_SLEEP_S = 15
 
         # ── Primary: gcloud CLI (synchronous, reliable) ────────────────────────
-        gcloud_result = subprocess.run(
-            [
-                "gcloud", "run", "services", "add-iam-policy-binding", service_name,
-                f"--region={region}",
-                "--member=allUsers",
-                "--role=roles/run.invoker",
-                f"--project={project_id}",
-                "--quiet",
-            ],
-            capture_output=True,
-        )
-        if gcloud_result.returncode == 0:
+        try:
+            gcloud_result = subprocess.run(
+                [
+                    "gcloud", "run", "services", "add-iam-policy-binding", service_name,
+                    f"--region={region}",
+                    "--member=allUsers",
+                    "--role=roles/run.invoker",
+                    f"--project={project_id}",
+                    "--quiet",
+                ],
+                capture_output=True,
+            )
+            gcloud_ok = gcloud_result.returncode == 0
+        except FileNotFoundError:
+            gcloud_ok = False  # gcloud not installed — fall through to SDK
+
+        if gcloud_ok:
             print(
                 f"  [GCP] IAM: allUsers invoker binding set via gcloud.\n"
                 f"  [GCP] Waiting {_IAM_PROPAGATION_SLEEP_S}s for IAM propagation..."
