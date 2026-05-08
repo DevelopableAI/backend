@@ -550,7 +550,13 @@ jobs:
     def _ensure_artifact_registry_repo(
         self, gcp_creds: Any, project_id: str, region: str
     ) -> None:
-        """Create the Artifact Registry Docker repository if it does not exist."""
+        """
+        Create the Artifact Registry Docker repository and wait until it is ready.
+
+        Checks for existence first (GET), so repeated runs are fast. Repository
+        creation is a long-running operation — we poll until it is DONE before
+        returning so the subsequent docker push never hits a 'not found' race.
+        """
         try:
             from googleapiclient.discovery import build as gapi_build
             from googleapiclient.errors import HttpError as GApiHttpError
@@ -559,24 +565,47 @@ jobs:
 
         try:
             ar = gapi_build("artifactregistry", "v1", credentials=gcp_creds)
-            parent = f"projects/{project_id}/locations/{region}"
-            ar.projects().locations().repositories().create(
-                parent=parent,
+        except Exception as exc:
+            print(f"  [GCP] Warning: could not initialise Artifact Registry client: {exc}")
+            return
+
+        repo_name = (
+            f"projects/{project_id}/locations/{region}/repositories/{_AR_REPO_ID}"
+        )
+
+        # Fast path: repo already exists
+        try:
+            ar.projects().locations().repositories().get(name=repo_name).execute()
+            print(f"  [GCP] Artifact Registry repository '{_AR_REPO_ID}' already exists.")
+            return
+        except GApiHttpError as exc:
+            if exc.resp.status != 404:
+                print(f"  [GCP] Warning: could not check Artifact Registry repo: {exc}")
+                return
+        except Exception as exc:
+            print(f"  [GCP] Warning: could not check Artifact Registry repo: {exc}")
+            return
+
+        # Repo does not exist — create it and wait for the LRO to finish.
+        print(f"  [GCP] Creating Artifact Registry repository '{_AR_REPO_ID}'...")
+        try:
+            op = ar.projects().locations().repositories().create(
+                parent=f"projects/{project_id}/locations/{region}",
                 repositoryId=_AR_REPO_ID,
                 body={
                     "format": "DOCKER",
                     "description": "Developable deployment images",
                 },
             ).execute()
-            print(f"  [GCP] Artifact Registry repository '{_AR_REPO_ID}' created.")
         except GApiHttpError as exc:
             if exc.resp.status == 409:
-                pass  # already exists
+                print(f"  [GCP] Artifact Registry repository '{_AR_REPO_ID}' already exists.")
+                return
             elif exc.resp.status == 403:
                 print(
                     f"\n  [GCP] Cannot create Artifact Registry repository — permission denied.\n"
                     "  Grant the service account the 'Artifact Registry Administrator' role, or\n"
-                    "  create the repository manually:\n"
+                    "  create the repository manually and re-run:\n"
                     f"    gcloud artifacts repositories create {_AR_REPO_ID} \\\n"
                     f"      --repository-format=docker --location={region} \\\n"
                     f"      --project={project_id}",
@@ -584,9 +613,43 @@ jobs:
                 )
                 sys.exit(1)
             else:
-                print(f"  [GCP] Warning: could not create Artifact Registry repo: {exc}")
+                print(
+                    f"\n  [GCP] Artifact Registry repository creation failed: {exc}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
         except Exception as exc:
-            print(f"  [GCP] Warning: could not verify Artifact Registry repo: {exc}")
+            print(
+                f"\n  [GCP] Artifact Registry repository creation failed: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # Poll the long-running operation until DONE (typically <10s)
+        op_name = op.get("name", "")
+        if op_name:
+            for _ in range(30):
+                time.sleep(3)
+                try:
+                    status = (
+                        ar.projects()
+                        .locations()
+                        .operations()
+                        .get(name=op_name)
+                        .execute()
+                    )
+                    if status.get("done"):
+                        if "error" in status:
+                            print(
+                                f"\n  [GCP] Artifact Registry repo creation failed: "
+                                f"{status['error']}",
+                                file=sys.stderr,
+                            )
+                            sys.exit(1)
+                        break
+                except Exception:
+                    pass
+        print(f"  [GCP] Artifact Registry repository '{_AR_REPO_ID}' ready.")
 
     def _push_to_registry(
         self, creds_info: dict[str, Any], local_tag: str, image_uri: str, ar_host: str
