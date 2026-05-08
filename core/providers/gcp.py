@@ -25,6 +25,7 @@ GCP labels must match [a-z][a-z0-9_-]* and be ≤63 chars.
 We normalise tag keys/values to lowercase and replace invalid characters.
 """
 
+import base64
 import getpass
 import json
 import os
@@ -43,6 +44,16 @@ _DEFAULT_REGION = "us-central1"
 _CONTAINER_PORT = 3000
 _CLOUDSQL_WAIT_TIMEOUT_S = 900   # 15 minutes
 _CLOUDSQL_POLL_INTERVAL_S = 20
+
+# GCP APIs that must be enabled before deployment can proceed.
+_REQUIRED_APIS = [
+    "sqladmin.googleapis.com",
+    "run.googleapis.com",
+    "artifactregistry.googleapis.com",
+]
+
+# Artifact Registry repository used for all Developable images in a project.
+_AR_REPO_ID = "developable"
 
 
 class GCPProvider(BaseProvider):
@@ -85,6 +96,7 @@ class GCPProvider(BaseProvider):
                 "credentials_type": "service_account",
                 "project_id": project_id or self._read_project_from_sa(sa_path),
                 "region": self._region,
+                "credentials_b64": self._encode_sa_file(sa_path),
             }
 
         try:
@@ -97,6 +109,7 @@ class GCPProvider(BaseProvider):
                 "credentials_type": "adc",
                 "project_id": pid,
                 "region": self._region,
+                "credentials_b64": "",
             }
         except Exception:
             return None
@@ -126,11 +139,13 @@ class GCPProvider(BaseProvider):
 
         region = self._region or input(f"  Region [{_DEFAULT_REGION}]: ").strip() or _DEFAULT_REGION
 
+        resolved_sa = str(Path(sa_path).expanduser()) if sa_path else None
         return {
-            "credentials_file": str(Path(sa_path).expanduser()) if sa_path else None,
+            "credentials_file": resolved_sa,
             "credentials_type": "service_account" if sa_path else "adc",
             "project_id": project_id,
             "region": region,
+            "credentials_b64": self._encode_sa_file(resolved_sa) if resolved_sa else "",
         }
 
     # ── Database provisioning ──────────────────────────────────────────────────
@@ -150,6 +165,10 @@ class GCPProvider(BaseProvider):
         region: str = creds_info["region"]
 
         gcp_creds = self._load_credentials(creds_info)
+
+        print("  [GCP] Checking required APIs are enabled...")
+        self._ensure_apis_enabled(project_id, gcp_creds)
+
         tags = self.build_tags(project_name, deployment_id, spec)
         labels = self._normalise_labels(tags)
 
@@ -215,16 +234,21 @@ class GCPProvider(BaseProvider):
         tags = self.build_tags(project_name, deployment_id, spec)
         labels = self._normalise_labels(tags)
 
-        image_uri = f"gcr.io/{project_id}/{project_name}:latest"
+        ar_host = f"{region}-docker.pkg.dev"
+        image_uri = f"{ar_host}/{project_id}/{_AR_REPO_ID}/{project_name}:latest"
 
         print(f"  [GCP] Project: {project_id}  Region: {region}")
 
         gcp_creds = self._load_credentials(creds_info)
         self._gcp_creds = gcp_creds
 
-        # Push to GCR
+        # Ensure the Artifact Registry repository exists
+        print(f"  [GCP] Ensuring Artifact Registry repository '{_AR_REPO_ID}'...")
+        self._ensure_artifact_registry_repo(gcp_creds, project_id, region)
+
+        # Push to Artifact Registry
         print(f"  [GCP] Pushing image to {image_uri}...")
-        self._push_to_gcr(creds_info, image_tag, image_uri)
+        self._push_to_registry(creds_info, image_tag, image_uri, ar_host)
 
         # Deploy to Cloud Run
         print(f"  [GCP] Deploying to Cloud Run service '{project_name}'...")
@@ -240,14 +264,14 @@ class GCPProvider(BaseProvider):
             {
                 "type": "cloud_run_service",
                 "id": project_name,
-                "url": service_url,
+                "url": service_url or "pending",
                 "project": project_id,
                 "region": region,
             },
             {
-                "type": "gcr_image",
+                "type": "artifact_registry_image",
                 "id": image_uri,
-                "url": f"https://gcr.io/{project_id}/{project_name}",
+                "url": f"https://{region}-docker.pkg.dev/{project_id}/{_AR_REPO_ID}/{project_name}",
             },
         ]
 
@@ -272,6 +296,9 @@ class GCPProvider(BaseProvider):
         creds_info = self._credentials
         project_id = creds_info.get("project_id", "YOUR_GCP_PROJECT_ID")
         region = creds_info.get("region", _DEFAULT_REGION)
+
+        ar_host = f"{region}-docker.pkg.dev"
+        image_uri = f"{ar_host}/{project_id}/{_AR_REPO_ID}/{project_name}:latest"
 
         return f"""\
 name: Deploy to GCP Cloud Run
@@ -299,18 +326,18 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Docker for GCR
-        run: gcloud auth configure-docker --quiet
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker {ar_host} --quiet
 
       - name: Build and push image
         run: |
-          docker build -t gcr.io/{project_id}/{project_name}:latest .
-          docker push gcr.io/{project_id}/{project_name}:latest
+          docker build -t {image_uri} .
+          docker push {image_uri}
 
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy {project_name} \\
-            --image gcr.io/{project_id}/{project_name}:latest \\
+            --image {image_uri} \\
             --region {region} \\
             --platform managed \\
             --quiet
@@ -327,6 +354,11 @@ jobs:
         labels: dict[str, str],
     ) -> None:
         """Create a Cloud SQL PostgreSQL 15 instance if it doesn't exist."""
+        try:
+            from googleapiclient.errors import HttpError as GApiHttpError
+        except ImportError:
+            GApiHttpError = Exception  # type: ignore[misc,assignment]
+
         try:
             sqladmin.instances().insert(
                 project=project_id,
@@ -346,18 +378,25 @@ jobs:
                     },
                 },
             ).execute()
-        except Exception as exc:
-            # 409 Conflict = instance already exists
-            if "409" in str(exc) or "already exists" in str(exc).lower():
+        except GApiHttpError as exc:
+            if exc.resp.status == 409:
                 print(f"  [GCP] Cloud SQL instance '{instance_name}' already exists — reusing.")
             else:
-                print(f"\nCloud SQL instance creation failed: {exc}", file=sys.stderr)
+                hint = self._api_not_enabled_hint(exc, project_id)
+                if hint:
+                    print(f"\n  [GCP] {hint}", file=sys.stderr)
+                else:
+                    print(f"\nCloud SQL instance creation failed: {exc}", file=sys.stderr)
                 sys.exit(1)
+        except Exception as exc:
+            print(f"\nCloud SQL instance creation failed: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     def _wait_for_cloud_sql(
         self, sqladmin: Any, project_id: str, instance_name: str
     ) -> str:
         """Poll until the instance is RUNNABLE. Returns public IP."""
+        _TERMINAL_STATES = {"FAILED", "SUSPENDED", "MAINTENANCE"}
         deadline = time.time() + _CLOUDSQL_WAIT_TIMEOUT_S
         while time.time() < deadline:
             try:
@@ -365,11 +404,25 @@ jobs:
                     project=project_id, instance=instance_name
                 ).execute()
                 state = inst.get("state", "")
+                if state in _TERMINAL_STATES:
+                    print(
+                        f"\n  [GCP] Cloud SQL instance entered terminal state '{state}'.\n"
+                        "  Check your GCP quota, billing, and region availability.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
                 if state == "RUNNABLE":
                     for addr in inst.get("ipAddresses", []):
                         if addr.get("type") == "PRIMARY":
                             return addr["ipAddress"]
-                print(f"  [GCP] Cloud SQL state: {state} — waiting...", end="\r", flush=True)
+                    # RUNNABLE but no PRIMARY IP yet — keep polling
+                    print(
+                        f"  [GCP] Cloud SQL RUNNABLE but no public IP yet — waiting...",
+                        end="\r",
+                        flush=True,
+                    )
+                else:
+                    print(f"  [GCP] Cloud SQL state: {state} — waiting...", end="\r", flush=True)
             except Exception:
                 pass
             time.sleep(_CLOUDSQL_POLL_INTERVAL_S)
@@ -384,14 +437,21 @@ jobs:
         self, sqladmin: Any, project_id: str, instance_name: str, db_name: str
     ) -> None:
         try:
+            from googleapiclient.errors import HttpError as GApiHttpError
+        except ImportError:
+            GApiHttpError = Exception  # type: ignore[misc,assignment]
+
+        try:
             sqladmin.databases().insert(
                 project=project_id,
                 instance=instance_name,
                 body={"name": db_name},
             ).execute()
-        except Exception as exc:
-            if "already exists" in str(exc).lower() or "409" in str(exc):
+        except GApiHttpError as exc:
+            if exc.resp.status == 409:
                 return
+            print(f"  [GCP] Warning: could not create database '{db_name}': {exc}")
+        except Exception as exc:
             print(f"  [GCP] Warning: could not create database '{db_name}': {exc}")
 
     def _create_db_user(
@@ -402,26 +462,75 @@ jobs:
         username: str,
         password: str,
     ) -> None:
+        """
+        Set the password for a Cloud SQL database user.
+
+        Cloud SQL for PostgreSQL always pre-creates the `postgres` superuser with
+        no password, so `users.insert` for that user always returns 409. We skip
+        straight to `users.update` and retry up to 3 times to handle transient
+        failures. A short sleep after success gives Cloud SQL time to propagate
+        the credential change before Prisma attempts to connect.
+        """
+        try:
+            from googleapiclient.errors import HttpError as GApiHttpError
+        except ImportError:
+            GApiHttpError = Exception  # type: ignore[misc,assignment]
+
+        _MAX_ATTEMPTS = 3
+        _RETRY_SLEEP_S = 8
+
+        # Always try update first — the built-in postgres user already exists.
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                sqladmin.users().update(
+                    project=project_id,
+                    instance=instance_name,
+                    name=username,
+                    body={"name": username, "password": password},
+                ).execute()
+                print(f"  [GCP] Password set for database user '{username}'.")
+                # Allow Cloud SQL time to propagate the credential change.
+                time.sleep(8)
+                return
+            except GApiHttpError as exc:
+                if exc.resp.status == 404:
+                    # User genuinely doesn't exist — fall through to insert below.
+                    break
+                print(
+                    f"  [GCP] Password update attempt {attempt}/{_MAX_ATTEMPTS} failed "
+                    f"(HTTP {exc.resp.status}): {exc}"
+                )
+            except Exception as exc:
+                print(
+                    f"  [GCP] Password update attempt {attempt}/{_MAX_ATTEMPTS} failed: {exc}"
+                )
+            if attempt < _MAX_ATTEMPTS:
+                time.sleep(_RETRY_SLEEP_S)
+
+        # User did not exist — create it from scratch.
         try:
             sqladmin.users().insert(
                 project=project_id,
                 instance=instance_name,
                 body={"name": username, "password": password},
             ).execute()
+            print(f"  [GCP] Database user '{username}' created.")
+            time.sleep(8)
+        except GApiHttpError as exc:
+            if exc.resp.status == 409:
+                # Raced with another create — password was set by the earlier update loop.
+                return
+            print(
+                f"\n  [GCP] Fatal: could not create DB user '{username}': {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         except Exception as exc:
-            if "already exists" in str(exc).lower() or "409" in str(exc):
-                # Update password for existing user
-                try:
-                    sqladmin.users().update(
-                        project=project_id,
-                        instance=instance_name,
-                        name=username,
-                        body={"password": password},
-                    ).execute()
-                except Exception:
-                    pass
-            else:
-                print(f"  [GCP] Warning: could not create DB user '{username}': {exc}")
+            print(
+                f"\n  [GCP] Fatal: could not create DB user '{username}': {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # ── Private helpers: Cloud Run / GCR ──────────────────────────────────────
 
@@ -438,27 +547,142 @@ jobs:
         )
         return creds
 
-    def _push_to_gcr(
-        self, creds_info: dict[str, Any], local_tag: str, image_uri: str
+    def _ensure_artifact_registry_repo(
+        self, gcp_creds: Any, project_id: str, region: str
     ) -> None:
+        """
+        Create the Artifact Registry Docker repository and wait until it is ready.
+
+        Checks for existence first (GET), so repeated runs are fast. Repository
+        creation is a long-running operation — we poll until it is DONE before
+        returning so the subsequent docker push never hits a 'not found' race.
+        """
+        try:
+            from googleapiclient.discovery import build as gapi_build
+            from googleapiclient.errors import HttpError as GApiHttpError
+        except ImportError:
+            return
+
+        try:
+            ar = gapi_build("artifactregistry", "v1", credentials=gcp_creds)
+        except Exception as exc:
+            print(f"  [GCP] Warning: could not initialise Artifact Registry client: {exc}")
+            return
+
+        repo_name = (
+            f"projects/{project_id}/locations/{region}/repositories/{_AR_REPO_ID}"
+        )
+
+        # Fast path: repo already exists
+        try:
+            ar.projects().locations().repositories().get(name=repo_name).execute()
+            print(f"  [GCP] Artifact Registry repository '{_AR_REPO_ID}' already exists.")
+            return
+        except GApiHttpError as exc:
+            if exc.resp.status != 404:
+                print(f"  [GCP] Warning: could not check Artifact Registry repo: {exc}")
+                return
+        except Exception as exc:
+            print(f"  [GCP] Warning: could not check Artifact Registry repo: {exc}")
+            return
+
+        # Repo does not exist — create it and wait for the LRO to finish.
+        print(f"  [GCP] Creating Artifact Registry repository '{_AR_REPO_ID}'...")
+        try:
+            op = ar.projects().locations().repositories().create(
+                parent=f"projects/{project_id}/locations/{region}",
+                repositoryId=_AR_REPO_ID,
+                body={
+                    "format": "DOCKER",
+                    "description": "Developable deployment images",
+                },
+            ).execute()
+        except GApiHttpError as exc:
+            if exc.resp.status == 409:
+                print(f"  [GCP] Artifact Registry repository '{_AR_REPO_ID}' already exists.")
+                return
+            elif exc.resp.status == 403:
+                print(
+                    f"\n  [GCP] Cannot create Artifact Registry repository — permission denied.\n"
+                    "  Grant the service account the 'Artifact Registry Administrator' role, or\n"
+                    "  create the repository manually and re-run:\n"
+                    f"    gcloud artifacts repositories create {_AR_REPO_ID} \\\n"
+                    f"      --repository-format=docker --location={region} \\\n"
+                    f"      --project={project_id}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            else:
+                print(
+                    f"\n  [GCP] Artifact Registry repository creation failed: {exc}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        except Exception as exc:
+            print(
+                f"\n  [GCP] Artifact Registry repository creation failed: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # Poll the long-running operation until DONE (typically <10s)
+        op_name = op.get("name", "")
+        if op_name:
+            for _ in range(30):
+                time.sleep(3)
+                try:
+                    status = (
+                        ar.projects()
+                        .locations()
+                        .operations()
+                        .get(name=op_name)
+                        .execute()
+                    )
+                    if status.get("done"):
+                        if "error" in status:
+                            print(
+                                f"\n  [GCP] Artifact Registry repo creation failed: "
+                                f"{status['error']}",
+                                file=sys.stderr,
+                            )
+                            sys.exit(1)
+                        break
+                except Exception:
+                    pass
+        print(f"  [GCP] Artifact Registry repository '{_AR_REPO_ID}' ready.")
+
+    def _push_to_registry(
+        self, creds_info: dict[str, Any], local_tag: str, image_uri: str, ar_host: str
+    ) -> None:
+        """Tag and push a local Docker image to Artifact Registry."""
         if creds_info["credentials_file"]:
             key_json = Path(creds_info["credentials_file"]).read_text()
             result = subprocess.run(
-                ["docker", "login", "-u", "_json_key", "--password-stdin", "https://gcr.io"],
+                ["docker", "login", "-u", "_json_key", "--password-stdin", f"https://{ar_host}"],
                 input=key_json.encode(),
                 capture_output=True,
             )
             if result.returncode != 0:
                 print(
-                    f"\nDocker login to GCR failed:\n{result.stderr.decode()}",
+                    f"\n  [GCP] Docker login to Artifact Registry failed:\n"
+                    f"  {result.stderr.decode('utf-8', errors='replace')}",
                     file=sys.stderr,
                 )
                 sys.exit(1)
         else:
-            subprocess.run(
-                ["gcloud", "auth", "configure-docker", "--quiet"],
+            gcloud_result = subprocess.run(
+                ["gcloud", "auth", "configure-docker", ar_host, "--quiet"],
                 capture_output=True,
             )
+            if gcloud_result.returncode != 0:
+                print(
+                    f"\n  [GCP] gcloud auth configure-docker {ar_host} failed.\n"
+                    "  Ensure gcloud is installed and you have run:\n"
+                    "    gcloud auth application-default login\n"
+                    f"  Error: {gcloud_result.stderr.decode('utf-8', errors='replace').strip()}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
         self._run(["docker", "tag", local_tag, image_uri])
         self._run(["docker", "push", image_uri])
@@ -483,11 +707,22 @@ jobs:
             )
             sys.exit(1)
 
+        try:
+            from google.api_core.exceptions import NotFound as GCPNotFound
+        except ImportError:
+            GCPNotFound = Exception  # type: ignore[misc,assignment]
+
         client = run_v2.ServicesClient(credentials=gcp_creds)
         parent = f"projects/{project_id}/locations/{region}"
         service_path = f"{parent}/services/{service_name}"
 
-        env_list = [run_v2.EnvVar(name=k, value=v) for k, v in env_vars.items()]
+        # Cloud Run sets these automatically; passing them causes a 400.
+        _RESERVED = {"PORT", "K_SERVICE", "K_REVISION", "K_CONFIGURATION"}
+        env_list = [
+            run_v2.EnvVar(name=k, value=v)
+            for k, v in env_vars.items()
+            if k not in _RESERVED
+        ]
         container = run_v2.Container(
             image=image_uri,
             ports=[run_v2.ContainerPort(container_port=_CONTAINER_PORT)],
@@ -505,24 +740,94 @@ jobs:
         )
 
         try:
-            client.get_service(name=service_path)
-            service.name = service_path
-            op = client.update_service(service=service)
-        except Exception:
-            op = client.create_service(
-                parent=parent, service=service, service_id=service_name
-            )
+            try:
+                client.get_service(name=service_path)
+                service.name = service_path
+                op = client.update_service(service=service)
+            except GCPNotFound:
+                op = client.create_service(
+                    parent=parent, service=service, service_id=service_name
+                )
+        except Exception as exc:
+            msg = str(exc)
+            if "SERVICE_DISABLED" in msg or "has not been used" in msg or "it is disabled" in msg:
+                print(
+                    f"\n  [GCP] Cloud Run API is not enabled in project '{project_id}'.\n"
+                    f"  Enable it at: https://console.cloud.google.com/apis/library/"
+                    f"run?project={project_id}\n"
+                    "  Then re-run the deployment.",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"\n  [GCP] Cloud Run service creation failed: {exc}", file=sys.stderr)
+            sys.exit(1)
 
-        result = op.result(timeout=300)
+        try:
+            result = op.result(timeout=300)
+        except Exception as exc:
+            print(
+                f"\n  [GCP] Cloud Run deployment timed out or failed: {exc}\n"
+                "  Check the Cloud Run console for service status.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         return result.uri
 
     def _allow_unauthenticated(
         self, gcp_creds: Any, project_id: str, region: str, service_name: str
     ) -> None:
+        """
+        Grant allUsers the roles/run.invoker binding so the Cloud Run service
+        accepts unauthenticated requests.
+
+        Uses the gcloud CLI as the primary path — it is synchronous, well-tested,
+        and handles the IAM merge correctly. Falls back to the Python SDK if
+        gcloud is not available. A 15-second sleep follows success to allow the
+        IAM change to propagate to all GCP edge nodes before tests run.
+
+        Without this wait, Cloud Run may still validate Bearer tokens as Google
+        identity tokens on some edge nodes (returning HTML 401) even though
+        allUsers is nominally set.
+        """
+        _IAM_PROPAGATION_SLEEP_S = 15
+
+        # ── Primary: gcloud CLI (synchronous, reliable) ────────────────────────
+        try:
+            gcloud_result = subprocess.run(
+                [
+                    "gcloud", "run", "services", "add-iam-policy-binding", service_name,
+                    f"--region={region}",
+                    "--member=allUsers",
+                    "--role=roles/run.invoker",
+                    f"--project={project_id}",
+                    "--quiet",
+                ],
+                capture_output=True,
+            )
+            gcloud_ok = gcloud_result.returncode == 0
+        except FileNotFoundError:
+            gcloud_ok = False  # gcloud not installed — fall through to SDK
+
+        if gcloud_ok:
+            print(
+                f"  [GCP] IAM: allUsers invoker binding set via gcloud.\n"
+                f"  [GCP] Waiting {_IAM_PROPAGATION_SLEEP_S}s for IAM propagation..."
+            )
+            time.sleep(_IAM_PROPAGATION_SLEEP_S)
+            return
+
+        # ── Fallback: Python SDK ───────────────────────────────────────────────
         try:
             from google.cloud import run_v2
             from google.iam.v1 import iam_policy_pb2, policy_pb2
         except ImportError:
+            print(
+                "  [GCP] Warning: could not set unauthenticated IAM policy.\n"
+                "  Set it manually:\n"
+                f"  gcloud run services add-iam-policy-binding {service_name} \\\n"
+                f"    --region={region} --member=allUsers --role=roles/run.invoker "
+                f"--project={project_id}"
+            )
             return
 
         client = run_v2.ServicesClient(credentials=gcp_creds)
@@ -534,11 +839,122 @@ jobs:
             client.set_iam_policy(
                 request=iam_policy_pb2.SetIamPolicyRequest(resource=resource, policy=policy)
             )
-        except Exception:
             print(
-                "  [GCP] Warning: could not set unauthenticated IAM policy. "
-                "Set it manually in Cloud Console if needed."
+                f"  [GCP] IAM: allUsers invoker binding set via SDK.\n"
+                f"  [GCP] Waiting {_IAM_PROPAGATION_SLEEP_S}s for IAM propagation..."
             )
+            time.sleep(_IAM_PROPAGATION_SLEEP_S)
+        except Exception as exc:
+            print(
+                f"  [GCP] Warning: could not set unauthenticated IAM policy: {exc}\n"
+                "  The service will require authentication. Set it manually:\n"
+                f"  gcloud run services add-iam-policy-binding {service_name} \\\n"
+                f"    --region={region} --member=allUsers --role=roles/run.invoker "
+                f"--project={project_id}"
+            )
+
+    def _ensure_apis_enabled(self, project_id: str, gcp_creds: Any) -> None:
+        """
+        Enable required GCP APIs via the Service Usage API before deployment.
+
+        If the service account lacks serviceusage.services.enable permission,
+        falls back to printing console URLs for manual enablement and continues
+        (individual API calls will fail with clearer messages if still disabled).
+        """
+        try:
+            from googleapiclient.discovery import build as gapi_build
+            from googleapiclient.errors import HttpError as GApiHttpError
+        except ImportError:
+            return
+
+        try:
+            svc = gapi_build("serviceusage", "v1", credentials=gcp_creds)
+        except Exception:
+            return
+
+        # Check which APIs are not yet enabled
+        disabled: list[str] = []
+        for api in _REQUIRED_APIS:
+            try:
+                state = (
+                    svc.services()
+                    .get(name=f"projects/{project_id}/services/{api}")
+                    .execute()
+                    .get("state", "")
+                )
+                if state != "ENABLED":
+                    disabled.append(api)
+            except Exception:
+                disabled.append(api)
+
+        if not disabled:
+            return
+
+        print(f"  [GCP] Enabling required APIs: {', '.join(disabled)}...")
+        try:
+            op = (
+                svc.services()
+                .batchEnable(
+                    parent=f"projects/{project_id}",
+                    body={"serviceIds": disabled},
+                )
+                .execute()
+            )
+            # Poll until the enablement operation completes (usually <30s)
+            op_name = op.get("name", "")
+            if op_name:
+                for _ in range(30):
+                    time.sleep(3)
+                    status = svc.operations().get(name=op_name).execute()
+                    if status.get("done"):
+                        break
+            print("  [GCP] APIs enabled. Waiting a moment for propagation...")
+            time.sleep(5)
+        except GApiHttpError as exc:
+            if exc.resp.status in (403, 401):
+                print(
+                    "\n  [GCP] Cannot auto-enable APIs — service account lacks "
+                    "serviceusage.services.enable permission.\n"
+                    "  Enable these APIs manually in the GCP Console, then re-run:\n"
+                )
+                for api in disabled:
+                    name = api.split(".")[0]
+                    print(
+                        f"    https://console.cloud.google.com/apis/library/"
+                        f"{name}?project={project_id}"
+                    )
+                print()
+            # Non-fatal: let individual API calls produce their own errors
+
+    def _api_not_enabled_hint(self, exc: Any, project_id: str) -> str | None:
+        """
+        If exc is a 403 accessNotConfigured HttpError, return a formatted hint
+        string with the console enable URL. Returns None for other errors.
+        """
+        try:
+            if exc.resp.status != 403:
+                return None
+            details = json.loads(exc.content.decode()).get("error", {}).get("errors", [])
+            for d in details:
+                if d.get("reason") == "accessNotConfigured":
+                    # Extract API name from the extended help URL if present
+                    help_url = d.get("extendedHelp", "")
+                    api_match = re.search(r"apis/api/([^/]+)/", d.get("message", ""))
+                    api_id = api_match.group(1) if api_match else ""
+                    if api_id:
+                        return (
+                            f"  GCP API not enabled: {api_id}\n"
+                            f"  Enable it at: https://console.cloud.google.com/apis/library/"
+                            f"{api_id.split('.')[0]}?project={project_id}\n"
+                            "  Then re-run the deployment."
+                        )
+                    return (
+                        f"  GCP API not enabled. Enable it and retry.\n"
+                        f"  {help_url}"
+                    )
+        except Exception:
+            pass
+        return None
 
     def _read_project_from_sa(self, sa_path: str) -> str:
         try:
@@ -546,12 +962,24 @@ jobs:
         except Exception:
             return ""
 
+    def _encode_sa_file(self, sa_path: str) -> str:
+        """Return the base64-encoded contents of a service account JSON file."""
+        try:
+            return base64.b64encode(Path(sa_path).read_bytes()).decode()
+        except Exception:
+            return ""
+
     def _normalise_labels(self, tags: dict[str, str]) -> dict[str, str]:
-        """GCP label keys/values must be lowercase [a-z0-9_-]* ≤63 chars."""
+        """GCP label keys/values must be lowercase [a-z][a-z0-9_-]* ≤63 chars."""
         result: dict[str, str] = {}
         for k, v in tags.items():
             key = re.sub(r"[^a-z0-9_-]", "-", k.lower())[:63]
             val = re.sub(r"[^a-z0-9_-]", "-", v.lower())[:63]
+            # Keys and values must start with a lowercase letter
+            if key and not key[0].isalpha():
+                key = "x" + key[:62]
+            if val and not val[0].isalpha():
+                val = "x" + val[:62]
             result[key] = val
         return result
 
