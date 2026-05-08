@@ -776,10 +776,53 @@ jobs:
     def _allow_unauthenticated(
         self, gcp_creds: Any, project_id: str, region: str, service_name: str
     ) -> None:
+        """
+        Grant allUsers the roles/run.invoker binding so the Cloud Run service
+        accepts unauthenticated requests.
+
+        Uses the gcloud CLI as the primary path — it is synchronous, well-tested,
+        and handles the IAM merge correctly. Falls back to the Python SDK if
+        gcloud is not available. A 15-second sleep follows success to allow the
+        IAM change to propagate to all GCP edge nodes before tests run.
+
+        Without this wait, Cloud Run may still validate Bearer tokens as Google
+        identity tokens on some edge nodes (returning HTML 401) even though
+        allUsers is nominally set.
+        """
+        _IAM_PROPAGATION_SLEEP_S = 15
+
+        # ── Primary: gcloud CLI (synchronous, reliable) ────────────────────────
+        gcloud_result = subprocess.run(
+            [
+                "gcloud", "run", "services", "add-iam-policy-binding", service_name,
+                f"--region={region}",
+                "--member=allUsers",
+                "--role=roles/run.invoker",
+                f"--project={project_id}",
+                "--quiet",
+            ],
+            capture_output=True,
+        )
+        if gcloud_result.returncode == 0:
+            print(
+                f"  [GCP] IAM: allUsers invoker binding set via gcloud.\n"
+                f"  [GCP] Waiting {_IAM_PROPAGATION_SLEEP_S}s for IAM propagation..."
+            )
+            time.sleep(_IAM_PROPAGATION_SLEEP_S)
+            return
+
+        # ── Fallback: Python SDK ───────────────────────────────────────────────
         try:
             from google.cloud import run_v2
             from google.iam.v1 import iam_policy_pb2, policy_pb2
         except ImportError:
+            print(
+                "  [GCP] Warning: could not set unauthenticated IAM policy.\n"
+                "  Set it manually:\n"
+                f"  gcloud run services add-iam-policy-binding {service_name} \\\n"
+                f"    --region={region} --member=allUsers --role=roles/run.invoker "
+                f"--project={project_id}"
+            )
             return
 
         client = run_v2.ServicesClient(credentials=gcp_creds)
@@ -791,12 +834,18 @@ jobs:
             client.set_iam_policy(
                 request=iam_policy_pb2.SetIamPolicyRequest(resource=resource, policy=policy)
             )
+            print(
+                f"  [GCP] IAM: allUsers invoker binding set via SDK.\n"
+                f"  [GCP] Waiting {_IAM_PROPAGATION_SLEEP_S}s for IAM propagation..."
+            )
+            time.sleep(_IAM_PROPAGATION_SLEEP_S)
         except Exception as exc:
             print(
                 f"  [GCP] Warning: could not set unauthenticated IAM policy: {exc}\n"
-                "  The service may require authentication. Set it manually:\n"
+                "  The service will require authentication. Set it manually:\n"
                 f"  gcloud run services add-iam-policy-binding {service_name} \\\n"
-                f"    --region={region} --member=allUsers --role=roles/run.invoker"
+                f"    --region={region} --member=allUsers --role=roles/run.invoker "
+                f"--project={project_id}"
             )
 
     def _ensure_apis_enabled(self, project_id: str, gcp_creds: Any) -> None:
