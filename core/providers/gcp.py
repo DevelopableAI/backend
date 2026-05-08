@@ -716,7 +716,13 @@ jobs:
         parent = f"projects/{project_id}/locations/{region}"
         service_path = f"{parent}/services/{service_name}"
 
-        env_list = [run_v2.EnvVar(name=k, value=v) for k, v in env_vars.items()]
+        # Cloud Run sets these automatically; passing them causes a 400.
+        _RESERVED = {"PORT", "K_SERVICE", "K_REVISION", "K_CONFIGURATION"}
+        env_list = [
+            run_v2.EnvVar(name=k, value=v)
+            for k, v in env_vars.items()
+            if k not in _RESERVED
+        ]
         container = run_v2.Container(
             image=image_uri,
             ports=[run_v2.ContainerPort(container_port=_CONTAINER_PORT)],
