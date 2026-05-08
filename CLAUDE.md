@@ -2,11 +2,35 @@
 
 ## Project Vision
 
-**Developable** is an **AI-native backend engineering platform** that generates and evolves production-ready systems with built-in invariants: transactional safety, observability, security by design, and comprehensive test coverage—not just endpoints.
+### The Problem
 
-**Input:** Creators provide a domain model (Prisma schema with annotations for business rules, auth boundaries, and data sensitivity) rather than natural language.
+When developers give an LLM requirements — through a CLAUDE.md, an AGENTS.md, a system prompt, or plain English — the model decides for itself how to structure the code, which security patterns to apply, and which OOP conventions to follow. That is the wrong default. The LLM will produce something that works in isolation but differs in file structure, naming, auth handling, and ownership logic every single time. There is no guarantee of consistency, security, or correctness across a codebase that grows feature by feature under AI assistance.
 
-**Output:** A complete, production-hardened backend service with:
+This is not a prompt quality problem. It is a missing standard problem.
+
+### The Solution
+
+**Developable** establishes that standard. It is an opinionated, battle-tested template for building Express + TypeScript REST APIs that encodes exact answers to the questions that LLMs otherwise guess at:
+
+- **File structure** — routes → controllers → repositories; one file per concern, consistent naming
+- **Security invariants** — non-negotiable rules baked into every generated file (see the Security Invariants section)
+- **OOP patterns** — how controllers delegate, how repositories own data access, how errors propagate
+- **Auth and ownership** — how JWT is verified, how ownership is checked, how sensitive fields are handled
+- **Validation** — Zod schemas at the controller boundary, server-side FK injection, no client-supplied owner IDs
+
+These decisions are encoded in the Jinja2 templates in `templates/express/`. They are not suggestions. They are the template, and the template is the product.
+
+### The Long-Term Goal: A Claude Code Skill
+
+Once this template is stable and proven, it ships as a **publishable Claude Code skill** — a slash command that any developer installs once and uses in any project. When Claude Code (or any agentic system) works on a backend codebase, it does not decide how to structure or secure the code. It follows the Developable template.
+
+This changes AI-assisted backend development from "hope the LLM makes good decisions" to "the decisions are already made; the LLM executes them."
+
+The current Python CLI is how we prove and harden the template. Every generation run, test, and deployment failure is a signal that refines it. When the template is stable, the skill packages it so any developer can get the same guarantees — not just developers who run the CLI.
+
+### Current Output
+
+Given a Prisma schema with annotations, the platform generates a complete, production-hardened backend with:
 
 1. **Service Architecture** — Opinionated, modular design with clear layering (routes → controllers → repositories), ready for hexagonal or event-driven evolution
 2. **Transactional Guarantees** — Idempotent operations, atomic Prisma transactions, safe compensation patterns for multi-step writes
@@ -471,6 +495,60 @@ Key variables available in each template category:
 3. Create `agents/<framework>_developer.py` with a new Developer variant
 4. Add a new Planner class in `core/` that dispatches to the new framework's templates
 5. Update `main.py` to accept a `--framework` flag and instantiate the right agent
+
+---
+
+## Planned Migration: Claude Code Skill
+
+The next major architectural direction is to repackage the Developable template as a **publishable Claude Code skill** — a slash command (e.g. `/developable`) that users invoke directly inside Claude Code.
+
+### Why This Matters
+
+The template — file structure, security invariants, OOP patterns, auth model — is what has value. The Python CLI is the vehicle used to prove and harden it. The Claude Code skill is the vehicle that makes it accessible.
+
+When the skill ships, a developer working on any backend project installs it once. Every time Claude Code writes or modifies a file in that project, it follows the Developable template. The LLM is no longer guessing at structure or security — it has an authoritative guide that was proven across multiple real schemas and deployments.
+
+This is the shift: from "generate a project" to "enforce a standard across the lifetime of a project."
+
+### Practical Changes
+
+- **Zero install friction** — no Python runtime, no `pip install`, no `ANTHROPIC_API_KEY` setup; Claude Code supplies the model.
+- **Native tool use** — Claude Code's built-in `Write`/`Edit`/`Bash` tools replace the `Assembler` + `LLMGenerator` layer; Claude writes files directly following the template.
+- **Ongoing enforcement** — the skill is not just for initial generation; it guides every subsequent feature addition, ensuring new code conforms to the same invariants as the original output.
+- **Publishable** — skills ship as a single markdown file checked into a public repo; discovery and install are one command.
+
+### What Changes
+
+| Current (Python CLI) | Future (Claude Code Skill) |
+|---|---|
+| `python main.py schema.prisma --out ./my-api` | `/developable` in Claude Code |
+| `pip install developable` | Claude Code skill install |
+| `LLMGenerator` fills `LLM_SECTION` markers via Anthropic SDK | Claude Code writes files directly using its native tools |
+| `Assembler` orchestrates template rendering + LLM | Skill prompt instructs Claude to follow the same generation invariants |
+| `VersionControl` agent pushes to GitHub via REST API | Claude Code's GitHub MCP or `gh` CLI |
+| Python 3.11 + Node 18 required on user machine | Claude Code only |
+
+### What Stays the Same
+
+- The **Jinja2 templates** in `templates/express/` remain the source of truth for generated file shapes; the skill prompt instructs Claude to follow them.
+- The **schema annotations** (`@auth_entity`, `@llm sensitive`, `@llm hints`) remain unchanged — the skill parses the same Prisma schema format.
+- The **security invariants** (ID validation, owner FK injection, auth middleware, sensitive field hashing) are encoded into the skill prompt and enforced identically.
+- The **generation pipeline** logic (parse → plan → assemble) is preserved as reasoning instructions in the skill rather than Python code.
+
+### Migration Phases
+
+1. **Skill scaffold** — Create `.claude/commands/developable.md` as the skill entry point; encode the generation pipeline, security invariants, and schema annotation rules as prompt instructions.
+2. **Template encoding** — Convert Jinja2 templates to inline examples or referenced files the skill uses as structural guides when writing output.
+3. **Skill publishing** — Package the repo for Claude Code skill distribution (skill manifest, README quickstart for `/developable`, test schema examples).
+4. **Deprecate Python CLI** — Once the skill reaches feature parity, `main.py` and the Python agent layer become optional legacy; the skill is the primary interface.
+
+### Skill File Location
+
+```
+.claude/
+└── commands/
+    └── developable.md    ← the publishable skill definition
+```
 
 ---
 

@@ -28,37 +28,38 @@ def run(ctx: TestContext) -> None:
 
     # --- Valid registrations ---
 
-/* LLM_SECTION_START */
-# Generate 3 valid registration calls for entity "{{ auth_entity.name }}".
-# Endpoint: POST /auth/register
-# Required fields (besides sensitive/login):
+{% set _passwords = ["SecurePass1!", "AnotherPass9#", "TempPass3$"] %}
+{% for _i in range(1, 4) %}
+    resp = ctx.req("POST", "/auth/register", body={
+{% if login_field and login_field.name == "email" %}
+        "{{ login_field.name }}": email{{ _i }},
+{% elif login_field %}
+        "{{ login_field.name }}": "user{{ _i }}@example.com",
+{% endif %}
+{% for sf in sensitive_fields %}
+        "{{ sf.name }}": "{{ _passwords[_i - 1] }}",
+{% endfor %}
 {% for f in required_scalar_fields %}
-#   {{ f.name }}: {{ f.ts_type }}
+        "{{ f.name }}": {{ seed_values[_i - 1][f.name] | topython }},
 {% endfor %}
+{% if _i == 2 %}
 {% for f in optional_scalar_fields %}
-#   {{ f.name }}: {{ f.ts_type }} (optional)
+        "{{ f.name }}": {{ seed_values[_i - 1][f.name] | topython }},
 {% endfor %}
-{% if login_field %}
-# Login field: {{ login_field.name }} ({{ login_field.ts_type }}) — use email1/email2/email3 if email, else generate unique values
 {% endif %}
+    })
+    if ctx.assert_status(resp, 201, "Seed: Register {{ auth_entity.name_lower }}{{ _i }}"):
+        data = ctx.safe_json(resp)
+        ctx.state["{{ auth_entity.name_lower }}{{ _i }}_token"] = data.get("token", "")
+        ctx.state["{{ auth_entity.name_lower }}{{ _i }}_id"] = data.get("{{ auth_entity.name_lower }}", {}).get("id")
 {% for sf in sensitive_fields %}
-# Sensitive field: {{ sf.name }} — use a strong password like "SecurePass1!" for user1, "AnotherPass9#" for user2
+        if not ctx.no_sensitive_field_in(data, "{{ sf.name }}", "register response"):
+            ctx.warn("{{ sf.name }} found in register response")
+        _jwt = ctx.decode_jwt(ctx.state["{{ auth_entity.name_lower }}{{ _i }}_token"])
+        if not ctx.no_sensitive_field_in(_jwt, "{{ sf.name }}", "JWT payload"):
+            ctx.warn("{{ sf.name }} found in JWT payload")
 {% endfor %}
-#
-# For user1 registration:
-#   - Assert: resp.status_code == 201, response has "token" and "{{ auth_entity.name_lower }}" fields
-#   - Store: ctx.state["{{ auth_entity.name_lower }}1_token"] = data.get("token", "")
-#   - Store: ctx.state["{{ auth_entity.name_lower }}1_id"] = data.get("{{ auth_entity.name_lower }}", {}).get("id")
-{% for sf in sensitive_fields %}
-#   - Check: ctx.no_sensitive_field_in(data, "{{ sf.name }}", "register response") — pass "{{ sf.name }}" as a STRING, call ctx.warn() if it returns False
-#   - Check JWT: payload = ctx.decode_jwt(ctx.state["{{ auth_entity.name_lower }}1_token"]); ctx.no_sensitive_field_in(payload, "{{ sf.name }}", "JWT payload") — call ctx.warn() if False
 {% endfor %}
-# For user2: store token and id similarly
-# For user3: store token and id similarly (this user is deleted in cleanup)
-{% if optional_scalar_fields %}
-# For one registration (user3 or a 4th call): include optional fields and verify they are returned
-{% endif %}
-/* LLM_SECTION_END */
 
     # --- Duplicate login field → 409 ---
 {% if login_field and login_field.name == "email" %}

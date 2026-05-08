@@ -7,7 +7,26 @@
 ╚═════╝ ╚══════╝  ╚═══╝  ╚══════╝╚══════╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚═════╝ ╚══════╝╚══════╝
 ```
 
-> **Point it at a `schema.prisma`. Get a complete, production-hardened backend — tested, containerised, and deployed.**
+A stable, opinionated template for Express + TypeScript backends — and the tooling that makes any AI coding agent follow it.
+
+---
+
+## The Problem
+
+When you hand an LLM your requirements and ask it to build a backend, it decides for itself how to structure the code, which security patterns to apply, and what OOP conventions to follow. The result works in isolation, but every session, every developer, and every project produces something different. There is no guarantee that ownership is enforced, that sensitive fields are handled correctly, or that the auth middleware is actually wired on the right routes.
+
+This is not a prompt quality problem. It is a missing standard problem.
+
+## What Developable Does
+
+Developable is a **proven backend template** — a specific, non-negotiable answer to how an Express + TypeScript REST API should be built:
+
+- Exact file structure: routes → controllers → repositories, one file per concern
+- Security invariants that hold unconditionally: ID validation, server-side FK injection, auth middleware on all write routes, sensitive-field hashing, ownership checks before update/delete
+- Consistent OOP patterns: controllers delegate, repositories own data access, errors propagate through a typed hierarchy
+- Validated against multiple real schemas and deployed services
+
+The CLI in this repo generates that template from a Prisma schema. The generated output is not a starting point you clean up — it is the standard, applied to your domain.
 
 ---
 
@@ -443,20 +462,27 @@ docker-compose up
 
 ---
 
+## The Long-Term Vision: A Claude Code Skill
+
+The CLI proves the template. The **Claude Code skill** delivers it.
+
+Once the template is stable, Developable ships as a publishable `/developable` slash command that any developer installs in Claude Code. The skill packages the entire standard — file structure, security invariants, OOP patterns, validation rules — as instructions that Claude Code follows when writing or modifying any file in the project.
+
+This changes the dynamic from "hope the LLM makes good decisions" to "the decisions are made; the LLM executes them." Every feature Claude Code adds to your backend conforms to the same invariants as the original generated output, across the full lifetime of the project.
+
+```
+# Future usage (inside Claude Code)
+/developable path/to/schema.prisma
+```
+
+No Python runtime. No API key setup. No install beyond the skill itself.
+
+---
+
 ## Roadmap
 
-| Status | Item |
-|--------|------|
-| Done | Express + TypeScript API generation |
-| Done | AI-generated Zod validators |
-| Done | Python integration test suite (100+ cases per project) |
-| Done | Security invariants: ID validation, ownership, sensitive field hashing |
-| Done | Version Control agent — GitHub push + CI |
-| Done | Deployment agent — AWS ECS, Heroku, GCP Cloud Run |
-| Done | Prompt caching + model routing for cost reduction |
-| Planned | Filter and sort on list endpoints |
-| Planned | UUID / CUID primary key support |
-| Planned | Rate limiting and audit logging in generated output |
-| Planned | Refinement loop — request changes in plain English, patch the relevant files |
-| Planned | FastAPI target |
-| Planned | Cron job and batch worker artifact types |
+- [ ] **Claude Code skill** — package the proven template as a publishable `/developable` slash command
+- [ ] Refinement loop — request changes in plain English, developable patches the relevant files
+- [ ] Filter and sort on list endpoints
+- [ ] UUID / cuid ID support
+- [ ] Fastify target

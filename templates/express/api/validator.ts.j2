@@ -14,6 +14,11 @@ import { {{ entity.name }}CreateInput, {{ entity.name }}UpdateInput } from '../t
 {% for constraint in llm_constraints %}
 // BUSINESS RULE: {{ constraint }}
 {% endfor %}
+{% for field in scalar_fields %}
+{% if field.default %}
+// FIELD DEFAULT: {{ field.name }} has @default({{ field.default }}) — MUST be .optional() in createSchema
+{% endif %}
+{% endfor %}
 const {{ entity.name_lower }}CreateSchema = z.object({});
 {% if parent_fk_fields %}
 const {{ entity.name_lower }}CreateNestedSchema = z.object({});

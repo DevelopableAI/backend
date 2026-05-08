@@ -16,6 +16,7 @@ class TemplateGenerator(BaseGenerator):
             lstrip_blocks=True,
             keep_trailing_newline=True,
         )
+        self.env.filters["topython"] = repr
 
     def render(self, template_name: str, context: dict[str, Any]) -> str:
         template = self.env.get_template(template_name)

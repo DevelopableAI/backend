@@ -65,13 +65,20 @@ def collect_github_config(args: argparse.Namespace, spec: dict) -> dict:
     if not repo:
         repo = input(f"  Repository name [{default_repo}]: ").strip() or default_repo
 
+    project_name = getattr(args, "project_name", None) or ""
+    if not project_name:
+        project_name = input("  Project name (used in repo description): ").strip()
+        if not project_name:
+            print("Error: project name is required for the repo description.", file=sys.stderr)
+            sys.exit(1)
+
     if getattr(args, "private", False):
         private = True
     else:
         vis = input("  Visibility — public or private? [public]: ").strip().lower()
         private = vis == "private"
 
-    return {"token": token, "user": user, "repo": repo, "private": private}
+    return {"token": token, "user": user, "repo": repo, "private": private, "project_name": project_name}
 
 
 def main():
@@ -112,6 +119,10 @@ def main():
     parser.add_argument(
         "--github-repo", default=None, metavar="NAME",
         help="Repository name to create (default: <first-entity>-api)",
+    )
+    parser.add_argument(
+        "--project-name", default=None, metavar="NAME",
+        help="Project name used in the GitHub repo description (e.g. 'My Blog')",
     )
     parser.add_argument(
         "--private", action="store_true",
@@ -184,10 +195,12 @@ def main():
     print("  npm run dev")
 
     # ── Tester agent: generate the integration test suite ─────────────────────
-    # When --github is used without --tests-out, put tests inside the output
-    # directory so they are included in the git repository.
+    # When --github is used, tests MUST live inside out_dir/tests so that
+    # `git add .` includes them and CI's hashFiles('tests/run_all.py') finds
+    # them. An explicit --tests-out outside out_dir is silently ignored in
+    # favour of out_dir/tests when publishing to GitHub.
     tests_out = args.tests_out
-    if args.github and not tests_out:
+    if args.github:
         tests_out = str(out_dir / "tests")
 
     if tests_out:
@@ -213,6 +226,7 @@ def main():
             github_user=gh["user"],
             repo_name=gh["repo"],
             private=gh["private"],
+            project_name=gh["project_name"],
         )
         repo_url = vc.publish(spec, api_plan)
         print(f"\nRepository published: {repo_url}")
@@ -230,6 +244,7 @@ def main():
         deployer = Deployment(
             out_dir=out_dir,
             provider=args.deploy_to,
+            tests_dir=Path(tests_out) if tests_out else None,
             aws_region=args.aws_region,
             heroku_app=args.heroku_app,
             gcp_project=args.gcp_project,
