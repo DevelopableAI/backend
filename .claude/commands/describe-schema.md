@@ -168,6 +168,17 @@ Confirm: "Schema saved to `schema.prisma`. Run `/developable schema.prisma` when
 
 ---
 
+## Worked Example Files
+
+Two complete reference schemas are available in the repository root:
+
+- **`test_schema_ecommerce.prisma`** + **`test_schema_ecommerce.rules.yaml`** — e-commerce app (User → Order → OrderItem, standalone Product)
+- **`test_schema_saas.prisma`** — SaaS hierarchy (User → Organization → Project → Task with optional assignee)
+
+Read these files if you need a fully concrete example to guide schema generation.
+
+---
+
 ## Reference Patterns
 
 ### Pattern 1 — Auth + owned content (Blog)
