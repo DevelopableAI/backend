@@ -43,3 +43,31 @@ export function buildPaginatedResponse<T>(
     },
   };
 }
+
+export interface ListQueryParams extends PaginationParams {
+  sort?: { field: string; order: 'asc' | 'desc' };
+  filters: Record<string, string>;
+}
+
+export function parseListQuery(
+  req: Request,
+  allowedFilterFields: readonly string[],
+  allowedSortFields: readonly string[],
+): ListQueryParams {
+  const pagination = parsePagination(req);
+
+  let sort: { field: string; order: 'asc' | 'desc' } | undefined;
+  const sortBy = typeof req.query.sortBy === 'string' ? req.query.sortBy : undefined;
+  if (sortBy && allowedSortFields.includes(sortBy)) {
+    const sortOrder = req.query.sortOrder === 'desc' ? 'desc' : 'asc';
+    sort = { field: sortBy, order: sortOrder };
+  }
+
+  const filters: Record<string, string> = {};
+  for (const field of allowedFilterFields) {
+    const val = req.query[field];
+    if (typeof val === 'string') filters[field] = val;
+  }
+
+  return { ...pagination, sort, filters };
+}
