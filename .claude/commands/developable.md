@@ -31,6 +31,60 @@ Output progress at each phase boundary and after each file write. This text appe
 
 ---
 
+## Phase 0 — Collect Configuration (ask before doing anything else)
+
+Before reading any file or generating anything, ask the user for the following. Present all questions together in a single message — do not drip-feed them one by one.
+
+```
+Before I generate your API, I need a few details:
+
+1. Project name  (e.g. "My Blog", "Task Manager")
+   → Used in package.json, CLAUDE.md, docker-compose, and the GitHub repo description.
+   → Default: derived from the first entity name in the schema (e.g. "User" → "user-api")
+
+2. Output directory  (default: ./output)
+
+3. Push to GitHub?  [yes / no]
+   If yes:
+     a. GitHub username or org
+     b. Repository name  (default: {project-name}-api)
+     c. Public or private?  [public / private]
+
+4. Deploy to cloud?  [none / aws / gcp / heroku]
+   If aws:
+     - AWS region  (default: us-east-1)
+   If gcp:
+     - GCP project ID
+     - GCP region  (default: us-central1)
+   If heroku:
+     - Heroku app name  (default: {project-name})
+```
+
+**Store the answers as variables used throughout all later phases:**
+- `project_name` — the human-readable name given by the user (e.g. "My Blog")
+- `project_slug` — lowercase, hyphens for spaces (e.g. "my-blog"); used in package.json `name`, docker-compose DB name, CI job names
+- `out_dir` — output path
+- `github_enabled` — true/false
+- `github_user`, `github_repo`, `github_private` — if GitHub enabled
+- `deploy_provider` — "none" | "aws" | "gcp" | "heroku"
+- `deploy_config` — provider-specific values collected above
+
+If the user passes arguments on invocation (e.g. `/developable prisma/schema.prisma --out ./my-api`), use those values directly and only ask about what was not supplied.
+
+After collecting all inputs, output:
+```
+━━━ Configuration ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Project : {project_name}
+  Output  : {out_dir}
+  GitHub  : {yes → github_user/github_repo (public|private) | no}
+  Deploy  : {provider | none}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+Then proceed to Phase 1.
+
+---
+
 ## Phase 1 — Parse the Schema
 
 Read the `schema.prisma` file. Extract:
@@ -1268,13 +1322,24 @@ dist/
 prisma/migrations/
 ```
 
-### Optional — Push to GitHub
+### GitHub — Push to Remote (if `github_enabled` is true)
 
-If the user asks for GitHub setup, run:
+Run these commands in `out_dir`:
 ```bash
-gh repo create {project-name} --private --source=. --remote=origin
 git init && git add . && git commit -m "Initial Developable-generated API"
+gh repo create {github_user}/{github_repo} \
+  --{public|private} \
+  --source=. --remote=origin \
+  --description="{project_name} API by Developable (developablecode.app)"
 git push -u origin main
+```
+
+Replace `--{public|private}` with `--public` or `--private` based on `github_private`.
+
+After a successful push, print:
+```
+  ✓ Repository live: https://github.com/{github_user}/{github_repo}
+  ✓ GitHub Actions CI triggered — check the Actions tab
 ```
 
 ---
@@ -1483,24 +1548,47 @@ Substitute `{project-name}`, `{auth_entity_lower}`, `{owner_fk_field}`, `{Name}`
 
 After all phases are complete:
 1. Copy `schema.prisma` to `prisma/schema.prisma` in the output directory
-2. Print the summary:
+2. If `github_enabled` is true, run the GitHub push block from Phase 6
+3. Print the summary, adapting the "Next steps" section based on what was enabled:
 
 ```
+━━━ Done ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✓ Generated {N} API files across {Y} entities
 ✓ Generated {M} test modules in tests/
 ✓ Generated Dockerfile, docker-compose.yml, .github/workflows/ci.yml
 ✓ Generated CLAUDE.md with Developable standards
+{if github_enabled: ✓ Repository live: https://github.com/{github_user}/{github_repo}}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Next steps:
-  cd <output>
+  cd {out_dir}
   npm install
   cp .env.example .env   # fill in DATABASE_URL and JWT_SECRET
   npx prisma migrate dev --name init
-  npm run dev
+  npm run dev             # http://localhost:3000
 
 Run tests (requires running server):
   python tests/run_all.py http://localhost:3000
 
-Deploy locally:
-  docker compose up
+{if deploy_provider == "aws":
+  Deploy to AWS (ECS Fargate):
+    See .github/workflows/ci.yml for automated deployment on push to main.
+    Ensure AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION are set as GitHub secrets.
+}
+{if deploy_provider == "gcp":
+  Deploy to GCP (Cloud Run):
+    See .github/workflows/ci.yml for automated deployment on push to main.
+    Ensure GCP_PROJECT_ID, GCP_SA_KEY are set as GitHub secrets.
+}
+{if deploy_provider == "heroku":
+  Deploy to Heroku:
+    heroku login
+    heroku addons:create heroku-postgresql:essential-0 --app {heroku_app}
+    heroku config:set DATABASE_URL=$(heroku config:get DATABASE_URL --app {heroku_app}) --app {heroku_app}
+    git push heroku main
+}
+{if deploy_provider == "none":
+  Deploy locally with Docker:
+    docker compose up
+}
 ```
