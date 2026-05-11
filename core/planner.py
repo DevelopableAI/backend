@@ -191,6 +191,8 @@ class Planner:
                     "owner_fk_field": owner_fk_field,
                     "nested_routes": nested_routes,
                     "auth_entity_name": auth_entity_name,
+                    "filterable_fields": filterable_fields,
+                    "sortable_fields": sortable_fields,
                 },
                 "needs_llm": False,
             },

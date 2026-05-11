@@ -117,6 +117,27 @@ class TestPlanner:
             })
             num += 1
 
+            # 03b Auth entity list_query (filter + sort)
+            auth_filterable = auth_rctx.get("filterable_fields", [])
+            auth_sortable = auth_rctx.get("sortable_fields", [])
+            if auth_filterable or auth_sortable:
+                modules.append({
+                    "path": f"test_{num:02d}_{auth_entity['name_plural']}_list_query.py",
+                    "template": "tests/test_list_query.py.j2",
+                    "context": {
+                        "section_num": num,
+                        "entity": auth_entity,
+                        "auth_entity": auth_entity,
+                        "auth_entity_name": auth_entity_name,
+                        "filterable_fields": auth_filterable,
+                        "sortable_fields": auth_sortable,
+                        "sensitive_fields": sensitive_fields,
+                        "nested_routes": auth_rctx.get("nested_routes", []),
+                    },
+                    "needs_llm": False,
+                })
+                num += 1
+
             # 04 Auth entity WRITE
             allowed_routes = auth_rctx.get("routes", [])
             modules.append({
@@ -182,6 +203,28 @@ class TestPlanner:
                 "needs_llm": False,
             })
             num += 1
+
+            # list_query: filter + sort tests (only when entity has filterable or sortable fields)
+            filterable_fields = rctx.get("filterable_fields", [])
+            sortable_fields = rctx.get("sortable_fields", [])
+            sensitive_fields = [f for f in entity["fields"] if f.get("is_sensitive")]
+            if filterable_fields or sortable_fields:
+                modules.append({
+                    "path": f"test_{num:02d}_{entity['name_plural']}_list_query.py",
+                    "template": "tests/test_list_query.py.j2",
+                    "context": {
+                        "section_num": num,
+                        "entity": entity,
+                        "auth_entity": auth_entity,
+                        "auth_entity_name": auth_entity_name,
+                        "filterable_fields": filterable_fields,
+                        "sortable_fields": sortable_fields,
+                        "sensitive_fields": sensitive_fields,
+                        "nested_routes": nested_routes,
+                    },
+                    "needs_llm": False,
+                })
+                num += 1
 
             # write
             modules.append({
