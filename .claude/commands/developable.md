@@ -81,6 +81,158 @@ After collecting all inputs, output:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
+Then proceed to Phase 0b.
+
+---
+
+## Phase 0b — Credential Pre-flight
+
+Run these checks **before generating any files**. Use the `Bash` tool for each check. If any required credential is missing, stop and give the user exact setup instructions — do not proceed until the user confirms the credential is in place.
+
+Only check credentials that are actually needed based on the Phase 0 answers.
+
+---
+
+### GitHub (check if `github_enabled` is true)
+
+```bash
+gh auth status
+```
+
+**If the command succeeds:** print `  ✓ GitHub: authenticated` and continue.
+
+**If it fails or `gh` is not installed:**
+```
+  ✗ GitHub: not authenticated
+
+  You need to authenticate the GitHub CLI before the skill can create your repository.
+  Run one of these:
+
+  Option A — Interactive login (recommended):
+    gh auth login
+    (follow the prompts; choose GitHub.com → HTTPS → Login with a web browser)
+
+  Option B — Personal Access Token:
+    export GITHUB_TOKEN=ghp_your_token_here
+    gh auth login --with-token <<< "$GITHUB_TOKEN"
+
+  To create a PAT: GitHub → Settings → Developer settings →
+  Personal access tokens → Tokens (classic) → Generate new token
+  Required scopes: repo, workflow, read:org
+
+  Reply "done" once authenticated and I will continue.
+```
+Wait for the user to reply before proceeding.
+
+---
+
+### AWS (check if `deploy_provider == "aws"`)
+
+```bash
+aws sts get-caller-identity
+```
+
+**If it succeeds:** print `  ✓ AWS: authenticated as {Account}/{UserId}` and continue.
+
+**If it fails:**
+```
+  ✗ AWS: no credentials found
+
+  You need AWS credentials configured before deployment can be set up.
+  Run one of these:
+
+  Option A — AWS CLI configuration (recommended for local use):
+    aws configure
+    (prompts for Access Key ID, Secret Access Key, region, output format)
+
+  Option B — Environment variables (for CI or temporary use):
+    export AWS_ACCESS_KEY_ID=AKIA...
+    export AWS_SECRET_ACCESS_KEY=wJalr...
+    export AWS_DEFAULT_REGION=us-east-1
+
+  To create access keys: AWS Console → IAM → Users → {your user} →
+  Security credentials → Create access key → Application running outside AWS
+
+  Minimum IAM permissions required:
+    - AmazonECS_FullAccess
+    - AmazonEC2ContainerRegistryFullAccess
+    - AmazonRDSFullAccess
+    - IAMLimitedAccess (for task execution role)
+
+  Reply "done" once credentials are configured and I will continue.
+```
+Wait for the user to reply before proceeding.
+
+---
+
+### GCP (check if `deploy_provider == "gcp"`)
+
+```bash
+gcloud auth list --filter=status:ACTIVE --format="value(account)"
+```
+
+**If it returns an account:** print `  ✓ GCP: authenticated as {account}` and continue.
+
+**If it returns nothing or fails:**
+```
+  ✗ GCP: not authenticated
+
+  You need to authenticate the Google Cloud CLI before deployment can be set up.
+
+  Option A — User account (recommended for local use):
+    gcloud auth login
+    gcloud config set project {gcp_project_id}
+
+  Option B — Service account (for CI):
+    export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
+
+  To create a service account key: GCP Console → IAM & Admin →
+  Service Accounts → Create → grant roles:
+    - Cloud Run Admin
+    - Cloud SQL Admin
+    - Artifact Registry Administrator
+    - Service Account User
+
+  Reply "done" once authenticated and I will continue.
+```
+Wait for the user to reply before proceeding.
+
+---
+
+### Heroku (check if `deploy_provider == "heroku"`)
+
+```bash
+heroku auth:whoami
+```
+
+**If it returns an email:** print `  ✓ Heroku: authenticated as {email}` and continue.
+
+**If it fails:**
+```
+  ✗ Heroku: not authenticated
+
+  You need to authenticate the Heroku CLI before deployment can be set up.
+
+  Option A — Interactive login:
+    heroku login
+    (opens browser for authentication)
+
+  Option B — API key (for CI or non-interactive):
+    export HEROKU_API_KEY=your_api_key_here
+
+  To find your API key: Heroku Dashboard → Account Settings → API Key → Reveal
+
+  Reply "done" once authenticated and I will continue.
+```
+Wait for the user to reply before proceeding.
+
+---
+
+After all required credentials pass, print:
+```
+━━━ Pre-flight complete — all credentials verified ━━━━━━━━━━━━━
+```
+
 Then proceed to Phase 1.
 
 ---
