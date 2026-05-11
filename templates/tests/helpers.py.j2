@@ -76,15 +76,18 @@ class TestContext:
         token: Optional[str] = None,
         body: Optional[dict] = None,
         params: Optional[dict] = None,
+        headers: Optional[dict] = None,
     ) -> "requests.Response":
-        headers: dict[str, str] = {"Content-Type": "application/json"}
+        req_headers: dict[str, str] = {"Content-Type": "application/json"}
         if token:
-            headers["Authorization"] = f"Bearer {token}"
+            req_headers["Authorization"] = f"Bearer {token}"
+        if headers:
+            req_headers.update(headers)
         url = f"{self.base_url}{path}"
         print(f"  🚀  {method.upper()} {path}")
         try:
             return requests.request(
-                method, url, headers=headers, json=body, params=params, timeout=10
+                method, url, headers=req_headers, json=body, params=params, timeout=10
             )
         except requests.exceptions.ConnectionError:
             print(f"\n  ❌  Cannot connect to {self.base_url}. Is the API server running?")

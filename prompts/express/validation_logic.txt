@@ -1,7 +1,7 @@
 Generate Zod schemas for this entity: one for CREATE (direct route), one for nested CREATE (if applicable), and one for UPDATE.
 
 Rules:
-- For CREATE: required fields are required. Optional fields and fields with defaults are optional.
+- For CREATE: required fields are required. Optional fields (marked with ?) and fields with @default(...) values are ALWAYS optional in the schema — even if they have enum constraints. A field having a default means the database/application will supply a value if none is given, so `.optional()` is mandatory for those fields.
 - For UPDATE: all fields are optional (partial update pattern).
 - SERVER-INJECTED fields: if you see a comment like "SERVER-INJECTED (always): fieldName ...", omit that field entirely from ALL schemas — it is injected by the controller and must never be accepted from user input.
 - PARENT-FK fields: if you see a comment like "PARENT-FK: fieldName is required in the request body for direct POST ..." then:

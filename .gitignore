@@ -19,3 +19,4 @@ htmlcov/
 node_modules/
 .env.local
 .env.*.local
+developable-testing-*.json

@@ -19,6 +19,7 @@ class Tester:
 
     def __init__(self, tests_dir: Path, use_llm: bool = True, force: bool = False):
         self.tests_dir = tests_dir
+        self.use_llm = use_llm
         self.assembler = Assembler(out_dir=tests_dir, use_llm=use_llm, force=force)
 
     def generate(self, spec: dict[str, Any], api_plan: dict[str, Any]) -> dict[str, Any]:
@@ -33,7 +34,7 @@ class Tester:
         Returns:
             The test file plan dict.
         """
-        test_plan = TestPlanner().plan(spec, api_plan)
+        test_plan = TestPlanner(use_llm=self.use_llm).plan(spec, api_plan)
         print(f"  Planned {len(test_plan['files'])} test files")
 
         self.assembler.assemble(spec, test_plan, env_values=None)
