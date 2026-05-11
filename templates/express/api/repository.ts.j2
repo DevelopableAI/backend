@@ -53,7 +53,7 @@ export class {{ entity.name }}Repository {
     return { data, total };
   }
 
-  async findById(id: number): Promise<any | null> {
+  async findById(id: {{ entity.pk_ts_type }}): Promise<any | null> {
     return prisma.{{ entity.name_lower }}.findUnique({
       where: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: id },
 {% if has_safe_select %}
@@ -89,7 +89,7 @@ export class {{ entity.name }}Repository {
 {% endif %}
   }
 
-  async update(id: number, data: {{ entity.name }}UpdateInput): Promise<any | null> {
+  async update(id: {{ entity.pk_ts_type }}, data: {{ entity.name }}UpdateInput): Promise<any | null> {
     try {
 {% if sensitive_fields %}
       // Hash sensitive fields if included in the update payload
@@ -123,7 +123,7 @@ export class {{ entity.name }}Repository {
     }
   }
 
-  async delete(id: number): Promise<boolean> {
+  async delete(id: {{ entity.pk_ts_type }}): Promise<boolean> {
 {% set id_field = entity.fields | selectattr('is_id') | first %}
     try {
 {% if child_cascade_deletes %}
@@ -146,10 +146,10 @@ export class {{ entity.name }}Repository {
     }
   }
 {% for rel in parent_fk_relations %}
-
+{% set fk_field_obj = entity.fields | selectattr('name', 'equalto', rel.fk_field) | first %}
   // Find all {{ entity.name_plural }} belonging to a parent via {{ rel.fk_field }}
   async findManyBy{{ rel.fk_field[0] | upper ~ rel.fk_field[1:] }}(
-    parentId: number,
+    parentId: {{ fk_field_obj.ts_type if fk_field_obj else 'number' }},
     params: ListQueryParams,
   ): Promise<{ data: any[]; total: number }> {
     const where: any = { {{ rel.fk_field }}: parentId };

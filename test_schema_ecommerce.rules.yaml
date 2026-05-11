@@ -1,39 +1,20 @@
-# test_schema_ecommerce.rules.yaml — business rules for the e-commerce schema
-# Usage: python main.py test_schema_ecommerce.prisma --out ./output_ecommerce --rules test_schema_ecommerce.rules.yaml
-
 entities:
   User:
     constraints:
-      - "Users can only read and modify their own profile — enforce self-ownership on PUT/DELETE /users/:id"
-      - "Email must be unique and lowercased before storage"
-      - "Password must be at least 8 characters; never returned in any API response"
-
-  Product:
-    constraints:
-      - "Only the seller can edit or delete a product"
-      - "Title must be non-empty and trimmed; price must be a positive number"
-      - "Stock must be a non-negative integer; defaults to 0"
-      - "metadata is an optional arbitrary JSON object"
-
+      - "Users can only access their own orders"
+      - "Email must be unique"
+      - "Password must be at least 8 characters; never returned in any response"
   Order:
     constraints:
-      - "Only the buyer who placed the order can view or modify it"
-      - "status must be one of: pending, confirmed, shipped, delivered, cancelled"
-      - "total must be a non-negative float; notes is an optional free-text field"
-
+      - "Only the owning user can view, update, or delete their orders"
+      - "Status must be one of: pending, processing, shipped, delivered, cancelled"
+    primary_parent: User
   OrderItem:
-    # Order is auto-detected as primary parent (first non-auth FK: orderId → Order)
-    # Canonical create: POST /api/orders/:id/orderItems
-    # GET /api/products/:id/orderItems is generated as a filtered read
     constraints:
-      - "quantity must be a positive integer (at least 1)"
-      - "unitPrice must be a positive float matching the product's current price"
-
-  Review:
-    # Product is auto-detected as primary parent (first non-auth FK: productId → Product)
-    # Canonical create: POST /api/products/:id/reviews
-    # GET /api/users/:id/reviews is generated as a filtered read (via authorId)
+      - "Order items are managed through their parent order"
+      - "Quantity must be at least 1; unitPrice must be non-negative"
+    primary_parent: Order
+  Product:
     constraints:
-      - "rating must be an integer between 1 and 5 inclusive"
-      - "body must be non-empty and at least 10 characters"
-      - "A user can only leave one review per product"
+      - "Products are publicly readable; only admins can create/update/delete"
+      - "Price must be non-negative; stock must be non-negative"
