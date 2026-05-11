@@ -97,6 +97,15 @@ class PrismaParser:
                     # Enum values serialize as plain strings in JSON — treat ts_type as string
                     field["ts_type"] = "string"
 
+        # fifth pass: annotate each entity with its PK TypeScript type and strategy
+        for entity in spec["entities"]:
+            pk_field = next(
+                (f for f in entity["fields"] if f["is_id"] and not f["is_relation"]),
+                None,
+            )
+            entity["pk_ts_type"] = pk_field["ts_type"] if pk_field else "number"
+            entity["pk_strategy"] = pk_field.get("pk_strategy") if pk_field else "none"
+
         # fourth pass: detect auth entity (has email field + at least one sensitive field)
         self._detect_auth_entity(spec)
 
@@ -250,6 +259,17 @@ class PrismaParser:
         if is_list:
             ts_type = f"{ts_type}[]"
 
+        pk_strategy: str | None = None
+        if is_id:
+            if default_val == "uuid()":
+                pk_strategy = "uuid"
+            elif default_val == "cuid()":
+                pk_strategy = "cuid"
+            elif default_val == "autoincrement()":
+                pk_strategy = "autoincrement"
+            else:
+                pk_strategy = "none"
+
         return {
             "name": name,
             "prisma_type": prisma_type,
@@ -264,6 +284,7 @@ class PrismaParser:
             "enum_values": [],       # populated in the enum pass
             "default": default_val,
             "annotations": annotations,
+            "pk_strategy": pk_strategy,
         }
 
     def _resolve_relations(self, entity: dict, known_entities: set[str]) -> list[dict]:
