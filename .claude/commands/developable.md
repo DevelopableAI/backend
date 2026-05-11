@@ -8,6 +8,29 @@ If no schema path is given, search for `schema.prisma` in `prisma/`, the current
 
 ---
 
+## Progress Reporting (Required)
+
+Output progress at each phase boundary and after each file write. This text appears directly in the chat on all interfaces (terminal, desktop app, web) and as tool call labels in the desktop/web expandable view.
+
+**Phase header** — output this exact format before starting each phase:
+```
+━━━ Phase N/7: Phase Name ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**File write** — after each `Write` tool call, output:
+```
+  ✓ path/to/file.ts
+```
+
+**Phase complete** — after finishing each phase:
+```
+  Phase N complete — X files written
+```
+
+**Tool call descriptions** — when calling `Write`, set the description to `[Phase N] Write <filename>` (e.g. `[Phase 4] Write src/controllers/post.controller.ts`). This becomes the label on each collapsible item in the desktop and web app.
+
+---
+
 ## Phase 1 — Parse the Schema
 
 Read the `schema.prisma` file. Extract:
