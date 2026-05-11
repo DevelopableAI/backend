@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma.js';
-import { PaginationParams } from '../lib/pagination.js';
+import { ListQueryParams } from '../lib/pagination.js';
 import { {{ entity.name }}CreateInput, {{ entity.name }}UpdateInput } from '../types/{{ entity.name_lower }}.types.js';
 {% set sensitive_fields = entity.fields | selectattr('is_sensitive') | list %}
 {% if sensitive_fields %}
@@ -19,18 +19,35 @@ export class {{ entity.name }}Repository {
 
 {% endif %}
   async findMany(
-    pagination: PaginationParams,
+    params: ListQueryParams,
   ): Promise<{ data: any[]; total: number }> {
+    const where: any = {};
+{% for field in filterable_fields %}
+    if (params.filters['{{ field.name }}'] !== undefined) {
+{% if field.ts_type == 'number' %}
+      const _v{{ loop.index }} = Number(params.filters['{{ field.name }}']);
+      if (!isNaN(_v{{ loop.index }})) where['{{ field.name }}'] = _v{{ loop.index }};
+{% elif field.ts_type == 'boolean' %}
+      where['{{ field.name }}'] = params.filters['{{ field.name }}'] === 'true';
+{% else %}
+      where['{{ field.name }}'] = params.filters['{{ field.name }}'];
+{% endif %}
+    }
+{% endfor %}
+    const orderBy: any = params.sort
+      ? { [params.sort.field]: params.sort.order }
+      : { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: 'desc' };
     const [data, total] = await prisma.$transaction([
       prisma.{{ entity.name_lower }}.findMany({
-        skip: pagination.skip,
-        take: pagination.limit,
-        orderBy: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: 'desc' },
+        where,
+        skip: params.skip,
+        take: params.limit,
+        orderBy,
 {% if has_safe_select %}
         select: this.safeSelect,
 {% endif %}
       }),
-      prisma.{{ entity.name_lower }}.count(),
+      prisma.{{ entity.name_lower }}.count({ where }),
     ]);
 
     return { data, total };
@@ -133,19 +150,35 @@ export class {{ entity.name }}Repository {
   // Find all {{ entity.name_plural }} belonging to a parent via {{ rel.fk_field }}
   async findManyBy{{ rel.fk_field[0] | upper ~ rel.fk_field[1:] }}(
     parentId: {{ fk_field_obj.ts_type if fk_field_obj else 'number' }},
-    pagination: PaginationParams,
+    params: ListQueryParams,
   ): Promise<{ data: any[]; total: number }> {
+    const where: any = { {{ rel.fk_field }}: parentId };
+{% for field in filterable_fields %}
+    if (params.filters['{{ field.name }}'] !== undefined) {
+{% if field.ts_type == 'number' %}
+      const _v{{ loop.index }} = Number(params.filters['{{ field.name }}']);
+      if (!isNaN(_v{{ loop.index }})) where['{{ field.name }}'] = _v{{ loop.index }};
+{% elif field.ts_type == 'boolean' %}
+      where['{{ field.name }}'] = params.filters['{{ field.name }}'] === 'true';
+{% else %}
+      where['{{ field.name }}'] = params.filters['{{ field.name }}'];
+{% endif %}
+    }
+{% endfor %}
+    const orderBy: any = params.sort
+      ? { [params.sort.field]: params.sort.order }
+      : { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: 'desc' };
     const [data, total] = await prisma.$transaction([
       prisma.{{ entity.name_lower }}.findMany({
-        where: { {{ rel.fk_field }}: parentId },
-        skip: pagination.skip,
-        take: pagination.limit,
-        orderBy: { {% set id_field = entity.fields | selectattr('is_id') | first %}{{ id_field.name if id_field else 'id' }}: 'desc' },
+        where,
+        skip: params.skip,
+        take: params.limit,
+        orderBy,
 {% if has_safe_select %}
         select: this.safeSelect,
 {% endif %}
       }),
-      prisma.{{ entity.name_lower }}.count({ where: { {{ rel.fk_field }}: parentId } }),
+      prisma.{{ entity.name_lower }}.count({ where }),
     ]);
 
     return { data, total };

@@ -122,6 +122,20 @@ class Planner:
         # scalar (non-relation) fields for validation
         scalar_fields = [f for f in entity["fields"] if not f["is_relation"] and not f["is_id"]]
 
+        # filterable: non-id, non-relation, non-sensitive scalar fields (string/number/boolean only)
+        filterable_fields = [
+            f for f in entity["fields"]
+            if not f["is_relation"] and not f["is_sensitive"] and not f["is_id"]
+            and f.get("ts_type") in ("string", "number", "boolean")
+        ]
+
+        # sortable: non-relation, non-sensitive scalar fields (includes id for explicit ordering)
+        sortable_fields = [
+            f for f in entity["fields"]
+            if not f["is_relation"] and not f["is_sensitive"]
+            and f.get("ts_type") in ("string", "number", "boolean")
+        ]
+
         auth_entity_name = spec.get("auth_entity_name")
         all_entities = spec["entities"]
 
@@ -177,6 +191,8 @@ class Planner:
                     "owner_fk_field": owner_fk_field,
                     "nested_routes": nested_routes,
                     "auth_entity_name": auth_entity_name,
+                    "filterable_fields": filterable_fields,
+                    "sortable_fields": sortable_fields,
                 },
                 "needs_llm": False,
             },
@@ -189,6 +205,8 @@ class Planner:
                     "owner_fk_field": owner_fk_field,
                     "nested_routes": nested_routes,
                     "auth_entity_name": auth_entity_name,
+                    "filterable_fields": filterable_fields,
+                    "sortable_fields": sortable_fields,
                 },
                 "needs_llm": False,
             },
@@ -199,6 +217,8 @@ class Planner:
                     "entity": entity,
                     "parent_fk_relations": parent_fk_relations,
                     "child_cascade_deletes": child_cascade_deletes,
+                    "filterable_fields": filterable_fields,
+                    "sortable_fields": sortable_fields,
                 },
                 "needs_llm": False,
             },
@@ -431,6 +451,18 @@ class Planner:
             primary_parent_name = self._get_primary_parent_name(child_entity, all_entities, auth_entity_name)
             is_primary_parent = (entity["name"] == primary_parent_name)
 
+            # child filterable/sortable fields (for nested list handler in parent controller)
+            child_filterable = [
+                f for f in child_entity["fields"]
+                if not f["is_relation"] and not f["is_sensitive"] and not f["is_id"]
+                and f.get("ts_type") in ("string", "number", "boolean")
+            ]
+            child_sortable = [
+                f for f in child_entity["fields"]
+                if not f["is_relation"] and not f["is_sensitive"]
+                and f.get("ts_type") in ("string", "number", "boolean")
+            ]
+
             nested.append({
                 "relation_name": rel["name"],                          # e.g. "comments"
                 "related_entity": child_entity_name,                   # e.g. "Comment"
@@ -441,6 +473,8 @@ class Planner:
                 "has_parent_fk_schema": has_parent_fk_schema,          # e.g. True
                 "use_nested_schema": use_nested_schema,                # e.g. True
                 "is_primary_parent": is_primary_parent,               # e.g. True for Post→Comment
+                "filterable_fields": child_filterable,
+                "sortable_fields": child_sortable,
             })
 
         return nested
