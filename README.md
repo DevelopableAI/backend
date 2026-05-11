@@ -471,18 +471,33 @@ Once the template is stable, Developable ships as a publishable `/developable` s
 This changes the dynamic from "hope the LLM makes good decisions" to "the decisions are made; the LLM executes them." Every feature Claude Code adds to your backend conforms to the same invariants as the original generated output, across the full lifetime of the project.
 
 ```
-# Future usage (inside Claude Code)
-/developable path/to/schema.prisma
+# Inside Claude Code — generate from an existing schema
+/developable
 ```
 
 No Python runtime. No API key setup. No install beyond the skill itself.
+
+### `/describe-schema`
+
+Don't have a schema yet? Describe your app in plain English:
+
+```
+/describe-schema "A task management app with users, projects, and tasks. Users log in with email and password."
+```
+
+The skill will:
+1. Generate a `schema.prisma` with correct Developable annotations
+2. Generate a `rules.yaml` with entity constraints
+3. Show you both files for review
+4. Generate the full API once you confirm
 
 ---
 
 ## Roadmap
 
-- [ ] **Claude Code skill** — package the proven template as a publishable `/developable` slash command
-- [ ] Refinement loop — request changes in plain English, developable patches the relevant files
+- [x] **Claude Code skill** — package the proven template as a publishable `/developable` slash command
+- [x] **Schema from prompt** — describe your app in plain English; skill generates `schema.prisma` + `rules.yaml` before codegen
 - [ ] Filter and sort on list endpoints
 - [ ] UUID / cuid ID support
 - [ ] Fastify target
+- [ ] Terraform IaC — generate Terraform configs with remote state (AWS S3, GCP GCS, Terraform Cloud for Heroku)

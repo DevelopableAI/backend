@@ -894,14 +894,579 @@ Follow the `auth.controller.ts.j2` pattern exactly:
 
 ---
 
-## Final Steps
+## Phase 5 — Generate Tests
 
-After all files are written:
-1. Copy the `schema.prisma` into `prisma/schema.prisma` in the output directory
-2. Print the next steps for the user:
+Write a `tests/` directory alongside the API. The suite is pure Python, needs only `pip install requests`, and covers every generated endpoint. Run modules in the numbered order listed below — each one populates `ctx.state` for the next.
+
+### `tests/helpers.py`
+
+```python
+import sys, json, base64, uuid
+import requests
+
+class TestContext:
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.state: dict = {}
+        self.pass_count = self.fail_count = self.warn_count = self.skip_count = 0
+
+    def ok(self, msg):   self.pass_count += 1; print(f"  ✅  {msg}")
+    def fail(self, msg): self.fail_count  += 1; print(f"  ❌  {msg}")
+    def auth(self, msg): self.fail_count  += 1; print(f"  ⛔️  {msg}")
+    def warn(self, msg): self.warn_count  += 1; print(f"  ⚠️   {msg}")
+    def skip(self, msg): self.skip_count  += 1; print(f"  ⏭️   SKIP  {msg}")
+
+    def req(self, method, path, token=None, body=None, params=None):
+        headers = {"Content-Type": "application/json"}
+        if token: headers["Authorization"] = f"Bearer {token}"
+        print(f"  🚀  {method.upper()} {path}")
+        try:
+            return requests.request(method, f"{self.base_url}{path}",
+                                    headers=headers, json=body, params=params, timeout=10)
+        except requests.exceptions.ConnectionError:
+            print(f"\n  ❌  Cannot connect to {self.base_url}. Is the server running?")
+            sys.exit(1)
+
+    def assert_status(self, resp, expected, label, auth_fail=False):
+        if resp.status_code == expected:
+            self.ok(f"{label} → HTTP {resp.status_code}"); return True
+        msg = f"{label} → expected {expected}, got {resp.status_code} | {resp.text[:200]}"
+        (self.auth if auth_fail else self.fail)(msg); return False
+
+    def assert_field(self, data, field, label, absent=False):
+        if absent:
+            if field in data: self.fail(f"{label}: '{field}' should be absent"); return False
+            self.ok(f"{label}: '{field}' correctly absent"); return True
+        if field in data: self.ok(f"{label}: '{field}' present"); return True
+        self.fail(f"{label}: '{field}' missing"); return False
+
+    def assert_paginated(self, data, label):
+        if "data" not in data or "meta" not in data:
+            self.fail(f"{label}: missing 'data' or 'meta'"); return False
+        for k in ("total", "page", "limit", "totalPages"):
+            if k not in data["meta"]: self.fail(f"{label}: meta missing '{k}'"); return False
+        self.ok(f"{label}: paginated — total={data['meta']['total']}"); return True
+
+    @staticmethod
+    def unique_email(prefix="user"):
+        return f"{prefix}_{uuid.uuid4().hex[:8]}@test.example.com"
+
+    @staticmethod
+    def safe_json(resp):
+        try: return resp.json()
+        except: return {}
+
+    @staticmethod
+    def decode_jwt(token):
+        try:
+            p = token.split(".")[1]; p += "=" * (4 - len(p) % 4)
+            return json.loads(base64.urlsafe_b64decode(p))
+        except: return None
+
+    @staticmethod
+    def no_sensitive_field(obj, field):
+        if isinstance(obj, dict):
+            if field in obj: return False
+            return all(TestContext.no_sensitive_field(v, field) for v in obj.values())
+        if isinstance(obj, list):
+            return all(TestContext.no_sensitive_field(i, field) for i in obj)
+        return True
+
+def section(title):
+    print(f"\n{'═' * 64}\n  {title}\n{'═' * 64}")
+```
+
+### `tests/run_all.py`
+
+```python
+import sys, importlib
+from helpers import TestContext
+
+BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:3000"
+ctx = TestContext(BASE_URL)
+
+# Import and run each module in order
+modules = [
+    "test_00_health",
+    # auth modules (if auth entity exists):
+    "test_01_register",
+    "test_02_login",
+    "test_03_{auth_plural}_get",
+    "test_04_{auth_plural}_write",
+    # per entity (in topological order — parents before children):
+    # "test_05_{plural}_seed_get",
+    # "test_06_{plural}_write",
+    # ...
+    "test_security_audit",
+    "test_cleanup",
+]
+
+for name in modules:
+    try:
+        mod = importlib.import_module(name)
+        mod.run(ctx)
+    except Exception as e:
+        ctx.fail(f"Module {name} raised: {e}")
+
+print(f"\n{'═'*64}")
+print(f"  Results: {ctx.pass_count} passed · {ctx.fail_count} failed · {ctx.warn_count} warnings · {ctx.skip_count} skipped")
+print(f"{'═'*64}")
+sys.exit(0 if ctx.fail_count == 0 else 1)
+```
+
+### Module 00 — `tests/test_00_health.py`
+
+```python
+from helpers import TestContext, section
+def run(ctx: TestContext):
+    section("0 · HEALTH CHECK")
+    resp = ctx.req("GET", "/health")
+    if ctx.assert_status(resp, 200, "GET /health"):
+        data = ctx.safe_json(resp)
+        ctx.ok("status=ok") if data.get("status") == "ok" else ctx.fail(f"unexpected: {data}")
+```
+
+### Auth Modules (only if auth entity exists)
+
+**Module 01 — Register (`tests/test_01_register.py`)**
+
+- Seed 3 users (user1, user2, user3). Store `user1_token`, `user1_id`, `user2_token`, `user2_id`, `email1`, `email2` in `ctx.state`.
+- Assert: register → 201, response contains `token` and `{auth_entity_lower}` object
+- Assert: sensitive field (e.g. `password`) NOT in response body or JWT payload
+- Assert: duplicate email → 409
+- Assert: missing required field → 400 (one test per required field)
+- Assert: invalid email format → 400
+- Assert: password too short (< 8 chars) → 400
+- Assert: extra unknown fields silently stripped → still 201
+
+**Module 02 — Login (`tests/test_02_login.py`)**
+
+- Valid login with `email1` → 200, token in response
+- Wrong password → 401
+- Unknown email → 401
+- Missing password → 400
+- Assert: sensitive field not in login response
+
+**Module 03 — Auth Entity GET (`tests/test_03_{auth_plural}_get.py`)**
+
+- `GET /api/{auth_plural}` → 200, paginated shape (`data`, `meta.total`, `meta.page`)
+- `GET /api/{auth_plural}/{user1_id}` → 200
+- Assert `password` field absent from all responses
+
+**Module 04 — Auth Entity Write (`tests/test_04_{auth_plural}_write.py`)**
+
+- `PUT /api/{auth_plural}/{user1_id}` by user1 → 200
+- `PUT /api/{auth_plural}/{user1_id}` without auth → 401
+- `PUT /api/{auth_plural}/{user1_id}` by user2 → 403 (other user)
+- `DELETE /api/{auth_plural}/{user1_id}` by user2 → 403
+- `DELETE /api/{auth_plural}/9999999` by user1 → 404
+
+### Per-Entity Modules (for each non-auth entity, in topological order)
+
+**Seed + GET module (`tests/test_N_{plural}_seed_get.py`)**
+
+Seed via the canonical create path:
+- If `primary_parent` is the auth entity: `POST /api/{auth_plural}/{relation_name}` (no parent ID in URL)
+- If `primary_parent` is another entity: `POST /api/{parent_plural}/{parent1_id}/{relation_name}`
+- If no `primary_parent`: `POST /api/{plural}`
+
+Seed 3 records with token1. Store `{entity_lower}1_id`, `{entity_lower}2_id`, `{entity_lower}3_id` in `ctx.state`. For each required field, use a sensible test value. For FK fields that are not server-injected (e.g. `productId` in OrderItem), supply `{related_entity}1_id` from `ctx.state`.
+
+Then test:
+- `GET /api/{plural}` → 200, paginated
+- `GET /api/{plural}/{entity1_id}` → 200
+- `GET /api/{plural}/9999999` → 404
+
+**Write module (`tests/test_N+1_{plural}_write.py`)**
+
+- `POST` canonical path without auth → 401
+- `POST` with auth, empty body → 400
+- `PUT /api/{plural}/{entity1_id}` by owner → 200
+- `PUT /api/{plural}/{entity1_id}` without auth → 401
+- `PUT /api/{plural}/{entity1_id}` by user2 (non-owner) → 403
+- `DELETE /api/{plural}/{entity2_id}` without auth → 401
+- `DELETE /api/{plural}/{entity2_id}` by user2 (non-owner) → 403
+- `DELETE /api/{plural}/{entity2_id}` by owner → 204
+- `GET /api/{plural}/{entity2_id}` after delete → 404
+- `DELETE /api/{plural}/9999999` by owner → 404
+
+### Security Audit Module (`tests/test_security_audit.py`)
+
+For each entity, test `_parseId` enforcement:
+```python
+for bad_id in ["abc", "1.5", "1; DROP TABLE users", "0", "-1", "9" * 20]:
+    resp = ctx.req("GET", f"/api/{plural}/{bad_id}")
+    if resp.status_code not in (400, 404):
+        ctx.warn(f"Suspicious: GET /api/{plural}/{bad_id} → {resp.status_code}")
+    else:
+        ctx.ok(f"Bad ID '{bad_id}' rejected with {resp.status_code}")
+```
+
+Test JWT tampering: decode a valid token, modify `id` field, re-sign with wrong secret, assert 401.
+
+### Cleanup Module (`tests/test_cleanup.py`)
+
+Delete all seeded data in reverse topological order (children before parents). Use `token1` for all deletes. Skip if the seed ID is already deleted (marked `{entity}_2_deleted`).
+
+---
+
+## Phase 6 — Infrastructure & CI/CD
+
+Write these files into the output directory root:
+
+### `Dockerfile`
+
+Multi-stage Node.js 20 build:
+```dockerfile
+FROM node:20-slim AS deps
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+
+FROM node:20-slim AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npx prisma generate
+RUN npm run build
+
+FROM node:20-slim AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/prisma ./prisma
+COPY package.json ./
+EXPOSE 3000
+CMD ["node", "dist/server.js"]
+```
+
+### `docker-compose.yml`
+
+```yaml
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-{project_name_underscored}}
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports: ["5050:80"]
+    depends_on:
+      db: {condition: service_healthy}
+
+  api:
+    build: .
+    env_file: [.env]
+    ports: ["${PORT:-3000}:3000"]
+    depends_on:
+      db: {condition: service_healthy}
+    command: sh -c "npx prisma migrate deploy && node dist/server.js"
+```
+
+Replace `{project_name_underscored}` with the project name slug with `-` replaced by `_`.
+
+### `.github/workflows/ci.yml`
+
+```yaml
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
+      JWT_SECRET: ci-only-jwt-secret-not-for-production
+      PORT: 3000
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: "20"}
+      - run: npm install
+      - run: npx prisma generate
+      - run: npx prisma db push --accept-data-loss
+      - run: npm run dev > /tmp/api.log 2>&1 &
+      - name: Wait for API
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000/health && exit 0
+            sleep 2
+          done
+          cat /tmp/api.log && exit 1
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install requests
+      - run: python tests/run_all.py
+        if: ${{ hashFiles('tests/run_all.py') != '' }}
+      - if: failure()
+        run: cat /tmp/api.log || true
+```
+
+### `.gitignore`
 
 ```
-✓ Generated X files across Y entities
+node_modules/
+dist/
+.env
+*.log
+prisma/migrations/
+```
+
+### Optional — Push to GitHub
+
+If the user asks for GitHub setup, run:
+```bash
+gh repo create {project-name} --private --source=. --remote=origin
+git init && git add . && git commit -m "Initial Developable-generated API"
+git push -u origin main
+```
+
+---
+
+## Phase 7 — Update CLAUDE.md
+
+Generate or overwrite `CLAUDE.md` in the project root (the output directory). This file tells future Claude Code sessions the standards they must follow when modifying this codebase.
+
+Write the following content, substituting entity names and fields from the parsed schema:
+
+```markdown
+# CLAUDE.md — {project-name} API
+
+This project was generated by [Developable](https://developablecode.app). All code follows the
+Developable standard. When adding features or modifying files, adhere to these rules exactly.
+
+---
+
+## Architecture
+
+```
+HTTP → src/routes/{plural}.routes.ts
+     → src/controllers/{lower}.controller.ts
+     → src/repositories/{lower}.repository.ts
+     → Prisma (PostgreSQL)
+```
+
+- **Routes** — wire HTTP methods to controller methods + apply `authenticate` middleware. No logic here.
+- **Controllers** — validate input (Zod), enforce ownership, call repository, send response. No direct Prisma.
+- **Repositories** — all Prisma calls live here. All reads use `safeSelect`. No business logic.
+- **Validators** — Zod schemas for each entity. Owner FKs are never in any Zod schema.
+- **Types** — TypeScript input/output interfaces derived from the schema.
+
+---
+
+## Security Invariants (NON-NEGOTIABLE)
+
+These rules must be preserved in every file you create or modify:
+
+### 1. Integer ID Validation
+```typescript
+private _parseId(raw: string): number {
+  if (!/^\d+$/.test(raw)) throw new AppError(400, 'Invalid ID format');
+  const id = Number(raw);
+  if (id > Number.MAX_SAFE_INTEGER) throw new AppError(400, 'ID out of range');
+  return id;
+}
+```
+**Never use `parseInt` alone** — `parseInt('1.5abc')` silently returns `1`.
+
+### 2. Owner FK is Always Server-Injected
+```typescript
+// CORRECT
+const record = await this.repository.create({ ...data, {owner_fk_field}: req.user!.id });
+
+// WRONG — never trust body for ownership fields
+const record = await this.repository.create(data);
+```
+The Zod validator must never include the owner FK field. It is injected in the controller.
+
+### 3. Auth Entity Self-Ownership
+```typescript
+if (id !== req.user!.id) throw new AppError(403, 'Forbidden');
+```
+
+### 4. Resource Ownership Check Before Mutate
+```typescript
+const existing = await this.repository.findById(id);
+if (!existing) throw new NotFoundError('{Name}', id);
+if (existing.{owner_fk_field} !== req.user!.id) throw new AppError(403, 'Forbidden');
+```
+
+### 5. Sensitive Field Hashing
+```typescript
+if (data.password) data.password = await hashValue(String(data.password));
+```
+Applied in both `create` and `update` in the repository.
+
+### 6. Sensitive Fields Excluded from All Responses
+```typescript
+private readonly safeSelect = {
+  id: true,
+  email: true,
+  password: false,   // NEVER return this
+  createdAt: true,
+} as const;
+```
+Every Prisma read uses `select: this.safeSelect`.
+
+### 7. JWT Middleware on All Write Routes
+```typescript
+router.post('/', authenticate, controller.create.bind(controller));
+router.put('/:id', authenticate, controller.update.bind(controller));
+router.delete('/:id', authenticate, controller.remove.bind(controller));
+```
+`authenticate` is always the second argument, before the handler.
+
+---
+
+## Error Handling
+
+- Use `AppError(statusCode, message)` — caught by `errorHandler` in `src/lib/errors.ts`
+- Use `NotFoundError(resource, id)` for missing records
+- Use `ValidationError(message)` for Zod failures
+- Use `ConflictError(message)` for P2002 unique constraint violations
+- Never throw raw `Error` objects from controllers or repositories
+- Never call `res.status().json()` directly in a catch block — always call `next(err)`
+
+---
+
+## Validation Rules
+
+- Validate at the controller boundary using Zod — never in routes or repositories
+- Use `z.string().min(1).trim()` for required strings; never allow empty strings
+- Use `z.string().email()` for email fields
+- Use `z.string().min(8).max(128)` for password fields
+- Use `z.number().min(0)` for prices, quantities, and other non-negative numbers
+- `.partial()` on the create schema produces the update schema — no separate definition needed
+- All FK fields (e.g. `authorId`) must be omitted from every Zod schema — they are server-injected
+
+---
+
+## Database Access Patterns
+
+- All Prisma calls go in the repository — never in controllers or routes
+- Use `prisma.$transaction([findMany, count])` for paginated list queries
+- All reads use `select: this.safeSelect` if the entity has sensitive fields
+- For cascade deletes: delete children in a `$transaction` before deleting the parent
+- Catch `P2025` (record not found) in `update` and `delete` — return `null` / `false` rather than throwing
+
+---
+
+## Auth Patterns
+
+- JWT payload contains `id` + all non-sensitive non-relation scalar fields
+- `authenticate` middleware sets `req.user` — always typed as `AuthUser` from `src/lib/auth.ts`
+- Login endpoint returns `{ token }` only — never the user object
+- Register endpoint returns `{ token, {auth_entity_lower} }` where `{auth_entity_lower}` uses `safeSelect`
+- Token expiry: `1h` default — configurable via `JWT_EXPIRES_IN` env var
+
+---
+
+## TypeScript Conventions
+
+- All files use ESM (`"type": "module"` in package.json) — imports must use `.js` extension
+- Strict mode enabled — no `any` except where Prisma requires it for dynamic select patterns
+- Controller methods are always `async (req, res, next): Promise<void>` — never use return values
+- Repository methods return the entity type or `null` — never throw for not-found in repositories
+- Use `as const` for `safeSelect` to get the narrowest Prisma return type
+
+---
+
+## Adding a New Entity
+
+1. Add the model to `prisma/schema.prisma` with `// @auth_entity` or `// @llm` annotations as needed
+2. Run `/developable` to regenerate — it will write new files without overwriting modified ones
+3. Run `npx prisma migrate dev --name add_{entity_lower}` to create the migration
+4. Add test coverage for the new entity following the patterns in `tests/`
+
+---
+
+## Adding a New Field to an Existing Entity
+
+1. Add the field to `prisma/schema.prisma`
+2. Add the field to `src/types/{lower}.types.ts` (in Create and Update interfaces)
+3. Add the field to the Zod schema in `src/validators/{lower}.validator.ts`
+4. If sensitive: set it to `false` in `safeSelect` and add hashing in `src/repositories/{lower}.repository.ts`
+5. Run `npx prisma migrate dev --name add_{lower}_{field}`
+
+---
+
+## Running Locally
+
+```bash
+npm install
+cp .env.example .env   # fill in DATABASE_URL and JWT_SECRET
+npx prisma migrate dev --name init
+npm run dev            # http://localhost:3000
+```
+
+## Running Tests
+
+```bash
+npm run dev &          # start API first
+python tests/run_all.py http://localhost:3000
+```
+
+## Production Build
+
+```bash
+npm run build
+node dist/server.js
+```
+
+Or with Docker:
+```bash
+docker compose up
+```
+```
+
+Substitute `{project-name}`, `{auth_entity_lower}`, `{owner_fk_field}`, `{Name}`, and sensitive field names with the actual values from the parsed schema.
+
+---
+
+## Final Steps
+
+After all phases are complete:
+1. Copy `schema.prisma` to `prisma/schema.prisma` in the output directory
+2. Print the summary:
+
+```
+✓ Generated {N} API files across {Y} entities
+✓ Generated {M} test modules in tests/
+✓ Generated Dockerfile, docker-compose.yml, .github/workflows/ci.yml
+✓ Generated CLAUDE.md with Developable standards
 
 Next steps:
   cd <output>
@@ -909,4 +1474,10 @@ Next steps:
   cp .env.example .env   # fill in DATABASE_URL and JWT_SECRET
   npx prisma migrate dev --name init
   npm run dev
+
+Run tests (requires running server):
+  python tests/run_all.py http://localhost:3000
+
+Deploy locally:
+  docker compose up
 ```
