@@ -1,3 +1,4 @@
+{% set parse_id_fn = '_parseStringId' if entity.pk_ts_type == 'string' else '_parseId' %}
 import { Request, Response, NextFunction } from 'express';
 import { {{ entity.name }}Repository } from '../repositories/{{ entity.name_lower }}.repository.js';
 import { validate{{ entity.name }}Create, validate{{ entity.name }}Update } from '../validators/{{ entity.name_lower }}.validator.js';
@@ -33,7 +34,7 @@ export class {{ entity.name }}Controller {
 
   async getById(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const id = this._parseId(req.params.id);
+      const id = this.{{ parse_id_fn }}(req.params.id);
       const record = await this.repository.findById(id);
       if (!record) {
         throw new NotFoundError('{{ entity.name }}', id);
@@ -61,7 +62,7 @@ export class {{ entity.name }}Controller {
 
   async update(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const id = this._parseId(req.params.id);
+      const id = this.{{ parse_id_fn }}(req.params.id);
 {% if entity.is_auth_entity and auth_entity_name %}
       if (id !== req.user!.id) {
         throw new AppError(403, 'Forbidden');
@@ -88,7 +89,7 @@ export class {{ entity.name }}Controller {
 
   async remove(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const id = this._parseId(req.params.id);
+      const id = this.{{ parse_id_fn }}(req.params.id);
 {% if entity.is_auth_entity and auth_entity_name %}
       if (id !== req.user!.id) {
         throw new AppError(403, 'Forbidden');
@@ -117,7 +118,7 @@ export class {{ entity.name }}Controller {
 
   async get{{ nested.related_entity }}sFor{{ entity.name }}(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const parentId = this._parseId(req.params.id);
+      const parentId = this.{{ parse_id_fn }}(req.params.id);
       const pagination = parsePagination(req);
       const { data, total } = await this.{{ nested.related_entity_lower }}Repository.findManyBy{{ nested.fk_field[0] | upper ~ nested.fk_field[1:] }}(parentId, pagination);
       res.json(buildPaginatedResponse(data, total, pagination));
@@ -132,7 +133,7 @@ export class {{ entity.name }}Controller {
       // Parent ID comes from the authenticated user's token, not the URL
       const parentId = req.user!.id;
 {% else %}
-      const parentId = this._parseId(req.params.id);
+      const parentId = this.{{ parse_id_fn }}(req.params.id);
 {% endif %}
 {% if nested.use_nested_schema %}
       // Use the nested schema: parent FK ({{ nested.fk_field }}) is injected from URL, not expected in body
@@ -155,6 +156,14 @@ export class {{ entity.name }}Controller {
 
 {% endfor %}
 
+{% if entity.pk_ts_type == 'string' %}
+  private _parseStringId(raw: string): string {
+    if (!raw || raw.trim() !== raw || raw.length > 128) {
+      throw new AppError(400, 'Invalid ID format');
+    }
+    return raw;
+  }
+{% else %}
   private _parseId(raw: string): number {
     if (!/^\d+$/.test(raw)) {
       throw new AppError(400, 'Invalid ID format');
@@ -165,4 +174,5 @@ export class {{ entity.name }}Controller {
     }
     return id;
   }
+{% endif %}
 }
