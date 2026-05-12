@@ -14,7 +14,7 @@ Output progress at each phase boundary and after each file write. This text appe
 
 **Phase header** — output this exact format before starting each phase:
 ```
-━━━ Phase N/3: Phase Name ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━ Phase N/3: Phase Name ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
 **File edit** — after each `Edit` tool call, output:
@@ -73,7 +73,7 @@ If the user passes arguments on invocation (e.g. `/developable prisma/schema.pri
 
 After collecting all inputs, output:
 ```
-━━━ Configuration ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━ Configuration ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Project : {project_name}
   Output  : {out_dir}
   GitHub  : {yes → github_user/github_repo (public|private) | no}
@@ -240,7 +240,7 @@ Then proceed to Phase 1.
 ## Phase 1 — Generate Structural Files
 
 ```
-━━━ Phase 1/3: Generate structural files ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━ Phase 1/3: Generate structural files ━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
 ### Step 1a — Locate the CLI
@@ -299,7 +299,7 @@ Print:
 ## Phase 2 — Fill LLM Sections
 
 ```
-━━━ Phase 2/3: Fill logic sections ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━ Phase 2/3: Fill logic sections ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
 Find every file the CLI left with placeholder logic:
@@ -364,7 +364,7 @@ Use `Edit` to replace the content **between** `/* LLM_SECTION_START */` and `/* 
 Each file contains context hints the template rendered:
 
 ```python
-/* LLM_SECTION_START */
+# LLM_SECTION_START
 # Generate required-field validation tests for entity "Post".
 # Canonical create path: POST /api/users/posts
 # Requires authentication: True
@@ -377,7 +377,7 @@ Each file contains context hints the template rendered:
 #   (none)
 #
 # Owner FK field: authorId
-/* LLM_SECTION_END */
+# LLM_SECTION_END
 ```
 
 **Generate the test cases using these rules — apply them exactly:**
@@ -406,7 +406,7 @@ Each file contains context hints the template rendered:
 - Outermost statements at column 0; nested code indented 4 spaces
 - All string values must be single-line, under 80 characters
 
-Use `Edit` to replace the content between the markers.
+Use `Edit` to replace the content **between** `# LLM_SECTION_START` and `# LLM_SECTION_END`, keeping both marker lines in place.
 
 **Tool call description:** `[Phase 2] Fill test cases — {filename}`
 **After edit:** print `  ✓ tests/{filename}`
@@ -423,7 +423,7 @@ After all files are processed, print:
 ## Phase 3 — Publish
 
 ```
-━━━ Phase 3/3: Publish ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━ Phase 3/3: Publish ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
 ### GitHub (if `github_enabled` is true)
@@ -451,11 +451,11 @@ After a successful push, print:
 Print the done block, adapting next steps to what was enabled:
 
 ```
-━━━ Done ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━ Done ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✓ Generated {N} API files across {Y} entities
 ✓ Generated {M} test modules in tests/
-✓ Generated Dockerfile, docker-compose.yml, .github/workflows/ci.yml
 ✓ Generated CLAUDE.md with Developable standards
+{if github_enabled: ✓ Generated Dockerfile, docker-compose.yml, .github/workflows/ci.yml}
 {if github_enabled: ✓ Repository live: https://github.com/{github_user}/{github_repo}}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -470,7 +470,7 @@ Run tests (requires running server):
   python tests/run_all.py http://localhost:3000
 ```
 
-Append the deploy-specific block matching `deploy_provider`:
+Only append deploy-specific blocks when `github_enabled` is true (these files only exist when GitHub publishing ran):
 
 **aws:**
 ```
@@ -493,10 +493,4 @@ Deploy to Heroku:
   heroku addons:create heroku-postgresql:essential-0 --app {heroku_app}
   heroku config:set DATABASE_URL=$(heroku config:get DATABASE_URL --app {heroku_app})
   git push heroku main
-```
-
-**none:**
-```
-Deploy locally with Docker:
-  docker compose up
 ```
