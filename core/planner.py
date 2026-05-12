@@ -36,7 +36,22 @@ class Planner:
             for f in e["fields"]
         )
 
+        # Derive a human-readable project name from the schema path for CLAUDE.md
+        import os
+        schema_stem = os.path.splitext(os.path.basename(spec.get("schema_path", "schema.prisma")))[0]
+        project_name = schema_stem.replace("_", "-").replace(".", "-")
+
         files = [
+            {
+                "path": "CLAUDE.md",
+                "template": "express/api/CLAUDE.md.j2",
+                "context": {
+                    "project_name": project_name,
+                    "entities": entities,
+                    "auth_entity_name": auth_entity_name,
+                },
+                "needs_llm": False,
+            },
             {
                 "path": "package.json",
                 "template": "express/api/package.json.j2",
