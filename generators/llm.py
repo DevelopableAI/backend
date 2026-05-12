@@ -9,8 +9,10 @@ import config
 from generators.base import BaseGenerator
 
 
-SECTION_START = "/* LLM_SECTION_START */"
+SECTION_START = "/* LLM_SECTION_START */"  # TypeScript (C-style)
 SECTION_END = "/* LLM_SECTION_END */"
+SECTION_START_PY = "# LLM_SECTION_START"     # Python
+SECTION_END_PY = "# LLM_SECTION_END"
 
 # Module-level session usage accumulator — reset between CLI runs via reset_session()
 _session_usage: list[dict] = []
@@ -76,7 +78,7 @@ class LLMGenerator(BaseGenerator):
         simple seed_data tasks).
         """
         pattern = re.compile(
-            r"/\* LLM_SECTION_START \*/(.*?)/\* LLM_SECTION_END \*/",
+            r"(?:/\* LLM_SECTION_START \*/|# LLM_SECTION_START)(.*?)(?:/\* LLM_SECTION_END \*/|# LLM_SECTION_END)",
             re.DOTALL,
         )
 
@@ -134,7 +136,7 @@ class LLMGenerator(BaseGenerator):
                 })
                 return cached
 
-        # ── Build prompt-cached content blocks ────────────────────────────────
+        # ── Build prompt-cached content blocks ───────────────────────────────────────
         # system and task_prompt are identical across all entity calls within
         # a generation run — mark them for Anthropic's server-side prompt cache
         # so subsequent calls pay only 10% of the input token cost.
@@ -325,7 +327,7 @@ class LLMGenerator(BaseGenerator):
         except SyntaxError:
             return False
 
-    # ── Response cache (disk-based, SHA256-keyed) ──────────────────────────────
+    # ── Response cache (disk-based, SHA256-keyed) ─────────────────────────────────
 
     def _cache_key(self, model: str, system: str, static: str, dynamic: str) -> str:
         data = f"{model}|{system}|{static}|{dynamic}"
@@ -339,7 +341,7 @@ class LLMGenerator(BaseGenerator):
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         (self._cache_dir / f"{key}.txt").write_text(value)
 
-    # ── Token usage tracking ───────────────────────────────────────────────────
+    # ── Token usage tracking ───────────────────────────────────────────────
 
     @staticmethod
     def _record_usage(task: str, model: str, usage: Any):

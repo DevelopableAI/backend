@@ -52,7 +52,7 @@ def run(ctx: TestContext) -> None:
         ctx.assert_status(resp, 400, "POST {{ canonical_create_path }} empty body → 400")
 {% endif %}
 
-/* LLM_SECTION_START */
+# LLM_SECTION_START
 # Generate required-field validation tests for entity "{{ entity.name }}".
 # Canonical create path: {{ canonical_create_path }}
 # Requires authentication: {{ requires_auth }}
@@ -96,7 +96,7 @@ def run(ctx: TestContext) -> None:
 {% for sfk in secondary_fk_fields %}
 #   {{ sfk.related_entity_lower }}1_id
 {% endfor %}
-/* LLM_SECTION_END */
+# LLM_SECTION_END
 
 {#- Field selection priority for the PUT happy-path update:
     1. Required string (non-enum) — safest free-form value
