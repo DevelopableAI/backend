@@ -297,6 +297,7 @@ find {out_dir}/tests -name "*.py" 2>/dev/null | wc -l
 Print:
 ```
   Phase 1 complete — {N} TypeScript files + {M} test files generated
+  ✓ Infrastructure files: Dockerfile, docker-compose.yml, .github/workflows/ci.yml, .gitignore
 ```
 
 ---
@@ -433,6 +434,10 @@ After all files are processed, print:
 
 ### GitHub (if `github_enabled` is true)
 
+The VersionControl agent already wrote Dockerfile, docker-compose.yml,
+.github/workflows/ci.yml, and .gitignore in Phase 1. All that remains is
+git init, repo creation, and the push.
+
 ```bash
 cd {out_dir}
 git init && git add . && git commit -m "Initial Developable-generated API"
@@ -460,7 +465,7 @@ Print the done block, adapting next steps to what was enabled:
 ✓ Generated {N} API files across {Y} entities
 ✓ Generated {M} test modules in tests/
 ✓ Generated CLAUDE.md with Developable standards
-{if github_enabled: ✓ Generated Dockerfile, docker-compose.yml, .github/workflows/ci.yml}
+✓ Generated Dockerfile, docker-compose.yml, .github/workflows/ci.yml, .gitignore
 {if github_enabled: ✓ Repository live: https://github.com/{github_user}/{github_repo}}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -475,7 +480,7 @@ Run tests (requires running server):
   python tests/run_all.py http://localhost:3000
 ```
 
-Only append deploy-specific blocks when `github_enabled` is true (these files only exist when GitHub publishing ran):
+Only append deploy-specific blocks when `github_enabled` is true:
 
 **aws:**
 ```
