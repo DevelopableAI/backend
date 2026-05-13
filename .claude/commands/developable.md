@@ -33,48 +33,53 @@ Output progress at each phase boundary and after each file write. This text appe
 
 ## Phase 0 — Collect Configuration (ask before doing anything else)
 
-Before reading any file or generating anything, ask the user for the following. Present all questions together in a single message — do not drip-feed them one by one.
+Before reading any file or generating anything, collect the four configuration values below.
+
+**Default values (use these when the user has not explicitly stated otherwise):**
+- `out_dir` → `./output`
+- `github_enabled` → `false`
+- `deploy_provider` → `none`
+- `project_name` → derive from schema filename or first entity name (e.g. `blog_api.prisma` → "Blog Api")
+
+**Step 1 — Apply anything the user already stated in their invocation message.** If the user wrote `/developable the project name is Blog REST backend. The schema is at ./test_schema.prisma`, then `project_name = "Blog REST backend"` and `schema_path = ./test_schema.prisma` are already known. Do not ask for them again.
+
+**Step 2 — Show the full proposed configuration and ask for confirmation.** Even if the user provided every value, ALWAYS show the config block and ask before proceeding. This is the only input prompt in Phase 0 — never ask follow-up questions one by one.
 
 ```
-Before I generate your API, I need a few details:
+Here's the configuration I'll use — reply "ok" to proceed or tell me what to change:
 
-1. Project name  (e.g. "My Blog", "Task Manager")
-   → Used in package.json, CLAUDE.md, docker-compose, and the GitHub repo description.
-   → Default: derived from the first entity name in the schema (e.g. "User" → "user-api")
-
-2. Output directory  (default: ./output)
-
-3. Push to GitHub?  [yes / no]
-   If yes:
-     a. GitHub username or org
-     b. Repository name  (default: {project-name}-api)
-     c. Public or private?  [public / private]
-
-4. Deploy to cloud?  [none / aws / gcp / heroku]
-   If aws:
-     - AWS region  (default: us-east-1)
-   If gcp:
-     - GCP project ID
-     - GCP region  (default: us-central1)
-   If heroku:
-     - Heroku app name  (default: {project-name})
+  Project name : {project_name}
+  Schema       : {schema_path}
+  Output dir   : {out_dir}
+  GitHub push  : {yes → username/repo-name (public|private) | no}
+  Deploy to    : {provider | none}
 ```
 
-**Store the answers as variables used throughout all later phases:**
-- `project_name` — the human-readable name given by the user (e.g. "My Blog")
-- `project_slug` — lowercase, hyphens for spaces (e.g. "my-blog"); used in package.json `name`, docker-compose DB name, CI job names
-- `out_dir` — output path
-- `github_enabled` — true/false
-- `github_user`, `github_repo`, `github_private` — if GitHub enabled
-- `deploy_provider` — "none" | "aws" | "gcp" | "heroku"
-- `deploy_config` — provider-specific values collected above
+If the user says "ok" (or equivalent like "yes", "looks good", "go ahead"): proceed to Phase 0b.
 
-If the user passes arguments on invocation (e.g. `/developable prisma/schema.prisma --out ./my-api`), use those values directly and only ask about what was not supplied.
+If the user changes a value: update it and show the config block again. Repeat until they confirm.
 
-After collecting all inputs, output:
+**GitHub sub-questions** — only ask these if the user changes "GitHub push" to yes and has not already provided them:
+- GitHub username or org
+- Repository name (default: `{project_slug}-api`)
+- Public or private? (default: private)
+
+**Deploy sub-questions** — only ask these if the user changes "Deploy to" to aws/gcp/heroku and has not already provided them:
+- aws → AWS region (default: us-east-1)
+- gcp → GCP project ID + region (default: us-central1)
+- heroku → Heroku app name (default: `{project_slug}`)
+
+**Store the confirmed values as variables for all later phases:**
+- `project_name`, `project_slug` (lowercase, hyphens)
+- `schema_path`, `out_dir`
+- `github_enabled`, `github_user`, `github_repo`, `github_private`
+- `deploy_provider`, `deploy_config`
+
+After the user confirms, print:
 ```
-━━━ Configuration ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━ Configuration confirmed ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Project : {project_name}
+  Schema  : {schema_path}
   Output  : {out_dir}
   GitHub  : {yes → github_user/github_repo (public|private) | no}
   Deploy  : {provider | none}
@@ -428,6 +433,10 @@ After all files are processed, print:
 
 ### GitHub (if `github_enabled` is true)
 
+The VersionControl agent already wrote Dockerfile, docker-compose.yml,
+.github/workflows/ci.yml, and .gitignore in Phase 1. All that remains is
+git init, repo creation, and the push.
+
 ```bash
 cd {out_dir}
 git init && git add . && git commit -m "Initial Developable-generated API"
@@ -455,7 +464,7 @@ Print the done block, adapting next steps to what was enabled:
 ✓ Generated {N} API files across {Y} entities
 ✓ Generated {M} test modules in tests/
 ✓ Generated CLAUDE.md with Developable standards
-{if github_enabled: ✓ Generated Dockerfile, docker-compose.yml, .github/workflows/ci.yml}
+✓ Generated Dockerfile, docker-compose.yml, .github/workflows/ci.yml, .gitignore
 {if github_enabled: ✓ Repository live: https://github.com/{github_user}/{github_repo}}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -470,7 +479,7 @@ Run tests (requires running server):
   python tests/run_all.py http://localhost:3000
 ```
 
-Only append deploy-specific blocks when `github_enabled` is true (these files only exist when GitHub publishing ran):
+Only append deploy-specific blocks when `github_enabled` is true:
 
 **aws:**
 ```
