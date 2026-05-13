@@ -82,12 +82,10 @@ class VersionControl:
 
         self._spec = spec
 
-        # Generate infra if not already present (idempotent)
-        if not (self.out_dir / "Dockerfile").exists():
-            print("  Generating infrastructure files (Dockerfile, docker-compose, CI)...")
-            self._generate_infra_files(spec)
-            print("  Writing .gitignore...")
-            self._write_gitignore()
+        print("  Generating infrastructure files (Dockerfile, docker-compose, CI)...")
+        self._generate_infra_files(spec)
+        print("  Writing .gitignore...")
+        self._write_gitignore()
 
         print("  Initialising git repository...")
         self._init_git()

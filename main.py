@@ -187,13 +187,6 @@ def main():
     developer = Developer(out_dir=out_dir, use_llm=not args.no_llm, force=args.force)
     api_plan = developer.generate(spec, env_values=env_values)
 
-    # ── Version Control agent: always generate infra files ────────────────────
-    # Dockerfile, docker-compose.yml, .github/workflows/ci.yml, and .gitignore
-    # are generated on every run — independent of whether --github is used.
-    from agents.version_control import VersionControl as _VC
-    print(f"\n[Version Control] Generating infrastructure files...")
-    _VC(out_dir=out_dir).generate_infra(spec)
-
     print(f"\nDone. Your project is at {out_dir}/")
     print("Next steps:")
     print("  cd", out_dir)
@@ -223,9 +216,11 @@ def main():
 
     # ── Version Control agent: publish to GitHub ──────────────────────────────
     if args.github:
+        from agents.version_control import VersionControl
+
         gh = collect_github_config(args, spec)
         print(f"\n[Version Control] Publishing to GitHub...")
-        vc = _VC(
+        vc = VersionControl(
             out_dir=out_dir,
             github_token=gh["token"],
             github_user=gh["user"],

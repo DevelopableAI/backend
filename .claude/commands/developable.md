@@ -297,7 +297,6 @@ find {out_dir}/tests -name "*.py" 2>/dev/null | wc -l
 Print:
 ```
   Phase 1 complete — {N} TypeScript files + {M} test files generated
-  ✓ Infrastructure files: Dockerfile, docker-compose.yml, .github/workflows/ci.yml, .gitignore
 ```
 
 ---
