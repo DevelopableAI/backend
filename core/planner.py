@@ -135,7 +135,7 @@ class Planner:
         name_plural = entity["name_plural"]
 
         # scalar (non-relation) fields for validation
-        scalar_fields = [f for f in entity["fields"] if not f["is_relation"] and not f["is_id"]]
+        scalar_fields = [f for f in entity["fields"] if not f["is_relation"] and not f["is_id"] and not f["is_auto_managed"]]
 
         auth_entity_name = spec.get("auth_entity_name")
         all_entities = spec["entities"]

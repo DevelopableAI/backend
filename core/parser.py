@@ -250,6 +250,22 @@ class PrismaParser:
         if is_list:
             ts_type = f"{ts_type}[]"
 
+        # Fields Prisma manages automatically — never belong in user-facing input schemas.
+        # Detected entirely from annotations Prisma already writes in the schema:
+        #   @updatedAt                    — set by Prisma on every write
+        #   @default(autoincrement())     — DB auto-increment
+        #   @default(cuid()/uuid())       — Prisma-generated IDs
+        #   @default(dbgenerated(...))    — arbitrary DB expression
+        # Uses startswith() so the check is resilient to the default-regex truncation
+        # that parses @default(fn()) as "fn(" rather than "fn()" (stops at inner paren).
+        is_auto_managed = (
+            "@updatedAt" in annotations
+            or (
+                default_val is not None
+                and default_val.startswith(("autoincrement(", "cuid(", "uuid(", "dbgenerated("))
+            )
+        )
+
         return {
             "name": name,
             "prisma_type": prisma_type,
@@ -262,6 +278,7 @@ class PrismaParser:
             "is_sensitive": is_sensitive,
             "is_enum": False,        # set to True in the enum pass if prisma_type is an enum
             "enum_values": [],       # populated in the enum pass
+            "is_auto_managed": is_auto_managed,
             "default": default_val,
             "annotations": annotations,
         }
