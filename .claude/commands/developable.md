@@ -280,12 +280,19 @@ which developable 2>/dev/null || echo "NOT_FOUND"
 
 ### Step 1b — Run the CLI
 
+Build the command via the command builder (single source of truth for flag mapping), then run it:
+
 ```bash
-{cli_command} {schema_path} --out {out_dir} --no-llm --tests-out {out_dir}/tests
+CLI_CMD=$(python core/command_builder.py << 'JSON'
+{"cli": "{cli_command}", "schema_path": "{schema_path}", "out_dir": "{out_dir}", "tests_out": "{out_dir}/tests"}
+JSON
+)
+$CLI_CMD
 ```
 
 - Stream the CLI output directly so the user sees the generator's own progress lines
 - On non-zero exit code: stop and show the full error — do NOT proceed to Phase 2 with broken output
+- The CLI always generates Dockerfile, docker-compose.yml, .github/workflows/ci.yml, and .gitignore regardless of whether GitHub push is enabled
 
 ### Step 1c — Report
 
@@ -433,8 +440,8 @@ After all files are processed, print:
 
 ### GitHub (if `github_enabled` is true)
 
-The VersionControl agent already wrote Dockerfile, docker-compose.yml,
-.github/workflows/ci.yml, and .gitignore in Phase 1. All that remains is
+Dockerfile, docker-compose.yml, .github/workflows/ci.yml, and .gitignore were
+written by the CLI in Phase 1 (always, unconditionally). All that remains is
 git init, repo creation, and the push.
 
 ```bash

@@ -63,8 +63,8 @@ class VersionControl:
         """
         Init git, create GitHub repo, push.
 
-        Infra files must already be present (call generate_infra first, or they
-        are generated here as a fallback if not yet written).
+        Requires generate_infra() to have been called first — infra files must
+        already exist in out_dir before this method runs.
 
         Args:
             spec:     Parsed Prisma spec from PrismaParser.
@@ -81,11 +81,6 @@ class VersionControl:
             sys.exit(1)
 
         self._spec = spec
-
-        print("  Generating infrastructure files (Dockerfile, docker-compose, CI)...")
-        self._generate_infra_files(spec)
-        print("  Writing .gitignore...")
-        self._write_gitignore()
 
         print("  Initialising git repository...")
         self._init_git()
