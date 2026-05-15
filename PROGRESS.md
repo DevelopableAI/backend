@@ -341,3 +341,11 @@ Developable will be repackaged as a **publishable Claude Code skill** — a slas
 - How to handle `--deploy-to` (AWS/Heroku/GCP) in a skill context — likely delegate to `gh` CLI and provider CLIs via Claude Code's `Bash` tool.
 - Community template contribution workflow — consider a separate `/developable-contribute` skill.
 - Whether to keep the Python CLI as an optional power-user interface post-parity.
+
+# 05/15/2026 [Refinement Loop Removed from Roadmap]
+
+The planned "refinement loop" feature (request changes in plain English → CLI patches relevant files) has been dropped from the roadmap.
+
+Reason: Claude Code's native `Edit` and `Write` tools already handle this natively and with more precision than a bespoke patch mechanism ever could. A user running `/developable` inside Claude Code can simply say "add a published field to Post" and Claude Code edits the generated files directly — no separate CLI feature needed. Implementing the refinement loop would duplicate capability that the host environment already provides, and would add maintenance surface with no user benefit.
+
+The README roadmap has been updated to reflect this removal.
