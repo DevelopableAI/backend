@@ -477,18 +477,18 @@ This changes the dynamic from "hope the LLM makes good decisions" to "the decisi
 
 No Python runtime. No API key setup. No install beyond the skill itself.
 
-### `/describe-schema`
+### Starting from a plain-English description
 
-Don't have a schema yet? Describe your app in plain English:
+Don't have a schema yet? Just describe your app:
 
 ```
-/describe-schema "A task management app with users, projects, and tasks. Users log in with email and password."
+/developable "A task management app with users, projects, and tasks. Users log in with email and password."
 ```
 
 The skill will:
 1. Generate a `schema.prisma` with correct Developable annotations
 2. Generate a `rules.yaml` with entity constraints
-3. Show you both files for review
+3. Show you both files for review and let you iterate
 4. Generate the full API once you confirm
 
 ---
