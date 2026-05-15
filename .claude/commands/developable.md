@@ -1,302 +1,10 @@
 # /developable
 
-Generate a production-ready Express + TypeScript REST API — starting from either an existing Prisma schema or a plain-English description of your app.
+Generate a production-ready Express + TypeScript REST API from a Prisma schema, enforcing Developable's security invariants and file structure.
 
-**Usage:** `/developable [path/to/schema.prisma | "app description"] [--out ./output] [--rules path/to/rules.yaml]`
+**Usage:** `/developable [path/to/schema.prisma] [--out ./output] [--rules path/to/rules.yaml]`
 
-**Schema detection:** If a schema path is given (or mentioned naturally, e.g. "the schema is at prisma/schema.prisma"), use it and skip straight to Phase 0b. If no path is given, search for `schema.prisma` in `prisma/`, the current directory, and up to 2 levels deep. If found, use it and skip to Phase 0b. If not found, ask:
-
-> "I couldn't find a schema.prisma. You can:
-> - Point me to one: `the schema is at path/to/schema.prisma`
-> - Or describe your app and I'll design the schema: `it's a task manager where users create projects and tasks`"
-
-If the user describes their app → run **Phase 0a** before continuing.
-
----
-
-## Phase 0a — Design Your Schema
-
-*Only runs when the user has no existing schema and wants to describe their app. Skip to Phase 0b if a schema already exists.*
-
-### Step 1 — Understand the Domain
-
-Before writing any file, reason through the description explicitly. Work through these questions:
-
-1. **What are the main nouns?** → These become Prisma models.
-2. **Which entity represents a user account / logs in?** → This gets `// @auth_entity`.
-3. **What scalar fields does each entity need?** (names, types, required vs optional)
-4. **What relationships exist?** (who owns whom, FK direction)
-5. **Which fields are secrets that must be hashed?** (passwords, tokens, API keys) → `// @llm sensitive`
-6. **What business constraints exist?** (only the author can edit, title must be non-empty, etc.) → `rules.yaml` constraints
-
-Write a brief 3–5 line reasoning summary before generating any files.
-
----
-
-### Step 2 — Generate `schema.prisma`
-
-#### Prisma file structure
-Always include this boilerplate at the top:
-```prisma
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
-
-generator client {
-  provider = "prisma-client-js"
-}
-```
-
-#### Model conventions (apply to every model)
-- Always include `id Int @id @default(autoincrement())`
-- Always include `createdAt DateTime @default(now())`
-- Always include `updatedAt DateTime @updatedAt`
-- Mark the user/account model with `// @auth_entity` on the line immediately before `model Name {`
-- Mark password/secret fields with `// @llm sensitive` as an **inline comment on the field line**
-- Add `@unique` to `email` and `username` fields automatically
-- Use `@default(false)` for boolean flags that default to inactive (published, isActive, isVerified)
-
-#### Relation conventions
-- The **owning side** (the entity that holds the FK column) has `@relation(fields: [fkField], references: [id])` on the relation field
-- The FK scalar field (e.g., `authorId Int`) appears on the same model as the `@relation`
-- The **inverse side** has the array relation (e.g., `posts Post[]`) — no FK here
-- All FK fields are `Int` (matching `@default(autoincrement())` PKs)
-- FK field names follow the pattern `{relatedEntityLower}Id` (e.g., `userId`, `postId`, `projectId`)
-
-#### Schema annotation guide
-```
-// @auth_entity                  ← on its own line before the model
-model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  name      String
-  password  String   // @llm sensitive     ← inline on the field
-  bio       String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  posts     Post[]
-}
-
-// @llm Users can only access their own data
-model Post {
-  id        Int      @id @default(autoincrement())
-  title     String
-  content   String
-  published Boolean  @default(false)
-  authorId  Int
-  author    User     @relation(fields: [authorId], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-```
-
-#### `// @llm <hint>` usage
-Add `// @llm <hint>` lines **above the model block** (before `// @auth_entity` if both apply) to capture domain rules:
-- Add when: there are ownership rules not obvious from the schema topology ("Only verified users can publish posts")
-- Add when: there are cross-entity constraints ("A task must belong to a project the user has access to")
-- Skip when: standard ownership checks that Developable handles automatically (auth FK injection, password hashing)
-
-#### Type reference
-| Prisma | TypeScript | Use for |
-|--------|-----------|---------|
-| `Int` | `number` | IDs, counts, ages, quantities |
-| `Float` | `number` | Prices, coordinates, scores |
-| `String` | `string` | Text, email, URL, names |
-| `Boolean` | `boolean` | Flags, toggles |
-| `DateTime` | `Date` | Timestamps, dates |
-| `Json` | `Record<string,any>` | Flexible metadata |
-
----
-
-### Step 3 — Generate `rules.yaml`
-
-Write a `rules.yaml` alongside the schema with entity-level constraints:
-
-```yaml
-entities:
-  User:
-    constraints:
-      - "Email must be unique and lowercased before storage"
-      - "Password must be at least 8 characters; never returned in any API response"
-
-  Post:
-    constraints:
-      - "Only the author can edit or delete a post"
-      - "Title must be non-empty and trimmed; content must be at least 10 characters"
-    # primary_parent: User  # only add if auto-detection would be wrong
-
-  Comment:
-    constraints:
-      - "Comments belong to both an author and a post"
-      - "Body must be non-empty"
-```
-
-**Add at minimum:**
-- For the auth entity: password/credential constraints
-- For any entity with an `owner_fk_field`: "Only the [role] can edit or delete a [entity]"
-- For string fields with obvious length rules: include them as constraints
-
-**Only add `primary_parent` override when the auto-detected parent would be wrong.** Auto-detection picks the first non-auth FK — override only when the schema has multiple non-auth FKs and the wrong one would be selected.
-
----
-
-### Step 4 — Write Both Files and Confirm
-
-Write `schema.prisma` and `rules.yaml` to the current directory (or `--out` path if specified).
-
-After writing, display both files and show a summary table:
-
-```
-Schema summary:
-  Entities        : User, Post, Comment
-  Auth entity     : User (login via email)
-  Sensitive fields: User.password
-  Relations       : User→Post (one-to-many), Post→Comment (one-to-many)
-  rules.yaml      : 3 entities, X constraints
-```
-
-Then ask the user explicitly:
-
-> "Does this schema look correct?
-> - Reply **`ok`** to generate the API now
-> - Reply **`edit: <instruction>`** to modify the schema (e.g., "edit: add a `category` field to Post")
-> - Reply **`stop`** to end here without generating code"
-
-**If the user says `edit: <instruction>`:** apply the change to both files, redisplay the changed file(s), and ask again.
-
-**If the user says `ok`:** set `schema_path` to the just-written `schema.prisma` and proceed to Phase 0b.
-
-**If the user says `stop`:** print `Schema saved to schema.prisma. Run /developable schema.prisma whenever you're ready.` and end.
-
----
-
-### Reference Patterns
-
-#### Pattern 1 — Auth + owned content (Blog)
-```prisma
-// @auth_entity
-model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  name      String
-  password  String   // @llm sensitive
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  posts     Post[]
-}
-
-model Post {
-  id        Int      @id @default(autoincrement())
-  title     String
-  content   String
-  published Boolean  @default(false)
-  authorId  Int
-  author    User     @relation(fields: [authorId], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-```
-
-#### Pattern 2 — Two-level ownership (Blog with comments)
-```prisma
-model Comment {
-  id        Int      @id @default(autoincrement())
-  body      String
-  postId    Int
-  post      Post     @relation(fields: [postId], references: [id])
-  authorId  Int
-  author    User     @relation(fields: [authorId], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-```
-`Comment` has two FKs: `postId` (primary parent → drives nested routes) and `authorId` (owner FK → injected from JWT). Developable auto-detects `Post` as the primary parent (first non-auth FK).
-
-#### Pattern 3 — Hierarchy without auth ownership (Products → Reviews)
-```prisma
-model Product {
-  id          Int      @id @default(autoincrement())
-  name        String
-  description String?
-  price       Float
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  reviews     Review[]
-}
-
-model Review {
-  id        Int      @id @default(autoincrement())
-  rating    Int
-  body      String
-  productId Int
-  product   Product  @relation(fields: [productId], references: [id])
-  authorId  Int
-  author    User     @relation(fields: [authorId], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-```
-
-#### Pattern 4 — SaaS hierarchy (Org → Project → Task)
-When an entity has only one non-auth FK, that's auto-detected as primary parent. No `primary_parent` override needed.
-```prisma
-model Organization {
-  id        Int       @id @default(autoincrement())
-  name      String
-  ownerId   Int
-  owner     User      @relation(fields: [ownerId], references: [id])
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  projects  Project[]
-}
-
-model Project {
-  id        Int      @id @default(autoincrement())
-  name      String
-  orgId     Int
-  org       Organization @relation(fields: [orgId], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  tasks     Task[]
-}
-
-model Task {
-  id          Int      @id @default(autoincrement())
-  title       String
-  description String?
-  done        Boolean  @default(false)
-  projectId   Int
-  project     Project  @relation(fields: [projectId], references: [id])
-  assigneeId  Int?
-  assignee    User?    @relation(fields: [assigneeId], references: [id])
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-}
-```
-Note `assigneeId` is optional (`Int?`) — optional FKs are not treated as ownership anchors by Developable.
-
----
-
-### Common Mistakes to Avoid
-
-- **`// @auth_entity` must be on its own line directly before `model`** — not inline on the model declaration
-- **`// @llm sensitive` must be inline on the field line** — not on a separate line above it
-- **Use `@updatedAt` not `@default(now())` for `updatedAt`** — the former auto-updates on every write
-- **Both sides of a relation must be declared** — if Post has `author User @relation(...)`, User must have `posts Post[]`
-- **Don't create direct many-to-many Prisma relations** — use an explicit join table model (e.g., `UserOrg` with `userId` and `orgId`) so the FK structure is visible to Developable's planner
-- **Don't add `// @llm sensitive` to FK fields** (e.g., `authorId`) — sensitive applies to secret values, not foreign keys
-
----
-
-### Worked Example Files
-
-Two complete reference schemas are available in the repository root:
-
-- **`test_schema_ecommerce.prisma`** + **`test_schema_ecommerce.rules.yaml`** — e-commerce app (User → Order → OrderItem, standalone Product)
-- **`test_schema_saas.prisma`** — SaaS hierarchy (User → Organization → Project → Task with optional assignee)
-
-Read these files if you need a fully concrete example to guide schema generation.
+If no schema path is given, search for `schema.prisma` in `prisma/`, the current directory, and up to 2 levels deep. If not found, ask the user where it is.
 
 ---
 
@@ -323,7 +31,7 @@ Output progress at each phase boundary and after each file write. This text appe
 
 ---
 
-## Phase 0b — Collect Configuration (ask before doing anything else)
+## Phase 0 — Collect Configuration (ask before doing anything else)
 
 Before reading any file or generating anything, collect the four configuration values below.
 
@@ -335,7 +43,7 @@ Before reading any file or generating anything, collect the four configuration v
 
 **Step 1 — Apply anything the user already stated in their invocation message.** If the user wrote `/developable the project name is Blog REST backend. The schema is at ./test_schema.prisma`, then `project_name = "Blog REST backend"` and `schema_path = ./test_schema.prisma` are already known. Do not ask for them again.
 
-**Step 2 — Show the full proposed configuration and ask for confirmation.** Even if the user provided every value, ALWAYS show the config block and ask before proceeding. This is the only input prompt in Phase 0b — never ask follow-up questions one by one.
+**Step 2 — Show the full proposed configuration and ask for confirmation.** Even if the user provided every value, ALWAYS show the config block and ask before proceeding. This is the only input prompt in Phase 0 — never ask follow-up questions one by one.
 
 ```
 Here's the configuration I'll use — reply "ok" to proceed or tell me what to change:
@@ -347,7 +55,7 @@ Here's the configuration I'll use — reply "ok" to proceed or tell me what to c
   Deploy to    : {provider | none}
 ```
 
-If the user says "ok" (or equivalent like "yes", "looks good", "go ahead"): proceed to Phase 0c.
+If the user says "ok" (or equivalent like "yes", "looks good", "go ahead"): proceed to Phase 0b.
 
 If the user changes a value: update it and show the config block again. Repeat until they confirm.
 
@@ -378,15 +86,15 @@ After the user confirms, print:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-Then proceed to Phase 0c.
+Then proceed to Phase 0b.
 
 ---
 
-## Phase 0c — Credential Pre-flight
+## Phase 0b — Credential Pre-flight
 
 Run these checks **before generating any files**. Use the `Bash` tool for each check. If any required credential is missing, stop and give the user exact setup instructions — do not proceed until the user confirms the credential is in place.
 
-Only check credentials that are actually needed based on the Phase 0b answers.
+Only check credentials that are actually needed based on the Phase 0 answers.
 
 ---
 
@@ -572,19 +280,12 @@ which developable 2>/dev/null || echo "NOT_FOUND"
 
 ### Step 1b — Run the CLI
 
-Build the command via the command builder (single source of truth for flag mapping), then run it:
-
 ```bash
-CLI_CMD=$(python core/command_builder.py << 'JSON'
-{"cli": "{cli_command}", "schema_path": "{schema_path}", "out_dir": "{out_dir}", "tests_out": "{out_dir}/tests"}
-JSON
-)
-$CLI_CMD
+{cli_command} {schema_path} --out {out_dir} --no-llm --tests-out {out_dir}/tests --infra
 ```
 
 - Stream the CLI output directly so the user sees the generator's own progress lines
 - On non-zero exit code: stop and show the full error — do NOT proceed to Phase 2 with broken output
-- The CLI always generates Dockerfile, docker-compose.yml, .github/workflows/ci.yml, and .gitignore regardless of whether GitHub push is enabled
 
 ### Step 1c — Report
 
@@ -732,10 +433,6 @@ After all files are processed, print:
 
 ### GitHub (if `github_enabled` is true)
 
-Dockerfile, docker-compose.yml, .github/workflows/ci.yml, and .gitignore were
-written by the CLI in Phase 1 (always, unconditionally). All that remains is
-git init, repo creation, and the push.
-
 ```bash
 cd {out_dir}
 git init && git add . && git commit -m "Initial Developable-generated API"
@@ -763,7 +460,7 @@ Print the done block, adapting next steps to what was enabled:
 ✓ Generated {N} API files across {Y} entities
 ✓ Generated {M} test modules in tests/
 ✓ Generated CLAUDE.md with Developable standards
-✓ Generated Dockerfile, docker-compose.yml, .github/workflows/ci.yml, .gitignore
+{if github_enabled: ✓ Generated Dockerfile, docker-compose.yml, .github/workflows/ci.yml}
 {if github_enabled: ✓ Repository live: https://github.com/{github_user}/{github_repo}}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -778,7 +475,7 @@ Run tests (requires running server):
   python tests/run_all.py http://localhost:3000
 ```
 
-Only append deploy-specific blocks when `github_enabled` is true:
+Only append deploy-specific blocks when `github_enabled` is true (these files only exist when GitHub publishing ran):
 
 **aws:**
 ```
