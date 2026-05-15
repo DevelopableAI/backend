@@ -20,3 +20,9 @@ node_modules/
 .env.local
 .env.*.local
 developable-testing-*.json
+ecommerce-test/
+fastify-test/
+filter-test/
+test-int/
+test-uuid/
+*-test/

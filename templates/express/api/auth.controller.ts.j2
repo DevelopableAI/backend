@@ -21,11 +21,19 @@ const registerSchema = z.object({
 {% if credential_field %}
   {{ credential_field.name }}: z.string().min(8, { message: '{{ credential_field.name | capitalize }} must be at least 8 characters' }).max(128),
 {% endif %}
-{% for field in auth_entity.fields if not field.is_relation and not field.is_id and not field.is_sensitive and (not login_field or field.name != login_field.name) %}
+{% for field in auth_entity.fields if not field.is_relation and not field.is_id and not field.is_sensitive and not field.is_auto_managed and (not login_field or field.name != login_field.name) %}
 {% if not field.is_optional and not field.default %}
+{% if field.is_enum %}
+  {{ field.name }}: z.enum(['{{ field.enum_values | join("', '") }}']),
+{% else %}
   {{ field.name }}: z.{{ 'string()' if field.ts_type == 'string' else 'number()' if field.ts_type == 'number' else 'boolean()' if field.ts_type == 'boolean' else 'string()' }},
+{% endif %}
+{% else %}
+{% if field.is_enum %}
+  {{ field.name }}: z.enum(['{{ field.enum_values | join("', '") }}']).optional(),
 {% else %}
   {{ field.name }}: z.{{ 'string()' if field.ts_type == 'string' else 'number()' if field.ts_type == 'number' else 'boolean()' if field.ts_type == 'boolean' else 'string()' }}.optional(),
+{% endif %}
 {% endif %}
 {% endfor %}
 });

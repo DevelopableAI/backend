@@ -12,23 +12,16 @@ from generators.llm import get_session_summary, reset_session
 
 
 def collect_env_values(env_vars: list[str]) -> dict[str, str]:
-    """Prompt the user for values of env variables referenced in the schema."""
-    values: dict[str, str] = {}
+    """
+    Build the env dict written to .env in the output directory.
 
-    if env_vars:
-        print("\nThe schema references environment variables needed for the generated API.")
-        print("Please provide a value for each (press Enter to skip):\n")
-
-        for var in env_vars:
-            value = input(f"  {var}: ").strip()
-            values[var] = value
-
-    # Add standard runtime defaults if not already covered by the schema
-    if "PORT" not in values:
-        values["PORT"] = "3000"
-    if "NODE_ENV" not in values:
-        values["NODE_ENV"] = "development"
-
+    Schema-referenced vars (e.g. DATABASE_URL) are written as empty placeholders
+    so the user can fill them in. PORT and NODE_ENV always get sensible defaults.
+    No interactive prompting — the CLI must be safe to run non-interactively.
+    """
+    values: dict[str, str] = {var: "" for var in env_vars}
+    values.setdefault("PORT", "3000")
+    values.setdefault("NODE_ENV", "development")
     return values
 
 
@@ -214,20 +207,25 @@ def main():
         print(f"  pip install requests")
         print(f"  python {tests_dir}/run_all.py [API_BASE_URL]")
 
-    # ── Version Control agent: publish to GitHub ──────────────────────────────
-    if args.github:
-        from agents.version_control import VersionControl
+    # ── Version Control agent ──────────────────────────────────────────────────
+    # Infra files (Dockerfile, docker-compose, CI, .gitignore) are always
+    # generated so every output directory is deployment-ready regardless of
+    # whether --github is passed.
+    from agents.version_control import VersionControl
 
+    print(f"\n[Version Control] Generating infrastructure files...")
+    vc = VersionControl(out_dir=out_dir)
+    vc.generate_infra(spec)
+
+    if args.github:
         gh = collect_github_config(args, spec)
+        vc.github_token = gh["token"]
+        vc.github_user = gh["user"]
+        vc.repo_name = gh["repo"]
+        vc.private = gh["private"]
+        vc.project_name = gh["project_name"]
+
         print(f"\n[Version Control] Publishing to GitHub...")
-        vc = VersionControl(
-            out_dir=out_dir,
-            github_token=gh["token"],
-            github_user=gh["user"],
-            repo_name=gh["repo"],
-            private=gh["private"],
-            project_name=gh["project_name"],
-        )
         repo_url = vc.publish(spec, api_plan)
         print(f"\nRepository published: {repo_url}")
         print("GitHub Actions CI will run automatically on every push.")

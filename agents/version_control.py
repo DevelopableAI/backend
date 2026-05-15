@@ -20,20 +20,23 @@ class VersionControl:
 
     Responsible for:
     1. Generating CI/CD infrastructure files (Dockerfile, docker-compose.yml,
-       GitHub Actions workflow) into the output directory.
+       GitHub Actions workflow, .gitignore) into the output directory.
     2. Initialising a git repository and creating an initial commit.
     3. Creating a new GitHub repository via the REST API.
     4. Pushing the main branch to GitHub.
 
     Follows the same Planner → Assembler pattern as Developer and Tester.
+
+    GitHub credentials (github_token, github_user, repo_name) are optional when
+    only generate_infra() is needed. They are required when publish() is called.
     """
 
     def __init__(
         self,
         out_dir: Path,
-        github_token: str,
-        github_user: str,
-        repo_name: str,
+        github_token: str = "",
+        github_user: str = "",
+        repo_name: str = "",
         private: bool = False,
         project_name: str = "",
     ):
@@ -45,9 +48,23 @@ class VersionControl:
         self.project_name = project_name
         self.assembler = Assembler(out_dir=out_dir, use_llm=False)
 
+    def generate_infra(self, spec: dict[str, Any]) -> None:
+        """
+        Generate infrastructure files and .gitignore only — no git operations,
+        no GitHub API calls. Always called as part of every generation run so
+        the output directory is always deployment-ready.
+        """
+        print("  Generating infrastructure files (Dockerfile, docker-compose, CI)...")
+        self._generate_infra_files(spec)
+        print("  Writing .gitignore...")
+        self._write_gitignore()
+
     def publish(self, spec: dict[str, Any], api_plan: dict[str, Any]) -> str:
         """
-        Generate infra files, init git, create GitHub repo, push.
+        Init git, create GitHub repo, push.
+
+        Requires generate_infra() to have been called first — infra files must
+        already exist in out_dir before this method runs.
 
         Args:
             spec:     Parsed Prisma spec from PrismaParser.
@@ -56,12 +73,14 @@ class VersionControl:
         Returns:
             The HTML URL of the created GitHub repository.
         """
-        self._spec = spec  # stored for entity-specific repo description
-        print("  Generating infrastructure files (Dockerfile, docker-compose, CI)...")
-        self._generate_infra_files(spec)
+        if not self.github_token or not self.github_user or not self.repo_name:
+            print(
+                "Error: github_token, github_user, and repo_name are required for publish().",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
-        print("  Writing .gitignore...")
-        self._write_gitignore()
+        self._spec = spec
 
         print("  Initialising git repository...")
         self._init_git()

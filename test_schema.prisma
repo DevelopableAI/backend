@@ -42,3 +42,10 @@ model Comment {
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now())
 }
+
+model Document {
+  id        String   @id @default(uuid())
+  title     String
+  content   String
+  createdAt DateTime @default(now())
+}
