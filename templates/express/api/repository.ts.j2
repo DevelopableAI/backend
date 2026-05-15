@@ -29,6 +29,12 @@ export class {{ entity.name }}Repository {
       if (!isNaN(_v{{ loop.index }})) where['{{ field.name }}'] = _v{{ loop.index }};
 {% elif field.ts_type == 'boolean' %}
       where['{{ field.name }}'] = params.filters['{{ field.name }}'] === 'true';
+{% elif field.is_enum %}
+      const _valid{{ loop.index }}: string[] = [{{ field.enum_values | map('tojson') | join(', ') }}];
+      if (_valid{{ loop.index }}.includes(params.filters['{{ field.name }}'] as string))
+        where['{{ field.name }}'] = params.filters['{{ field.name }}'];
+      else
+        where['{{ field.name }}'] = { in: [] };
 {% else %}
       where['{{ field.name }}'] = params.filters['{{ field.name }}'];
 {% endif %}
@@ -160,6 +166,12 @@ export class {{ entity.name }}Repository {
       if (!isNaN(_v{{ loop.index }})) where['{{ field.name }}'] = _v{{ loop.index }};
 {% elif field.ts_type == 'boolean' %}
       where['{{ field.name }}'] = params.filters['{{ field.name }}'] === 'true';
+{% elif field.is_enum %}
+      const _valid{{ loop.index }}: string[] = [{{ field.enum_values | map('tojson') | join(', ') }}];
+      if (_valid{{ loop.index }}.includes(params.filters['{{ field.name }}'] as string))
+        where['{{ field.name }}'] = params.filters['{{ field.name }}'];
+      else
+        where['{{ field.name }}'] = { in: [] };
 {% else %}
       where['{{ field.name }}'] = params.filters['{{ field.name }}'];
 {% endif %}
