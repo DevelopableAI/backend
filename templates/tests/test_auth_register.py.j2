@@ -148,7 +148,8 @@ def run(ctx: TestContext) -> None:
     ctx.assert_status(resp, 400, "Register with empty {{ sf.name }} → 400")
 {% endfor %}
 
-    # Extra / unknown fields should be silently ignored → 201
+    # Truly unknown fields should be silently stripped → 201
+    # Note: known fields with invalid values correctly return 400 — do not use them here
     resp = ctx.req("POST", "/auth/register", body={
 {% if login_field %}
         "{{ login_field.name }}": ctx.unique_email("extra"),
@@ -159,7 +160,7 @@ def run(ctx: TestContext) -> None:
 {% for f in required_scalar_fields %}
         "{{ f.name }}": "Extra Fields Test",
 {% endfor %}
-        "role": "admin",
         "isAdmin": True,
+        "unknownField": "should_be_stripped",
     })
     ctx.assert_status(resp, 201, "Register with extra/unknown fields → 201 (stripped)")
