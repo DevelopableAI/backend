@@ -1,0 +1,21 @@
+variable "aws_region" {
+  type    = string
+  default = "{{ provider_config.aws_region }}"
+}
+
+variable "project_name" {
+  type    = string
+  default = "{{ project_name }}"
+}
+
+variable "db_password" {
+  type      = string
+  sensitive = true
+  description = "PostgreSQL master password for the RDS instance."
+}
+
+variable "ecr_image_tag" {
+  type    = string
+  default = "latest"
+  description = "Docker image tag to deploy from ECR."
+}

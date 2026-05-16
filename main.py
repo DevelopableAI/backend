@@ -74,6 +74,138 @@ def collect_github_config(args: argparse.Namespace, spec: dict) -> dict:
     return {"token": token, "user": user, "repo": repo, "private": private, "project_name": project_name}
 
 
+def collect_terraform_config(args: argparse.Namespace, provider: str, project_name: str) -> dict:
+    """
+    Interactively collect Terraform state backend configuration.
+
+    Detects existing cloud credentials first; only prompts for values that
+    can't be resolved automatically. Terraform-specific values (bucket names,
+    workspace names) are always prompted with sensible defaults.
+    """
+    print(f"\nTerraform Agent — {provider.upper()} configuration")
+    print("(Defaults shown in brackets; press Enter to accept)\n")
+
+    if provider == "aws":
+        return _collect_terraform_config_aws(args, project_name)
+    if provider == "gcp":
+        return _collect_terraform_config_gcp(args, project_name)
+    if provider == "heroku":
+        return _collect_terraform_config_heroku(args, project_name)
+    print(f"Error: unsupported Terraform provider '{provider}'", file=sys.stderr)
+    sys.exit(1)
+
+
+def _collect_terraform_config_aws(args: argparse.Namespace, project_name: str) -> dict:
+    import boto3
+
+    session = boto3.Session()
+    creds = session.get_credentials()
+    if creds:
+        resolved = creds.resolve()
+        access_key = resolved.access_key
+        secret_key = resolved.secret_key
+        session_token = resolved.token
+        print("  AWS credentials detected from environment / ~/.aws/credentials")
+    else:
+        access_key = input("  AWS Access Key ID: ").strip()
+        secret_key = getpass.getpass("  AWS Secret Access Key: ")
+        session_token = None
+
+    default_region = getattr(args, "aws_region", None) or "us-east-1"
+    region = input(f"  AWS region [{default_region}]: ").strip() or default_region
+
+    default_bucket = f"{project_name}-tf-state"
+    state_bucket = input(f"  S3 state bucket name [{default_bucket}]: ").strip() or default_bucket
+
+    default_table = f"{project_name}-tf-lock"
+    dynamodb_table = input(f"  DynamoDB lock table name [{default_table}]: ").strip() or default_table
+
+    return {
+        "access_key": access_key,
+        "secret_key": secret_key,
+        "session_token": session_token,
+        "aws_region": region,
+        "state_bucket": state_bucket,
+        "dynamodb_table": dynamodb_table,
+    }
+
+
+def _collect_terraform_config_gcp(args: argparse.Namespace, project_name: str) -> dict:
+    import os
+
+    credentials_file = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    detected_project = None
+
+    try:
+        import google.auth
+        _, detected_project = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        print("  GCP credentials detected via Application Default Credentials")
+    except Exception:
+        pass
+
+    default_project = getattr(args, "gcp_project", None) or detected_project or ""
+    if default_project:
+        gcp_project = input(f"  GCP project ID [{default_project}]: ").strip() or default_project
+    else:
+        gcp_project = input("  GCP project ID: ").strip()
+        if not gcp_project:
+            print("Error: GCP project ID is required.", file=sys.stderr)
+            sys.exit(1)
+
+    default_region = getattr(args, "gcp_region", None) or "us-central1"
+    gcp_region = input(f"  GCP region [{default_region}]: ").strip() or default_region
+
+    default_bucket = f"{project_name}-tf-state"
+    state_bucket = input(f"  GCS state bucket name [{default_bucket}]: ").strip() or default_bucket
+
+    return {
+        "gcp_project": gcp_project,
+        "gcp_region": gcp_region,
+        "state_bucket": state_bucket,
+        "credentials_file": credentials_file,
+    }
+
+
+def _collect_terraform_config_heroku(args: argparse.Namespace, project_name: str) -> dict:
+    import os
+
+    heroku_api_key = os.getenv("HEROKU_API_KEY") or ""
+    if heroku_api_key:
+        print("  Heroku API key detected from HEROKU_API_KEY environment variable")
+    else:
+        heroku_api_key = getpass.getpass("  Heroku API Key: ").strip()
+        if not heroku_api_key:
+            print("Error: Heroku API key is required.", file=sys.stderr)
+            sys.exit(1)
+
+    heroku_email = input("  Heroku account email: ").strip()
+    if not heroku_email:
+        print("Error: Heroku account email is required.", file=sys.stderr)
+        sys.exit(1)
+
+    tfc_token = getpass.getpass("  Terraform Cloud API token: ").strip()
+    if not tfc_token:
+        print("Error: Terraform Cloud API token is required.", file=sys.stderr)
+        sys.exit(1)
+
+    tfc_org = input("  Terraform Cloud organization: ").strip()
+    if not tfc_org:
+        print("Error: Terraform Cloud organization is required.", file=sys.stderr)
+        sys.exit(1)
+
+    tfc_workspace = input(f"  Terraform Cloud workspace [{project_name}]: ").strip() or project_name
+
+    return {
+        "heroku_api_key": heroku_api_key,
+        "heroku_email": heroku_email,
+        "tfc_token": tfc_token,
+        "tfc_organization": tfc_org,
+        "tfc_workspace": tfc_workspace,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Developable Backend Engineer — generates production-ready backend services from a Prisma schema"
@@ -134,6 +266,13 @@ def main():
         "--deploy-to", default=None, metavar="PROVIDER",
         choices=["aws", "heroku", "gcp"],
         help="Deploy the generated API to a cloud provider: aws | heroku | gcp",
+    )
+    parser.add_argument(
+        "--terraform", action="store_true",
+        help=(
+            "Generate Terraform IaC files in <out>/terraform/ for the provider chosen "
+            "with --deploy-to. Bootstraps remote state backend automatically."
+        ),
     )
     parser.add_argument(
         "--aws-region", default=None, metavar="REGION",
@@ -233,6 +372,23 @@ def main():
         print(f"  cd {out_dir}")
         print("  cp .env.example .env  # fill in your values")
         print("  docker compose up")
+
+    # ── Terraform agent: generate IaC files ───────────────────────────────────
+    if args.terraform:
+        if not args.deploy_to:
+            print("Error: --terraform requires --deploy-to <provider>", file=sys.stderr)
+            sys.exit(1)
+        from agents.terraform import TerraformAgent
+
+        tf_project_name = spec["entities"][0]["name_lower"] + "-api"
+        print(f"\n[Terraform] Generating IaC for {args.deploy_to.upper()}...")
+        tf_config = collect_terraform_config(args, args.deploy_to, tf_project_name)
+        TerraformAgent(out_dir, args.deploy_to, tf_config).generate(spec)
+        print(f"\n  Terraform files written to {out_dir}/terraform/")
+        print(f"  Next steps:")
+        print(f"    cd {out_dir}/terraform")
+        print(f"    terraform init")
+        print(f"    terraform plan -var='db_password=<your-password>'")
 
     # ── Deployment agent: deploy to cloud ─────────────────────────────────────
     if args.deploy_to:

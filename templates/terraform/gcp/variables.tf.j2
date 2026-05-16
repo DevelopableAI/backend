@@ -1,0 +1,29 @@
+variable "gcp_project" {
+  type        = string
+  default     = "{{ provider_config.gcp_project }}"
+  description = "GCP project ID."
+}
+
+variable "gcp_region" {
+  type        = string
+  default     = "{{ provider_config.gcp_region }}"
+  description = "GCP region for all resources."
+}
+
+variable "project_name" {
+  type        = string
+  default     = "{{ project_name }}"
+  description = "Slug-safe name used for resource naming."
+}
+
+variable "db_password" {
+  type        = string
+  sensitive   = true
+  description = "Cloud SQL PostgreSQL user password."
+}
+
+variable "image_tag" {
+  type        = string
+  default     = "latest"
+  description = "Docker image tag to deploy from Artifact Registry."
+}

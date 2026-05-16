@@ -1,0 +1,6 @@
+terraform {
+  backend "gcs" {
+    bucket = "{{ backend_config.bucket }}"
+    prefix = "{{ project_name }}/terraform/state"
+  }
+}

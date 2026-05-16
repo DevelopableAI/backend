@@ -1,0 +1,10 @@
+output "app_url" {
+  description = "Heroku app URL — use this as your API base URL."
+  value       = "https://${heroku_app.main.name}.herokuapp.com"
+}
+
+output "database_url" {
+  description = "Heroku Postgres DATABASE_URL (set automatically as a config var)."
+  value       = heroku_addon.postgres.config_var_values["DATABASE_URL"]
+  sensitive   = true
+}

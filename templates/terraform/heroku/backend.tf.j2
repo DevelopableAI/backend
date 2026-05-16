@@ -1,0 +1,9 @@
+terraform {
+  cloud {
+    organization = "{{ backend_config.organization }}"
+
+    workspaces {
+      name = "{{ backend_config.workspace }}"
+    }
+  }
+}

@@ -15,3 +15,4 @@ docker>=7.0.0                  # Docker image build/push (all providers)
 google-cloud-run>=0.10.0       # GCP Cloud Run
 google-auth>=2.0.0             # GCP authentication
 google-api-python-client>=2.0.0  # Cloud SQL Admin API (GCP database provisioning)
+google-cloud-storage>=2.0.0      # GCS bucket creation for Terraform state backend (GCP)

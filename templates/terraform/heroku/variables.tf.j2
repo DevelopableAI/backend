@@ -1,0 +1,17 @@
+variable "heroku_api_key" {
+  type        = string
+  sensitive   = true
+  description = "Heroku API key. Set via TF_VAR_heroku_api_key environment variable — never hardcode."
+}
+
+variable "heroku_email" {
+  type        = string
+  default     = "{{ provider_config.heroku_email }}"
+  description = "Heroku account email address."
+}
+
+variable "project_name" {
+  type        = string
+  default     = "{{ project_name }}"
+  description = "Heroku app name. Must be globally unique across Heroku."
+}
