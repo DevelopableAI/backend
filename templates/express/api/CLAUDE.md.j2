@@ -101,3 +101,54 @@ npm run dev            # http://localhost:3000
 # requires a running server
 python tests/run_all.py http://localhost:3000
 ```
+
+## Terraform Infrastructure
+
+Generated HCL files live in `terraform/`. They describe all cloud resources (compute,
+database, networking, IAM) and manage remote state automatically.
+
+### Non-Negotiable Rules
+
+**Before every apply:**
+- Run `terraform plan` first. Read every line. Never skip this step.
+- Flag these keywords — they require explicit human approval before applying:
+  - `forces replacement` — the resource will be destroyed and recreated (potential data loss)
+  - `destroy` — the resource will be permanently deleted
+  - `known after apply` — the value is computed at apply time; verify downstream impact
+
+**State is sacred — never:**
+- Manually edit `.tfstate` or `.tfstate.backup`
+- Delete the remote state backend (S3 bucket, GCS bucket) while resources exist
+- Run two concurrent `terraform apply` operations against the same workspace
+- If state is corrupted: stop immediately, do not apply, investigate first
+
+**Secrets — never hardcode:**
+- `db_password`, API keys, and all sensitive variables must be supplied via:
+  - `TF_VAR_db_password=...` environment variable, or
+  - `terraform apply -var="db_password=..."` CLI flag, or
+  - A `terraform.tfvars` file that is in `.gitignore`
+- Never commit `.tfvars` files that contain secrets to version control
+
+**Destructive operations require explicit human confirmation:**
+- `terraform destroy` — tears down all managed infrastructure
+- `terraform apply` when the plan contains any `destroy` actions
+- `terraform state rm` — removes a resource from state (does not destroy it in the cloud)
+- `terraform taint` / `terraform apply -replace` — forces resource recreation
+
+**Modifying existing resources:**
+- Adding a resource: safe after plan review
+- Modifying a resource: check whether the change `forces replacement`
+- Renaming a resource block in HCL: use `terraform state mv old new` — never delete and recreate
+- Removing a resource from HCL: it will be destroyed on next apply — confirm this is intended
+
+**Backend and state migration:**
+- Never edit `backend.tf` without immediately running `terraform init -migrate-state`
+- Confirm the migration succeeded before removing the old state location
+
+**Lock file:**
+- Always commit `.terraform.lock.hcl`; never edit it manually
+- To upgrade providers: `terraform init -upgrade`, review the diff, commit the result
+
+**Drift detection:**
+- Run `terraform plan` at the start of every infrastructure change session
+- If plan shows changes you did not make, investigate drift before applying

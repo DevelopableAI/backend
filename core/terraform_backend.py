@@ -166,6 +166,13 @@ class TerraformBackend:
     def _bootstrap_heroku(
         self, config: dict[str, Any], project_name: str
     ) -> dict[str, Any]:
+        if config.get("use_local_state"):
+            print(
+                "    Using local Terraform state for Heroku "
+                "(see CLAUDE.md → Terraform Infrastructure to configure Terraform Cloud)"
+            )
+            return {"use_local_state": True}
+
         try:
             import requests
         except ImportError:

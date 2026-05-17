@@ -117,14 +117,15 @@ class Deployment:
 
         Order of operations:
           1. Select + configure cloud provider.
-          2. Ensure Dockerfile exists.
-          3. Provision managed PostgreSQL database.
-          4. Apply Prisma schema to remote database.
-          5. Build Docker image.
-          6. Deploy container (with remote DATABASE_URL injected).
-          7. Persist deployment state.
-          8. Push CI/CD deploy workflow to GitHub (if remote configured).
-          9. Run remote smoke tests.
+          2. Generate Terraform IaC files into <out_dir>/terraform/.
+          3. Ensure Dockerfile exists.
+          4. Provision managed PostgreSQL database.
+          5. Apply Prisma schema to remote database.
+          6. Build Docker image.
+          7. Deploy container (with remote DATABASE_URL injected).
+          8. Persist deployment state.
+          9. Push CI/CD deploy workflow to GitHub (if remote configured).
+         10. Run remote smoke tests.
 
         Args:
             spec:     Parsed Prisma spec (from PrismaParser).
@@ -149,10 +150,16 @@ class Deployment:
         project_name = provider.slug(spec)
         deployment_id = str(uuid.uuid4())
 
-        # ── 2. Ensure Dockerfile ───────────────────────────────────────────────
+        # ── 2. Generate Terraform IaC files ────────────────────────────────────
+        print(f"\n  Generating Terraform IaC files...")
+        from agents.terraform import TerraformAgent
+        tf_config = self._build_tf_provider_config(provider_name, creds, project_name)
+        TerraformAgent(self.out_dir, provider_name, tf_config).generate(spec)
+
+        # ── 3. Ensure Dockerfile ───────────────────────────────────────────────
         self._ensure_dockerfile(spec)
 
-        # ── 3. Provision database ──────────────────────────────────────────────
+        # ── 4. Provision database ──────────────────────────────────────────────
         # For Heroku: the app must exist before we can add the addon, so we
         # allow providers to set up prerequisites in provision_database()
         # themselves (Heroku creates the app in deploy(), so we call deploy()
@@ -202,7 +209,7 @@ class Deployment:
             record = provider.deploy(spec, image_tag, env_vars, deployment_id)
             record["resources"].extend(db_resources)
 
-        # ── 7. Persist state ───────────────────────────────────────────────────
+        # ── 8. Persist state ───────────────────────────────────────────────────
         state = DeploymentState(self.out_dir)
         state.initialise(
             project_name=project_name,
@@ -213,7 +220,7 @@ class Deployment:
 
         gitignore_changed = self._ensure_deployment_state_ignored()
 
-        # ── 8. Push CI/CD deploy workflow + set GitHub secrets ────────────────
+        # ── 9. Push CI/CD deploy workflow + set GitHub secrets ────────────────
         if self._has_github_remote():
             if gitignore_changed:
                 self._push_gitignore_to_github()
@@ -223,7 +230,7 @@ class Deployment:
             if pushed:
                 self._provision_github_secrets(provider_name, creds)
 
-        # ── 9. Remote smoke tests ──────────────────────────────────────────────
+        # ── 10. Remote smoke tests ─────────────────────────────────────────────
         self._run_remote_tests(record["endpoint"])
 
         return record
@@ -249,6 +256,34 @@ class Deployment:
                 f"  Invalid choice. Enter 1–{len(providers)} or "
                 f"one of: {', '.join(PROVIDER_MAP)}"
             )
+
+    def _build_tf_provider_config(
+        self, provider_name: str, creds: dict[str, Any], project_name: str
+    ) -> dict[str, Any]:
+        """Build the provider_config dict for TerraformAgent from already-collected credentials."""
+        if provider_name == "aws":
+            return {
+                "access_key": creds.get("access_key"),
+                "secret_key": creds.get("secret_key"),
+                "session_token": creds.get("session_token"),
+                "aws_region": creds.get("region", "us-east-1"),
+                "state_bucket": f"{project_name}-tf-state",
+                "dynamodb_table": f"{project_name}-tf-lock",
+            }
+        if provider_name == "gcp":
+            return {
+                "gcp_project": creds.get("project"),
+                "gcp_region": creds.get("region", "us-central1"),
+                "state_bucket": f"{project_name}-tf-state",
+                "credentials_file": creds.get("credentials_file"),
+            }
+        # Heroku: TFC credentials aren't part of the Heroku provider cred flow;
+        # use local state backend and let the developer migrate to TFC when ready.
+        return {
+            "heroku_api_key": creds.get("api_key"),
+            "heroku_email": creds.get("email"),
+            "use_local_state": True,
+        }
 
     def _ensure_dockerfile(self, spec: dict[str, Any]) -> None:
         """Generate infra files (Dockerfile, docker-compose, CI) if Dockerfile is absent."""

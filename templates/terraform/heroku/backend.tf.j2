@@ -1,9 +1,20 @@
 terraform {
-  cloud {
-    organization = "{{ backend_config.organization }}"
-
-    workspaces {
-      name = "{{ backend_config.workspace }}"
-    }
+  backend "local" {
+    path = "terraform.tfstate"
   }
 }
+
+# To migrate to Terraform Cloud remote state, replace the backend block above with:
+#
+#   cloud {
+#     organization = "<your-tfc-org>"
+#     workspaces {
+#       name = "{{ project_name }}"
+#     }
+#   }
+#
+# Then run:
+#   terraform login
+#   terraform init -migrate-state
+#
+# See CLAUDE.md → Terraform Infrastructure for migration rules.
