@@ -88,7 +88,7 @@ class AWSProvider(BaseProvider):
             creds = session.get_credentials()
             if creds is None:
                 return None
-            resolved = creds.resolve()
+            resolved = creds.get_frozen_credentials()
             region = self._region or session.region_name
             if not region:
                 return None
