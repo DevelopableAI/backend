@@ -44,6 +44,17 @@ jobs:
       - name: Install Node dependencies
         run: npm install
 
+      - name: Set up Terraform
+        if: ${{ hashFiles('terraform/*.tf') != '' }}
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Validate Terraform
+        if: ${{ hashFiles('terraform/*.tf') != '' }}
+        run: |
+          cd terraform
+          terraform init -backend=false
+          terraform validate
+
       - name: Generate Prisma client
         run: npx prisma generate
 

@@ -117,7 +117,7 @@ class Deployment:
 
         Order of operations:
           1. Select + configure cloud provider.
-          2. Generate Terraform IaC files into <out_dir>/terraform/.
+          2. Bootstrap Terraform state backend (S3+DynamoDB / GCS / no-op for Heroku).
           3. Ensure Dockerfile exists.
           4. Provision managed PostgreSQL database.
           5. Apply Prisma schema to remote database.
@@ -126,6 +126,11 @@ class Deployment:
           8. Persist deployment state.
           9. Push CI/CD deploy workflow to GitHub (if remote configured).
          10. Run remote smoke tests.
+
+        Note: Terraform file generation (terraform/*.tf) happens before this method
+        is called — in main.py between VersionControl.generate_infra() and
+        VersionControl.publish(). This ensures terraform files are pushed to GitHub
+        and validated by CI before deployment runs.
 
         Args:
             spec:     Parsed Prisma spec (from PrismaParser).
@@ -150,11 +155,31 @@ class Deployment:
         project_name = provider.slug(spec)
         deployment_id = str(uuid.uuid4())
 
-        # ── 2. Generate Terraform IaC files ────────────────────────────────────
-        print(f"\n  Generating Terraform IaC files...")
-        from agents.terraform import TerraformAgent
-        tf_config = self._build_tf_provider_config(provider_name, creds, project_name)
-        TerraformAgent(self.out_dir, provider_name, tf_config).generate(spec)
+        # ── 2. Bootstrap Terraform state backend ───────────────────────────────
+        # Terraform files were already generated before the GitHub push. Here we
+        # create the actual remote state infrastructure (S3+DynamoDB for AWS,
+        # GCS bucket for GCP) so `terraform init` can connect immediately.
+        # Names match what TerraformPlanner._derive_backend_config() wrote into
+        # backend.tf — no mismatch possible.
+        from core.terraform_backend import TerraformBackend
+        from core.terraform_planner import TerraformPlanner
+        _planner = TerraformPlanner()
+        _minimal_config = {
+            "aws_region": creds.get("region", "us-east-1"),
+            "gcp_project": creds.get("project", ""),
+            "gcp_region": creds.get("region", "us-central1"),
+        }
+        _backend_cfg = _planner._derive_backend_config(provider_name, project_name, _minimal_config)
+        _tf_bootstrap_config = {
+            **creds,
+            "state_bucket": _backend_cfg.get("bucket", ""),
+            "dynamodb_table": _backend_cfg.get("dynamodb_table", ""),
+            "aws_region": creds.get("region", "us-east-1"),
+            "gcp_project": creds.get("project", ""),
+            "gcp_region": creds.get("region", "us-central1"),
+        }
+        print(f"\n  Bootstrapping Terraform state backend...")
+        TerraformBackend().bootstrap(provider_name, _tf_bootstrap_config, project_name)
 
         # ── 3. Ensure Dockerfile ───────────────────────────────────────────────
         self._ensure_dockerfile(spec)
@@ -256,34 +281,6 @@ class Deployment:
                 f"  Invalid choice. Enter 1–{len(providers)} or "
                 f"one of: {', '.join(PROVIDER_MAP)}"
             )
-
-    def _build_tf_provider_config(
-        self, provider_name: str, creds: dict[str, Any], project_name: str
-    ) -> dict[str, Any]:
-        """Build the provider_config dict for TerraformAgent from already-collected credentials."""
-        if provider_name == "aws":
-            return {
-                "access_key": creds.get("access_key"),
-                "secret_key": creds.get("secret_key"),
-                "session_token": creds.get("session_token"),
-                "aws_region": creds.get("region", "us-east-1"),
-                "state_bucket": f"{project_name}-tf-state",
-                "dynamodb_table": f"{project_name}-tf-lock",
-            }
-        if provider_name == "gcp":
-            return {
-                "gcp_project": creds.get("project"),
-                "gcp_region": creds.get("region", "us-central1"),
-                "state_bucket": f"{project_name}-tf-state",
-                "credentials_file": creds.get("credentials_file"),
-            }
-        # Heroku: TFC credentials aren't part of the Heroku provider cred flow;
-        # use local state backend and let the developer migrate to TFC when ready.
-        return {
-            "heroku_api_key": creds.get("api_key"),
-            "heroku_email": creds.get("email"),
-            "use_local_state": True,
-        }
 
     def _ensure_dockerfile(self, spec: dict[str, Any]) -> None:
         """Generate infra files (Dockerfile, docker-compose, CI) if Dockerfile is absent."""

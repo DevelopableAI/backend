@@ -15,6 +15,12 @@ class TerraformPlanner:
     All files are pure Jinja2 template renders — no LLM calls needed.
     Paths are prefixed with "terraform/" so Assembler writes them to
     <out_dir>/terraform/, isolated from the Express project files.
+
+    State backend names (S3 bucket, DynamoDB table, GCS bucket) are derived
+    deterministically from project_name — no prior bootstrap call required.
+    TerraformBackend.bootstrap() in the Deployment agent creates these exact
+    resources when the user actually deploys, so terraform init connects
+    immediately after bootstrap without any name mismatch.
     """
 
     def plan(
@@ -22,9 +28,9 @@ class TerraformPlanner:
         spec: dict[str, Any],
         provider: str,
         provider_config: dict[str, Any],
-        backend_config: dict[str, Any],
     ) -> dict[str, Any]:
         project_name = self._derive_project_name(spec)
+        backend_config = self._derive_backend_config(provider, project_name, provider_config)
 
         context = {
             "project_name": project_name,
@@ -62,6 +68,30 @@ class TerraformPlanner:
         ]
 
         return {"files": files}
+
+    def _derive_backend_config(
+        self, provider: str, project_name: str, provider_config: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        Derive state backend names from project_name — no bootstrap required.
+
+        These names are identical to what TerraformBackend.bootstrap() creates,
+        so backend.tf references the correct resources before and after bootstrap.
+        """
+        if provider == "aws":
+            return {
+                "bucket": f"{project_name}-tf-state",
+                "region": provider_config.get("aws_region", "us-east-1"),
+                "dynamodb_table": f"{project_name}-tf-lock",
+            }
+        if provider == "gcp":
+            return {
+                "bucket": f"{project_name}-tf-state",
+                "project": provider_config.get("gcp_project", ""),
+                "region": provider_config.get("gcp_region", "us-central1"),
+            }
+        # Heroku: local state backend, no remote infra needed
+        return {"use_local_state": True}
 
     def _derive_project_name(self, spec: dict[str, Any]) -> str:
         schema_path = spec.get("schema_path", "")

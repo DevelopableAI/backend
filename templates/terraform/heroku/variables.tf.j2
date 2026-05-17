@@ -6,7 +6,7 @@ variable "heroku_api_key" {
 
 variable "heroku_email" {
   type        = string
-  default     = "{{ provider_config.heroku_email }}"
+  default     = "{{ provider_config.get('heroku_email', '') }}"
   description = "Heroku account email address."
 }
 

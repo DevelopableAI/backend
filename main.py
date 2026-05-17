@@ -74,6 +74,23 @@ def collect_github_config(args: argparse.Namespace, spec: dict) -> dict:
     return {"token": token, "user": user, "repo": repo, "private": private, "project_name": project_name}
 
 
+def _build_minimal_tf_provider_config(args: argparse.Namespace, provider: str) -> dict:
+    """
+    Build a minimal provider_config for Terraform file generation.
+
+    Only region/project defaults are needed — no credentials. The generated
+    .tf files use these as variable defaults (user can override with -var flags).
+    """
+    if provider == "aws":
+        return {"aws_region": getattr(args, "aws_region", None) or "us-east-1"}
+    if provider == "gcp":
+        return {
+            "gcp_project": getattr(args, "gcp_project", None) or "",
+            "gcp_region": getattr(args, "gcp_region", None) or "us-central1",
+        }
+    return {}  # Heroku: no provider-specific template vars needed
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Developable Backend Engineer — generates production-ready backend services from a Prisma schema"
@@ -216,6 +233,19 @@ def main():
     print(f"\n[Version Control] Generating infrastructure files...")
     vc = VersionControl(out_dir=out_dir)
     vc.generate_infra(spec)
+
+    # ── Terraform agent: generate IaC files ───────────────────────────────────
+    # Runs before the GitHub push so terraform/ is version-controlled and
+    # CI can run `terraform validate`. No cloud credentials required here —
+    # state backend names are derived deterministically from project_name.
+    # TerraformBackend.bootstrap() (inside Deployment.deploy()) creates the
+    # actual S3/GCS resources when the user runs --deploy-to.
+    if args.deploy_to:
+        from agents.terraform import TerraformAgent
+        tf_config = _build_minimal_tf_provider_config(args, args.deploy_to)
+        print(f"\n[Terraform] Generating IaC files for {args.deploy_to.upper()}...")
+        TerraformAgent(out_dir, args.deploy_to, tf_config).generate(spec)
+        print(f"  Terraform files written to {out_dir}/terraform/")
 
     if args.github:
         gh = collect_github_config(args, spec)
