@@ -11,6 +11,11 @@ FROM node:20-slim AS builder
 
 WORKDIR /app
 
+# OpenSSL must be present before `prisma generate` so Prisma picks the
+# correct binary engine (openssl-3.x). Without it Prisma defaults to
+# openssl-1.1.x, causing a version mismatch at runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
+
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
