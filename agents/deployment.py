@@ -179,7 +179,15 @@ class Deployment:
             "gcp_region": creds.get("region", "us-central1"),
         }
         print(f"\n  Bootstrapping Terraform state backend...")
-        TerraformBackend().bootstrap(provider_name, _tf_bootstrap_config, project_name)
+        _actual_bootstrap = TerraformBackend().bootstrap(provider_name, _tf_bootstrap_config, project_name)
+
+        # If the S3 bucket fallback fired, the bucket name in backend.tf is wrong.
+        # Re-render the file locally so `terraform init` connects to the right bucket.
+        if provider_name == "aws":
+            _derived_bucket = _backend_cfg.get("bucket", "")
+            _actual_bucket = _actual_bootstrap.get("bucket", "")
+            if _actual_bucket and _actual_bucket != _derived_bucket:
+                self._rerender_terraform_backend(spec, provider_name, _actual_bootstrap)
 
         # ── 3. Ensure Dockerfile ───────────────────────────────────────────────
         self._ensure_dockerfile(spec)
@@ -609,6 +617,28 @@ class Deployment:
             [sys.executable, str(tests_dir / "run_all.py"), endpoint],
         )
         # Non-fatal: test failures are printed but do not halt the deployment pipeline.
+
+    def _rerender_terraform_backend(
+        self, spec: dict[str, Any], provider: str, backend_config: dict[str, Any]
+    ) -> None:
+        """Re-render terraform/backend.tf with the actual (fallback) bucket name."""
+        from core.terraform_planner import TerraformPlanner
+        from generators.template import TemplateGenerator
+
+        planner = TerraformPlanner()
+        project_name = planner._derive_project_name(spec)
+        context = {
+            "project_name": project_name,
+            "spec": spec,
+            "entities": spec["entities"],
+            "provider_config": {},
+            "backend_config": backend_config,
+        }
+        backend_tf = self.out_dir / "terraform" / "backend.tf"
+        if backend_tf.exists():
+            content = TemplateGenerator().render(f"terraform/{provider}/backend.tf.j2", context)
+            backend_tf.write_text(content)
+            print(f"    Updated terraform/backend.tf → bucket: {backend_config['bucket']}")
 
     @staticmethod
     def _normalise_kwargs(kwargs: dict[str, Any]) -> dict[str, dict[str, Any]]:

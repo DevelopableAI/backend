@@ -51,12 +51,27 @@ class TerraformBackend:
             region_name=region,
         )
 
-        self._aws_ensure_s3_bucket(session, bucket, region)
+        if not self._aws_ensure_s3_bucket(session, bucket, region):
+            fallback = "developablecode-terraform-state"
+            print(
+                f"    Warning: S3 bucket '{bucket}' is taken by another AWS account.\n"
+                f"    Falling back to shared state bucket: {fallback}"
+            )
+            self._aws_ensure_s3_bucket(session, fallback, region)
+            bucket = fallback
+
         self._aws_ensure_dynamodb_table(session, table)
 
         return {"bucket": bucket, "region": region, "dynamodb_table": table}
 
-    def _aws_ensure_s3_bucket(self, session: Any, bucket: str, region: str) -> None:
+    def _aws_ensure_s3_bucket(self, session: Any, bucket: str, region: str) -> bool:
+        """
+        Create the S3 bucket (versioned, encrypted, private) if it does not exist.
+
+        Returns True if the bucket is ready to use (created or already owned by
+        this account). Returns False if the name is taken by a different AWS
+        account — the caller should try a fallback name.
+        """
         from botocore.exceptions import ClientError
 
         s3 = session.client("s3")
@@ -88,13 +103,17 @@ class TerraformBackend:
                 },
             )
             print(f"    Created S3 bucket: {bucket}")
+            return True
         except ClientError as exc:
             code = exc.response["Error"]["Code"]
-            if code in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
-                print(f"    S3 bucket already exists: {bucket}")
-            else:
-                print(f"Error creating S3 bucket '{bucket}': {exc}", file=sys.stderr)
-                sys.exit(1)
+            if code == "BucketAlreadyOwnedByYou":
+                print(f"    S3 bucket already exists (owned by you): {bucket}")
+                return True
+            if code == "BucketAlreadyExists":
+                # Globally unique name is taken by a different AWS account.
+                return False
+            print(f"Error creating S3 bucket '{bucket}': {exc}", file=sys.stderr)
+            sys.exit(1)
 
     def _aws_ensure_dynamodb_table(self, session: Any, table: str) -> None:
         from botocore.exceptions import ClientError
