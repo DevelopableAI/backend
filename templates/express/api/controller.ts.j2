@@ -166,6 +166,17 @@ export class {{ entity.name }}Controller {
     if (!raw || raw.trim() !== raw || raw.length > 128) {
       throw new AppError(400, 'Invalid ID format');
     }
+{% if entity.pk_strategy == 'uuid' %}
+    // UUID v4 format validation
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw)) {
+      throw new AppError(400, 'Invalid ID format');
+    }
+{% elif entity.pk_strategy == 'cuid' %}
+    // CUID format validation (starts with 'c', followed by alphanumeric)
+    if (!/^c[a-z0-9]{20,}$/.test(raw)) {
+      throw new AppError(400, 'Invalid ID format');
+    }
+{% endif %}
     return raw;
   }
 {% else %}
