@@ -60,16 +60,9 @@ def collect_github_config(args: argparse.Namespace, spec: dict) -> dict:
 
     project_name = getattr(args, "project_name", None) or ""
     if not project_name:
-        project_name = input("  Project name (used in repo description): ").strip()
-        if not project_name:
-            print("Error: project name is required for the repo description.", file=sys.stderr)
-            sys.exit(1)
+        project_name = spec["entities"][0]["name"] + " API"
 
-    if getattr(args, "private", False):
-        private = True
-    else:
-        vis = input("  Visibility — public or private? [public]: ").strip().lower()
-        private = vis == "private"
+    private = getattr(args, "private", False)
 
     return {"token": token, "user": user, "repo": repo, "private": private, "project_name": project_name}
 

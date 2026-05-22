@@ -67,6 +67,8 @@ def build_cli_command(config: dict) -> str:
             parts += ["--github-user", config["github_user"]]
         if config.get("github_repo"):
             parts += ["--github-repo", config["github_repo"]]
+        if config.get("project_name"):
+            parts += ["--project-name", config["project_name"]]
         if config.get("github_private"):
             parts.append("--private")
 
