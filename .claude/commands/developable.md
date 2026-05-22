@@ -572,11 +572,31 @@ which developable 2>/dev/null || echo "NOT_FOUND"
 
 ### Step 1b — Run the CLI
 
-Build the command via the command builder (single source of truth for flag mapping), then run it:
+Build the command via the command builder (single source of truth for flag mapping), then run it.
+
+Construct the JSON config using the confirmed Phase 0b values:
+- Always include: `cli`, `schema_path`, `out_dir`, `tests_out`
+- If `github_enabled` is true: include `github: true`, `github_user`, `github_repo`, `github_private`, and `github_token` (read from `GITHUB_TOKEN` env var or `gh auth token`)
+- If `deploy_provider` is not "none": include `deploy_to` and any provider-specific keys (`aws_region`, `gcp_project`, `gcp_region`, `heroku_app`)
 
 ```bash
 CLI_CMD=$(python core/command_builder.py << 'JSON'
-{"cli": "{cli_command}", "schema_path": "{schema_path}", "out_dir": "{out_dir}", "tests_out": "{out_dir}/tests"}
+{
+  "cli": "{cli_command}",
+  "schema_path": "{schema_path}",
+  "out_dir": "{out_dir}",
+  "tests_out": "{out_dir}/tests",
+  "github": {github_enabled},
+  "github_token": "{github_token}",
+  "github_user": "{github_user}",
+  "github_repo": "{github_repo}",
+  "github_private": {github_private},
+  "deploy_to": "{deploy_provider}",
+  "aws_region": "{deploy_config.aws_region}",
+  "gcp_project": "{deploy_config.gcp_project}",
+  "gcp_region": "{deploy_config.gcp_region}",
+  "heroku_app": "{deploy_config.heroku_app}"
+}
 JSON
 )
 $CLI_CMD
@@ -584,7 +604,7 @@ $CLI_CMD
 
 - Stream the CLI output directly so the user sees the generator's own progress lines
 - On non-zero exit code: stop and show the full error — do NOT proceed to Phase 2 with broken output
-- The CLI always generates Dockerfile, docker-compose.yml, .github/workflows/ci.yml, and .gitignore regardless of whether GitHub push is enabled
+- The CLI handles GitHub push and cloud deployment internally — Phase 3 only needs to report results
 
 ### Step 1c — Report
 
@@ -730,33 +750,12 @@ After all files are processed, print:
 ━━━ Phase 3/3: Publish ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-### GitHub (if `github_enabled` is true)
-
-Dockerfile, docker-compose.yml, .github/workflows/ci.yml, and .gitignore were
-written by the CLI in Phase 1 (always, unconditionally). All that remains is
-git init, repo creation, and the push.
-
-```bash
-cd {out_dir}
-git init && git add . && git commit -m "Initial Developable-generated API"
-gh repo create {github_user}/{github_repo} \
-  --{public|private} \
-  --source=. --remote=origin \
-  --description="{project_name} API by Developable (developablecode.app)"
-git push -u origin main
-```
-
-Replace `--{public|private}` with `--public` or `--private` based on `github_private`.
-
-After a successful push, print:
-```
-  ✓ Repository live: https://github.com/{github_user}/{github_repo}
-  ✓ GitHub Actions CI triggered — check the Actions tab
-```
+The CLI invoked in Phase 1 already handled GitHub push and cloud deployment.
+Phase 3 only reports the outcome.
 
 ### Final Summary
 
-Print the done block, adapting next steps to what was enabled:
+Print the done block, adapting lines to what was enabled:
 
 ```
 ━━━ Done ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -764,7 +763,11 @@ Print the done block, adapting next steps to what was enabled:
 ✓ Generated {M} test modules in tests/
 ✓ Generated CLAUDE.md with Developable standards
 ✓ Generated Dockerfile, docker-compose.yml, .github/workflows/ci.yml, .gitignore
-{if github_enabled: ✓ Repository live: https://github.com/{github_user}/{github_repo}}
+[if github_enabled]  ✓ Repository live: https://github.com/{github_user}/{github_repo}
+[if github_enabled]  ✓ GitHub Actions CI triggered — check the Actions tab
+[if deploy_provider=aws]   ✓ Deployed to AWS ECS Fargate — endpoint shown above
+[if deploy_provider=gcp]   ✓ Deployed to GCP Cloud Run — endpoint shown above
+[if deploy_provider=heroku] ✓ Deployed to Heroku — endpoint shown above
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Next steps:
@@ -778,27 +781,4 @@ Run tests (requires running server):
   python tests/run_all.py http://localhost:3000
 ```
 
-Only append deploy-specific blocks when `github_enabled` is true:
-
-**aws:**
-```
-Deploy to AWS (ECS Fargate):
-  See .github/workflows/ci.yml for automated deployment on push to main.
-  Ensure AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION are set as GitHub secrets.
-```
-
-**gcp:**
-```
-Deploy to GCP (Cloud Run):
-  See .github/workflows/ci.yml for automated deployment on push to main.
-  Ensure GCP_PROJECT_ID, GCP_SA_KEY are set as GitHub secrets.
-```
-
-**heroku:**
-```
-Deploy to Heroku:
-  heroku login
-  heroku addons:create heroku-postgresql:essential-0 --app {heroku_app}
-  heroku config:set DATABASE_URL=$(heroku config:get DATABASE_URL --app {heroku_app})
-  git push heroku main
-```
+Only print the "Next steps" and "Run tests" blocks when `deploy_provider` is "none" — if the app was deployed the live endpoint is the next thing to use, not local dev.
