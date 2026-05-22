@@ -92,6 +92,12 @@ def main():
         help="Path to a schema.rules.yaml file with business logic constraints",
     )
     parser.add_argument(
+        "--framework",
+        default="express",
+        choices=["express", "fastify"],
+        help="Web framework for the generated API (default: express)",
+    )
+    parser.add_argument(
         "--tests-out", default=None, metavar="DIR",
         help="If set, generate integration test suite into this directory",
     )
@@ -175,9 +181,14 @@ def main():
 
     env_values = collect_env_values(spec.get("env_vars", []))
 
-    # ── Developer agent: generate the Express API ─────────────────────────────
-    print(f"\n[Developer] Generating Express API into {out_dir}/...")
-    developer = Developer(out_dir=out_dir, use_llm=not args.no_llm, force=args.force)
+    # ── Developer agent: generate the API ────────────────────────────────────
+    if args.framework == "fastify":
+        from agents.fastify_developer import FastifyDeveloper
+        print(f"\n[Developer] Generating Fastify API into {out_dir}/...")
+        developer = FastifyDeveloper(out_dir=out_dir, use_llm=not args.no_llm, force=args.force)
+    else:
+        print(f"\n[Developer] Generating Express API into {out_dir}/...")
+        developer = Developer(out_dir=out_dir, use_llm=not args.no_llm, force=args.force)
     api_plan = developer.generate(spec, env_values=env_values)
 
     print(f"\nDone. Your project is at {out_dir}/")

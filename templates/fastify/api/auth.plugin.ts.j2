@@ -1,0 +1,194 @@
+{% set credential_field = sensitive_fields[0] if sensitive_fields else None %}
+{% set login_field = auth_entity.auth_login_field %}
+{% set id_field_name = auth_entity.auth_id_field %}
+import fp from 'fastify-plugin';
+import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
+import fastifyJwt from '@fastify/jwt';
+import { z } from 'zod';
+import { prisma } from '../lib/prisma.js';
+{% if credential_field %}
+import { hashValue, compareValue } from '../lib/crypto.js';
+{% endif %}
+import { AppError, ValidationError } from '../lib/errors.js';
+
+// TypeScript augmentation — shapes the JWT payload and request.user
+declare module '@fastify/jwt' {
+  interface FastifyJWT {
+    payload: {
+      id: {{ auth_entity.auth_id_ts_type }};
+{% for field in auth_entity.fields if not field.is_id and not field.is_sensitive and not field.is_relation %}
+      {{ field.name }}{% if field.is_optional %}?{% endif %}: {{ field.ts_type }};
+{% endfor %}
+    };
+    user: {
+      id: {{ auth_entity.auth_id_ts_type }};
+{% for field in auth_entity.fields if not field.is_id and not field.is_sensitive and not field.is_relation %}
+      {{ field.name }}{% if field.is_optional %}?{% endif %}: {{ field.ts_type }};
+{% endfor %}
+    };
+  }
+}
+
+// Extend FastifyInstance so entity plugins can reference fastify.authenticate
+declare module 'fastify' {
+  interface FastifyInstance {
+    authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+  }
+}
+
+const registerSchema = z.object({
+{% if login_field %}
+{% if login_field.name == 'email' %}
+  email: z.string().email({ message: 'Please provide a valid email address' }),
+{% else %}
+  {{ login_field.name }}: z.string(),
+{% endif %}
+{% endif %}
+{% if credential_field %}
+  {{ credential_field.name }}: z.string().min(8, { message: '{{ credential_field.name | capitalize }} must be at least 8 characters' }).max(128),
+{% endif %}
+{% for field in auth_entity.fields if not field.is_relation and not field.is_id and not field.is_sensitive and not field.is_auto_managed and (not login_field or field.name != login_field.name) %}
+{% if not field.is_optional and not field.default %}
+{% if field.is_enum %}
+  {{ field.name }}: z.enum(['{{ field.enum_values | join("', '") }}']),
+{% else %}
+  {{ field.name }}: z.{{ 'string()' if field.ts_type == 'string' else 'number()' if field.ts_type == 'number' else 'boolean()' if field.ts_type == 'boolean' else 'string()' }},
+{% endif %}
+{% else %}
+{% if field.is_enum %}
+  {{ field.name }}: z.enum(['{{ field.enum_values | join("', '") }}']).optional(),
+{% else %}
+  {{ field.name }}: z.{{ 'string()' if field.ts_type == 'string' else 'number()' if field.ts_type == 'number' else 'boolean()' if field.ts_type == 'boolean' else 'string()' }}.optional(),
+{% endif %}
+{% endif %}
+{% endfor %}
+});
+
+const loginSchema = z.object({
+{% if login_field %}
+{% if login_field.name == 'email' %}
+  email: z.string().email({ message: 'Please provide a valid email address' }),
+{% else %}
+  {{ login_field.name }}: z.string().min(1),
+{% endif %}
+{% endif %}
+{% if credential_field %}
+  {{ credential_field.name }}: z.string().min(1),
+{% endif %}
+});
+
+// Safe select: all non-sensitive fields returned from register / embedded in JWT
+const safeSelect = {
+{% for field in auth_entity.fields if not field.is_relation and not field.is_sensitive %}
+  {{ field.name }}: true,
+{% endfor %}
+} as const;
+
+const authPluginImpl: FastifyPluginAsync = async (fastify) => {
+  // Register JWT — secret must be set before any entity plugin uses authenticate
+  await fastify.register(fastifyJwt, {
+    secret: process.env.JWT_SECRET!,
+  });
+
+  // Decorate the Fastify instance with authenticate so entity plugins can use it
+  // as a preHandler without importing anything
+  fastify.decorate('authenticate', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      await request.jwtVerify();
+    } catch {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+  });
+
+  // POST /auth/register — create a new account
+  fastify.post('/register', async (request, reply) => {
+    const parsed = registerSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const message = parsed.error.errors.map((e) => e.message).join(', ');
+      throw new ValidationError(message);
+    }
+
+    const data = parsed.data;
+{% if credential_field %}
+    const hashedCredential = await hashValue(data.{{ credential_field.name }});
+{% endif %}
+
+    try {
+      const {{ auth_entity.name_lower }} = await prisma.{{ auth_entity.name_lower }}.create({
+        data: {
+          ...data,
+{% if credential_field %}
+          {{ credential_field.name }}: hashedCredential,
+{% endif %}
+        },
+        select: safeSelect,
+      });
+
+      const { {{ id_field_name }}: pkValue, ...otherFields } = {{ auth_entity.name_lower }};
+      const token = fastify.jwt.sign(
+        { id: pkValue, ...otherFields } as any,
+        { expiresIn: '7d' },
+      );
+
+      return reply.status(201).send({ token, {{ auth_entity.name_lower }} });
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        throw new AppError(409, 'An account with this {{ login_field.name if login_field else 'identifier' }} already exists');
+      }
+      throw err;
+    }
+  });
+
+  // POST /auth/login — authenticate and receive a JWT
+  fastify.post('/login', async (request, reply) => {
+    const parsed = loginSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const message = parsed.error.errors.map((e) => e.message).join(', ');
+      throw new ValidationError(message);
+    }
+
+{% if login_field %}
+    const {{ login_field.name }} = parsed.data.{{ login_field.name }};
+{% endif %}
+{% if credential_field %}
+    const {{ credential_field.name }} = parsed.data.{{ credential_field.name }};
+{% endif %}
+
+{% if login_field %}
+{% if login_field.is_unique or login_field.is_id %}
+    const {{ auth_entity.name_lower }} = await prisma.{{ auth_entity.name_lower }}.findUnique({
+      where: { {{ login_field.name }} },
+    });
+{% else %}
+    const {{ auth_entity.name_lower }} = await prisma.{{ auth_entity.name_lower }}.findFirst({
+      where: { {{ login_field.name }} },
+    });
+{% endif %}
+{% else %}
+    throw new AppError(501, 'Login not supported for this entity configuration');
+{% endif %}
+
+    if (!{{ auth_entity.name_lower }}) {
+      throw new AppError(401, 'Invalid {{ login_field.name if login_field else 'credentials' }} or {{ credential_field.name if credential_field else 'password' }}');
+    }
+
+{% if credential_field %}
+    const credentialValid = await compareValue({{ credential_field.name }}, {{ auth_entity.name_lower }}.{{ credential_field.name }});
+    if (!credentialValid) {
+      throw new AppError(401, 'Invalid {{ login_field.name if login_field else 'credentials' }} or {{ credential_field.name }}');
+    }
+{% endif %}
+
+    const { {{ id_field_name }}: pkValue, {% for sf in sensitive_fields %}{{ sf.name }}: _sf{{ loop.index0 }}, {% endfor %}...otherFields } = {{ auth_entity.name_lower }};
+    const token = fastify.jwt.sign(
+      { id: pkValue, ...otherFields } as any,
+      { expiresIn: '7d' },
+    );
+
+    return reply.send({ token });
+  });
+};
+
+// fp() breaks Fastify's plugin encapsulation so that fastify.authenticate
+// and the JWT decorator are visible to sibling entity plugins registered after this one.
+export const authPlugin = fp(authPluginImpl);

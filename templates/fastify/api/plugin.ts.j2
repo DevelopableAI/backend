@@ -1,0 +1,161 @@
+{% set parse_id_fn = 'parseStringId' if entity.pk_ts_type == 'string' else 'parseId' %}
+import type { FastifyPluginAsync } from 'fastify';
+import { {{ entity.name }}Repository } from '../repositories/{{ entity.name_lower }}.repository.js';
+import { validate{{ entity.name }}Create, validate{{ entity.name }}Update } from '../validators/{{ entity.name_lower }}.validator.js';
+import { parseListQuery, buildPaginatedResponse } from '../lib/pagination.js';
+import { NotFoundError, AppError } from '../lib/errors.js';
+{% for nested in nested_routes %}
+import { {{ nested.related_entity }}Repository } from '../repositories/{{ nested.related_entity_lower }}.repository.js';
+import { validate{{ nested.related_entity }}Create{% if nested.has_parent_fk_schema %}, validate{{ nested.related_entity }}CreateNested{% endif %} } from '../validators/{{ nested.related_entity_lower }}.validator.js';
+{% endfor %}
+
+// Rejects non-integer IDs and values beyond MAX_SAFE_INTEGER (security invariant)
+function parseId(raw: string): number {
+  if (!/^\d+$/.test(raw)) {
+    throw new AppError(400, 'Invalid ID format');
+  }
+  const id = Number(raw);
+  if (id > Number.MAX_SAFE_INTEGER) {
+    throw new AppError(400, 'ID out of range');
+  }
+  return id;
+}
+
+{% if entity.pk_ts_type == 'string' %}
+function parseStringId(raw: string): string {
+  if (!raw || typeof raw !== 'string' || raw.trim() !== raw || raw.length > 128) {
+    throw new AppError(400, 'Invalid ID format');
+  }
+  return raw;
+}
+{% endif %}
+
+const ALLOWED_FILTER_FIELDS = [{% for f in filterable_fields %}'{{ f.name }}'{% if not loop.last %}, {% endif %}{% endfor %}] as const;
+const ALLOWED_SORT_FIELDS = [{% for f in sortable_fields %}'{{ f.name }}'{% if not loop.last %}, {% endif %}{% endfor %}] as const;
+
+export const {{ entity.name_plural }}Plugin: FastifyPluginAsync = async (fastify) => {
+  const repository = new {{ entity.name }}Repository();
+{% for nested in nested_routes %}
+  const {{ nested.related_entity_lower }}Repository = new {{ nested.related_entity }}Repository();
+{% endfor %}
+
+  // GET / — list with pagination, filtering, and sorting
+{% if auth_entity_name %}
+  fastify.get('/', async (request, reply) => {
+{% else %}
+  fastify.get('/', async (request, reply) => {
+{% endif %}
+    const params = parseListQuery(
+      request.query as Record<string, string>,
+      ALLOWED_FILTER_FIELDS,
+      ALLOWED_SORT_FIELDS,
+    );
+    const { data, total } = await repository.findMany(params);
+    return reply.send(buildPaginatedResponse(data, total, params));
+  });
+
+  // GET /:id — get by ID
+  fastify.get('/:id', async (request, reply) => {
+    const id = {{ parse_id_fn }}((request.params as any).id);
+    const record = await repository.findById(id);
+    if (!record) throw new NotFoundError('{{ entity.name }}', id);
+    return reply.send(record);
+  });
+
+{% for route in routes if route.handler == 'create' %}
+  // POST / — create (requires authentication)
+{% if auth_entity_name %}
+  fastify.post('/', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+{% else %}
+  fastify.post('/', async (request, reply) => {
+{% endif %}
+    const data = validate{{ entity.name }}Create(request.body);
+{% if owner_fk_field %}
+    const record = await repository.create({ ...data, {{ owner_fk_field }}: (request.user as any).id });
+{% else %}
+    const record = await repository.create(data);
+{% endif %}
+    return reply.status(201).send(record);
+  });
+{% endfor %}
+
+  // PUT /:id — update
+{% if auth_entity_name %}
+  fastify.put('/:id', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+{% else %}
+  fastify.put('/:id', async (request, reply) => {
+{% endif %}
+    const id = {{ parse_id_fn }}((request.params as any).id);
+{% if entity.is_auth_entity and auth_entity_name %}
+    if (id !== (request.user as any).id) throw new AppError(403, 'Forbidden');
+{% elif owner_fk_field %}
+    const existing = await repository.findById(id);
+    if (!existing) throw new NotFoundError('{{ entity.name }}', id);
+    if (existing.{{ owner_fk_field }} !== (request.user as any).id) throw new AppError(403, 'Forbidden');
+{% endif %}
+    const data = validate{{ entity.name }}Update(request.body);
+    const record = await repository.update(id, data);
+    if (!record) throw new NotFoundError('{{ entity.name }}', id);
+    return reply.send(record);
+  });
+
+  // DELETE /:id — remove
+{% if auth_entity_name %}
+  fastify.delete('/:id', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+{% else %}
+  fastify.delete('/:id', async (request, reply) => {
+{% endif %}
+    const id = {{ parse_id_fn }}((request.params as any).id);
+{% if entity.is_auth_entity and auth_entity_name %}
+    if (id !== (request.user as any).id) throw new AppError(403, 'Forbidden');
+{% elif owner_fk_field %}
+    const existing = await repository.findById(id);
+    if (!existing) throw new NotFoundError('{{ entity.name }}', id);
+    if (existing.{{ owner_fk_field }} !== (request.user as any).id) throw new AppError(403, 'Forbidden');
+{% endif %}
+    const deleted = await repository.delete(id);
+    if (!deleted) throw new NotFoundError('{{ entity.name }}', id);
+    return reply.status(204).send();
+  });
+{% for nested in nested_routes %}
+
+  // GET /:id/{{ nested.relation_name }} — list {{ nested.related_entity_plural }} for a {{ entity.name_lower }}
+  fastify.get('/:id/{{ nested.relation_name }}', async (request, reply) => {
+    const parentId = {{ parse_id_fn }}((request.params as any).id);
+    const params = parseListQuery(
+      request.query as Record<string, string>,
+      [{% for f in nested.filterable_fields %}'{{ f.name }}'{% if not loop.last %}, {% endif %}{% endfor %}],
+      [{% for f in nested.sortable_fields %}'{{ f.name }}'{% if not loop.last %}, {% endif %}{% endfor %}],
+    );
+    const { data, total } = await {{ nested.related_entity_lower }}Repository.findManyBy{{ nested.fk_field[0] | upper ~ nested.fk_field[1:] }}(parentId, params);
+    return reply.send(buildPaginatedResponse(data, total, params));
+  });
+{% if nested.is_primary_parent %}
+
+  // POST /{{ nested.relation_name }} or /:id/{{ nested.relation_name }} — create {{ nested.related_entity_lower }}
+{% if entity.is_auth_entity %}
+  fastify.post('/{{ nested.relation_name }}', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    // Parent ID comes from the authenticated user's token, not the URL
+    const parentId = (request.user as any).id;
+{% elif auth_entity_name %}
+  fastify.post('/:id/{{ nested.relation_name }}', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const parentId = {{ parse_id_fn }}((request.params as any).id);
+{% else %}
+  fastify.post('/:id/{{ nested.relation_name }}', async (request, reply) => {
+    const parentId = {{ parse_id_fn }}((request.params as any).id);
+{% endif %}
+{% if nested.use_nested_schema %}
+    const data = validate{{ nested.related_entity }}CreateNested(request.body);
+{% else %}
+    const data = validate{{ nested.related_entity }}Create(request.body);
+{% endif %}
+{% if nested.child_owner_fk_field %}
+    const record = await {{ nested.related_entity_lower }}Repository.create({ ...data, {{ nested.fk_field }}: parentId, {{ nested.child_owner_fk_field }}: (request.user as any).id });
+{% else %}
+    const record = await {{ nested.related_entity_lower }}Repository.create({ ...data, {{ nested.fk_field }}: parentId });
+{% endif %}
+    return reply.status(201).send(record);
+  });
+{% endif %}
+{% endfor %}
+};

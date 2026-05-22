@@ -332,6 +332,7 @@ Before reading any file or generating anything, collect the four configuration v
 - `github_enabled` → `false`
 - `deploy_provider` → `none`
 - `project_name` → derive from schema filename or first entity name (e.g. `blog_api.prisma` → "Blog Api")
+- `framework` → `express`
 
 **Step 1 — Apply anything the user already stated in their invocation message.** If the user wrote `/developable the project name is Blog REST backend. The schema is at ./test_schema.prisma`, then `project_name = "Blog REST backend"` and `schema_path = ./test_schema.prisma` are already known. Do not ask for them again.
 
@@ -343,6 +344,7 @@ Here's the configuration I'll use — reply "ok" to proceed or tell me what to c
   Project name : {project_name}
   Schema       : {schema_path}
   Output dir   : {out_dir}
+  Framework    : {express | fastify}
   GitHub push  : {yes → username/repo-name (public|private) | no}
   Deploy to    : {provider | none}
 ```
@@ -364,17 +366,19 @@ If the user changes a value: update it and show the config block again. Repeat u
 **Store the confirmed values as variables for all later phases:**
 - `project_name`, `project_slug` (lowercase, hyphens)
 - `schema_path`, `out_dir`
+- `framework` (`express` or `fastify`)
 - `github_enabled`, `github_user`, `github_repo`, `github_private`
 - `deploy_provider`, `deploy_config`
 
 After the user confirms, print:
 ```
 ━━━ Configuration confirmed ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Project : {project_name}
-  Schema  : {schema_path}
-  Output  : {out_dir}
-  GitHub  : {yes → github_user/github_repo (public|private) | no}
-  Deploy  : {provider | none}
+  Project   : {project_name}
+  Schema    : {schema_path}
+  Output    : {out_dir}
+  Framework : {framework}
+  GitHub    : {yes → github_user/github_repo (public|private) | no}
+  Deploy    : {provider | none}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
@@ -576,7 +580,7 @@ Build the command via the command builder (single source of truth for flag mappi
 
 ```bash
 CLI_CMD=$(python core/command_builder.py << 'JSON'
-{"cli": "{cli_command}", "schema_path": "{schema_path}", "out_dir": "{out_dir}", "tests_out": "{out_dir}/tests"}
+{"cli": "{cli_command}", "schema_path": "{schema_path}", "out_dir": "{out_dir}", "tests_out": "{out_dir}/tests", "framework": "{framework}"}
 JSON
 )
 $CLI_CMD

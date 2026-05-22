@@ -26,6 +26,7 @@ def build_cli_command(config: dict) -> str:
         no_llm       (bool)  default True (skill fills LLM sections in Phase 2)
         rules        (str)   path to .rules.yaml, appended if provided
         force        (bool)  default False
+        framework    (str)   "express" (default) or "fastify"
     """
     schema_path = config.get("schema_path")
     if not schema_path:
@@ -50,6 +51,10 @@ def build_cli_command(config: dict) -> str:
 
     if config.get("force", False):
         parts.append("--force")
+
+    framework = config.get("framework", "express")
+    if framework != "express":
+        parts += ["--framework", framework]
 
     return " ".join(parts)
 

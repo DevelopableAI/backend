@@ -1,0 +1,51 @@
+import Fastify, { type FastifyInstance } from 'fastify';
+import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
+{% if auth_entity_name %}
+import { authPlugin } from './plugins/auth.plugin.js';
+{% endif %}
+{% for entity in entities %}
+import { {{ entity.name_plural }}Plugin } from './plugins/{{ entity.name_plural }}.plugin.js';
+{% endfor %}
+import { AppError } from './lib/errors.js';
+
+export async function buildApp(): Promise<FastifyInstance> {
+  const app = Fastify({ logger: true });
+
+  await app.register(helmet);
+  await app.register(cors);
+
+  app.get('/health', async () => ({ status: 'ok' }));
+
+{% if auth_entity_name %}
+  // Auth plugin MUST be registered first — it decorates fastify.authenticate
+  // which entity plugins depend on as a preHandler.
+  await app.register(authPlugin, { prefix: '/auth' });
+{% endif %}
+{% for entity in entities %}
+  await app.register({{ entity.name_plural }}Plugin, { prefix: '/api/{{ entity.name_plural }}' });
+{% endfor %}
+
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof AppError) {
+      return reply.status(error.statusCode).send({ error: error.message });
+    }
+    if (error.constructor.name === 'PrismaClientKnownRequestError') {
+      const e = error as any;
+      if (e.code === 'P2002') {
+        return reply.status(409).send({ error: 'A record with this value already exists' });
+      }
+      if (e.code === 'P2025') {
+        return reply.status(404).send({ error: 'Record not found' });
+      }
+    }
+    app.log.error(error);
+    return reply.status(500).send({ error: 'Internal server error' });
+  });
+
+  app.setNotFoundHandler((_request, reply) => {
+    return reply.status(404).send({ error: 'Not found' });
+  });
+
+  return app;
+}

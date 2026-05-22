@@ -1,0 +1,78 @@
+export interface PaginationParams {
+  page: number;
+  limit: number;
+  skip: number;
+}
+
+export interface PaginatedResponse<T> {
+  data: T[];
+  meta: {
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+    hasNext: boolean;
+    hasPrev: boolean;
+  };
+}
+
+export interface ListQueryParams extends PaginationParams {
+  sort?: { field: string; order: 'asc' | 'desc' };
+  filters: Record<string, string>;
+}
+
+type Query = Record<string, string | string[] | undefined>;
+
+function getString(query: Query, key: string): string | undefined {
+  const val = query[key];
+  return Array.isArray(val) ? val[0] : val;
+}
+
+export function parsePagination(query: Query): PaginationParams {
+  const page = Math.max(1, parseInt(getString(query, 'page') ?? '1') || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(getString(query, 'limit') ?? '20') || 20));
+  const skip = (page - 1) * limit;
+  return { page, limit, skip };
+}
+
+export function buildPaginatedResponse<T>(
+  data: T[],
+  total: number,
+  params: PaginationParams,
+): PaginatedResponse<T> {
+  const totalPages = Math.ceil(total / params.limit);
+  return {
+    data,
+    meta: {
+      total,
+      page: params.page,
+      limit: params.limit,
+      totalPages,
+      hasNext: params.page < totalPages,
+      hasPrev: params.page > 1,
+    },
+  };
+}
+
+export function parseListQuery(
+  query: Query,
+  allowedFilterFields: readonly string[],
+  allowedSortFields: readonly string[],
+): ListQueryParams {
+  const pagination = parsePagination(query);
+
+  let sort: { field: string; order: 'asc' | 'desc' } | undefined;
+  const sortBy = getString(query, 'sortBy');
+  if (sortBy && allowedSortFields.includes(sortBy)) {
+    const sortOrder = getString(query, 'sortOrder') === 'desc' ? 'desc' : 'asc';
+    sort = { field: sortBy, order: sortOrder };
+  }
+
+  const filters: Record<string, string> = {};
+  for (const field of allowedFilterFields) {
+    const val = getString(query, field);
+    if (val !== undefined) filters[field] = val;
+  }
+
+  return { ...pagination, sort, filters };
+}

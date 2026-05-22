@@ -1,0 +1,33 @@
+import 'dotenv/config';
+import { buildApp } from './app.js';
+
+{% if auth_entity_name %}
+if (!process.env.JWT_SECRET) {
+  const { randomBytes } = await import('crypto');
+  process.env.JWT_SECRET = randomBytes(32).toString('hex');
+  console.warn(
+    '[SECURITY] JWT_SECRET is not set. An ephemeral secret was auto-generated for this session.\n' +
+    '           Tokens will be invalidated on every restart. Add JWT_SECRET to your .env file.',
+  );
+}
+{% endif %}
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled promise rejection:', reason);
+  process.exit(1);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught exception:', err);
+  process.exit(1);
+});
+
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+
+const app = await buildApp();
+try {
+  await app.listen({ port: PORT, host: '0.0.0.0' });
+} catch (err) {
+  app.log.error(err);
+  process.exit(1);
+}
