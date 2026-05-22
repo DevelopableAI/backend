@@ -46,28 +46,28 @@ Given a Prisma schema with annotations, the platform generates a complete, produ
 The platform is modelled as a **Backend Engineer** (`main.py`) that coordinates specialised agents. Each agent has a single responsibility and communicates through well-defined interfaces (spec dict and plan dict).
 
 ```
-                    ┌─────────────────────────────┐
-                    │     Backend Engineer         │
-                    │         main.py              │
-                    │  (orchestrates all agents)   │
-                    └────────────┬────────────────┘
-                                 │
-          ┌──────────────────────┼──────────────────────┐
-          │                      │                       │
-┌─────────▼───────────┐ ┌────────▼────────────┐ ┌───────▼──────────────────┐
-│   Developer Agent   │ │   Tester Agent      │ │  Version Control Agent   │
-│  agents/developer.py│ │  agents/tester.py   │ │  agents/version_control.py│
-│                     │ │                     │ │                          │
-│  Planner + Assembler│ │ TestPlanner +       │ │  VCPlanner + Assembler   │
-│  → Express API      ├─► Assembler           │ │  → Dockerfile,           │
-└─────────────────────┘ │ → Python test suite │ │    docker-compose.yml,   │
-        api_plan ───────►                     │ │    GitHub Actions CI     │
-                        └─────────────────────┘ │  → git init + push       │
-                                                └──────────────────────────┘
+                         ┌─────────────────────────────┐
+                         │     Backend Engineer         │
+                         │         main.py              │
+                         │  (orchestrates all agents)   │
+                         └────────────┬────────────────┘
+                                      │
+     ┌────────────────────────────────┼────────────────────────────────┐
+     │                │               │               │                │
+┌────▼──────────┐ ┌───▼───────────┐ ┌▼─────────────┐ ┌▼────────────┐ ┌▼────────────────┐
+│ Developer     │ │ Tester        │ │ Version       │ │ Terraform   │ │ Deployment      │
+│ agents/       │ │ agents/       │ │ Control       │ │ agents/     │ │ agents/         │
+│ developer.py  │ │ tester.py     │ │ agents/       │ │ terraform.py│ │ deployment.py   │
+│               │ │               │ │ version_      │ │             │ │                 │
+│ Planner +     │ │ TestPlanner + │ │ control.py    │ │ Terraform   │ │ Provisions DB + │
+│ Assembler     ├─► Assembler     │ │               │ │ Planner +   │ │ container on    │
+│ → Express API │ │ → test suite  │ │ VCPlanner +   │ │ Assembler   │ │ AWS/GCP/Heroku  │
+└───────────────┘ └───────────────┘ │ Assembler     │ │ → HCL files │ │ → deploy.yml    │
+  api_plan ───────────────────────► │ → Dockerfile  │ └─────────────┘ └─────────────────┘
+                                    │ → CI/CD       │
+                                    │ → git push    │
+                                    └───────────────┘
 ```
-
-**Agents planned but not yet implemented:**
-- **Deployment Agent** — sets up and maintains CI/CD pipelines to deploy the backend artifact
 
 ### Agent Responsibilities
 
@@ -77,6 +77,7 @@ The platform is modelled as a **Backend Engineer** (`main.py`) that coordinates 
 | Developer | `agents/developer.py` | Generates Express + TypeScript API (Planner → Assembler) |
 | Tester | `agents/tester.py` | Generates Python integration test suite (TestPlanner → Assembler) |
 | Version Control | `agents/version_control.py` | Generates infra files (Dockerfile, Compose, CI), initialises git, creates GitHub repo, pushes |
+| Deployment | `agents/deployment.py` | Provisions cloud infrastructure (AWS/GCP/Heroku), deploys container, wires CI/CD |
 
 ---
 
@@ -95,15 +96,21 @@ backend/
 ├── agents/                          # Agent layer — each agent owns its generation domain
 │   ├── developer.py                 # Developer agent: Express API (wraps Planner + Assembler)
 │   ├── tester.py                    # Tester agent: Python test suite (wraps TestPlanner + Assembler)
-│   └── version_control.py           # Version Control agent: infra files, git init, GitHub push
+│   ├── version_control.py           # Version Control agent: infra files, git init, GitHub push
+│   ├── deployment.py                # Deployment agent: provision DB + container on AWS/GCP/Heroku, push deploy.yml
+│   └── terraform.py                 # Terraform agent: generate HCL IaC files (no cloud calls)
 │
 ├── core/                            # Shared infrastructure used by agents
 │   ├── parser.py                    # PrismaParser: schema.prisma → structured spec dict
 │   ├── planner.py                   # Planner: spec → API file plan (used by Developer)
 │   ├── test_planner.py              # TestPlanner: spec + api_plan → test file plan (used by Tester)
 │   ├── vc_planner.py                # VCPlanner: spec → infra file plan (used by Version Control)
+│   ├── terraform_planner.py         # TerraformPlanner: spec → HCL file plan (used by Terraform agent)
+│   ├── terraform_backend.py         # TerraformBackend: bootstraps S3/GCS state storage at deploy time
 │   ├── assembler.py                 # Assembler: orchestrates TemplateGenerator + LLMGenerator; git-diff aware
-│   └── rules_parser.py              # BusinessRulesParser: merges YAML constraints into spec
+│   ├── rules_parser.py              # BusinessRulesParser: merges YAML constraints into spec
+│   ├── deployment_state.py          # DeploymentState: persists deployment record to .developable/state.json
+│   └── providers/                   # Cloud provider abstractions (AWS, GCP, Heroku)
 │
 ├── generators/
 │   ├── base.py                      # BaseGenerator ABC + _cleanup_markdown utility
@@ -556,10 +563,10 @@ This is the shift: from "generate a project" to "enforce a standard across the l
 
 1. **Express only** — no FastAPI or other framework target yet
 2. **Single auth entity** — only one `// @auth_entity` per schema is supported
-3. **Integer PKs only** — `_parseId` assumes numeric IDs; string/UUID PKs require a parallel `_parseStringId` path
+3. **Single auth entity** — only one `// @auth_entity` per schema is supported (multi-tenant auth requires a second pass)
 4. **No test suite for the generator itself** — only the generated projects are tested; consider adding pytest tests for `PrismaParser`, `Planner`, and template rendering
 5. **Synchronous Anthropic client** — `LLMGenerator` uses the blocking SDK client; for parallel generation wrap calls with `asyncio.to_thread` or switch to `anthropic.AsyncAnthropic`
 6. **No rate limiting or audit logging in generated output** — planned as next invariant layer
 7. **GitHub token embedded in remote URL** — the VersionControl agent uses `https://<token>@github.com/...` to authenticate the push; the token may appear in `git remote -v` output inside the generated project
 8. **CI uses `prisma db push` not `migrate deploy`** — freshly generated projects have no committed migration files, so CI uses `db push --accept-data-loss`; projects that adopt proper migrations should update the workflow step
-9. **Deployment agent not yet implemented** — placeholder for future development
+9. **Terraform state bucket name collisions** — if the project-scoped S3 bucket name is taken by another AWS account, the Deployment agent falls back to `developablecode-terraform-state` and re-renders `backend.tf` accordingly
