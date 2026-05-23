@@ -751,7 +751,19 @@ After all files are processed, print:
 ```
 
 The CLI invoked in Phase 1 already handled GitHub push and cloud deployment.
-Phase 3 only reports the outcome.
+Phase 2 filled the LLM sections locally — those changes must be pushed now.
+
+### Push Phase 2 changes (if `github_enabled` is true)
+
+```bash
+cd {out_dir}
+git add src/validators/ tests/
+git commit -m "Fill validation logic and test cases (Developable Phase 2)"
+git push origin main
+```
+
+- If there are no changes to commit (e.g. `--no-llm` was used), skip silently
+- On push failure: warn the user and print the manual command, then continue to the summary
 
 ### Final Summary
 
