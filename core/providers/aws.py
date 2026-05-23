@@ -524,10 +524,18 @@ jobs:
                 raise
             print(f"  [AWS] RDS instance '{instance_id}' already exists — reusing.")
 
-        # Poll until available
+        # Poll until available — AWS may take a moment to register a brand-new
+        # instance, so DBInstanceNotFound on the first few polls is expected.
         deadline = time.time() + _RDS_WAIT_TIMEOUT_S
         while time.time() < deadline:
-            resp = rds.describe_db_instances(DBInstanceIdentifier=instance_id)
+            try:
+                resp = rds.describe_db_instances(DBInstanceIdentifier=instance_id)
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] == "DBInstanceNotFound":
+                    print(f"  [AWS] RDS instance not yet registered — waiting...", end="\r", flush=True)
+                    time.sleep(_POLL_INTERVAL_S)
+                    continue
+                raise
             inst = resp["DBInstances"][0]
             status = inst["DBInstanceStatus"]
             if status == "available":
