@@ -252,8 +252,10 @@ class PrismaParser:
         is_id = "@id" in annotations
         is_unique = "@unique" in annotations
 
-        default_match = re.search(r"@default\(([^)]+)\)", line)
-        default_val = default_match.group(1) if default_match else None
+        default_match = re.search(r"@default\((.+?)\)\s*(?:\/\/|$)", line)
+        if not default_match:
+            default_match = re.search(r"@default\((.+)\)", line)
+        default_val = default_match.group(1).strip() if default_match else None
 
         ts_type = PRISMA_TO_TS.get(prisma_type, prisma_type)
         if is_list:
