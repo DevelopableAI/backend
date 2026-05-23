@@ -803,7 +803,7 @@ Print the done block, adapting lines to what was enabled:
 ━━━ Done ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✓ Generated {N} API files across {Y} entities
 ✓ Generated {M} test modules in tests/
-✓ Generated CLAUDE.md with Developable standards
+✓ Generated CLAUDE.md and AGENTS.md with Developable standards
 ✓ Generated Dockerfile, docker-compose.yml, .github/workflows/ci.yml, .gitignore
 [if github_enabled]  ✓ Repository live: https://github.com/{github_user}/{github_repo}
 [if github_enabled]  ✓ GitHub Actions CI triggered — check the Actions tab

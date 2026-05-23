@@ -111,6 +111,9 @@ class VersionControl:
         them now, and only fall back to the Developable placeholder if the
         user explicitly declines.
         """
+        fallback_name = "Developable"
+        fallback_email = "generated@developable.ai"
+
         def _global(key: str) -> str:
             r = subprocess.run(
                 ["git", "config", "--global", key],
@@ -118,16 +121,54 @@ class VersionControl:
             )
             return r.stdout.strip() if r.returncode == 0 else ""
 
+        def _local(key: str) -> str:
+            r = subprocess.run(
+                ["git", "config", "--local", key],
+                cwd=self.out_dir,
+                capture_output=True,
+                text=True,
+            )
+            return r.stdout.strip() if r.returncode == 0 else ""
+
+        def _unset_local(key: str) -> None:
+            subprocess.run(
+                ["git", "config", "--local", "--unset", key],
+                cwd=self.out_dir,
+                capture_output=True,
+                text=True,
+            )
+
         name = _global("user.name")
         email = _global("user.email")
+        local_name = _local("user.name")
+        local_email = _local("user.email")
+
+        # Clean up stale repo-local fallback identity from older generated repos
+        # so the user's real global identity takes precedence again.
+        if name and local_name == fallback_name:
+            _unset_local("user.name")
+            local_name = ""
+        if email and local_email == fallback_email:
+            _unset_local("user.email")
+            local_email = ""
+
+        # Respect an explicit non-fallback repo-local identity.
+        effective_name = local_name or name
+        effective_email = local_email or email
+        if (
+            effective_name and effective_email
+            and effective_name != fallback_name
+            and effective_email != fallback_email
+        ):
+            return
 
         if name and email:
             return  # user's own identity is already configured — nothing to do
 
         missing = []
-        if not name:
+        if not effective_name or effective_name == fallback_name:
             missing.append("user.name")
-        if not email:
+        if not effective_email or effective_email == fallback_email:
             missing.append("user.email")
 
         print(
@@ -139,28 +180,30 @@ class VersionControl:
         ).strip().lower()
 
         if choice in ("", "y", "yes"):
-            if not name:
+            if not effective_name or effective_name == fallback_name:
                 name = input("  Your name  (e.g. Jane Smith): ").strip()
                 if name:
                     subprocess.run(["git", "config", "--global", "user.name", name])
-            if not email:
+                    effective_name = name
+            if not effective_email or effective_email == fallback_email:
                 email = input("  Your email (e.g. jane@example.com): ").strip()
                 if email:
                     subprocess.run(["git", "config", "--global", "user.email", email])
-            if name or email:
+                    effective_email = email
+            if effective_name and effective_email:
                 print("  ✓ Git identity saved to global config.")
                 return
 
         # User declined or provided nothing — use placeholder so git commit works.
         print(
             "  Using fallback identity for this commit "
-            "(name: Developable, email: generated@developable.ai).\n"
+            f"(name: {fallback_name}, email: {fallback_email}).\n"
             "  Set your own anytime: git config --global user.name 'Your Name'"
         )
-        if not name:
-            self._git("config", "user.name", "Developable")
-        if not email:
-            self._git("config", "user.email", "generated@developable.ai")
+        if not effective_name:
+            self._git("config", "user.name", fallback_name)
+        if not effective_email:
+            self._git("config", "user.email", fallback_email)
 
     def _init_git(self) -> None:
         is_new_repo = not (self.out_dir / ".git").exists()

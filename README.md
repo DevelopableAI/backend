@@ -462,13 +462,15 @@ docker-compose up
 
 ---
 
-## The Long-Term Vision: A Claude Code Skill
+## The Long-Term Vision: Claude Code And Codex Skills
 
-The CLI proves the template. The **Claude Code skill** delivers it.
+The CLI proves the template. The **Claude Code and Codex skills** deliver it.
 
-Once the template is stable, Developable ships as a publishable `/developable` slash command that any developer installs in Claude Code. The skill packages the entire standard — file structure, security invariants, OOP patterns, validation rules — as instructions that Claude Code follows when writing or modifying any file in the project.
+Once the template is stable, Developable ships as a publishable `/developable` slash command for Claude Code and as a Codex skill bundle. These package the entire standard — file structure, security invariants, OOP patterns, validation rules — as instructions that the coding agent follows when writing or modifying any file in the project.
 
 This changes the dynamic from "hope the LLM makes good decisions" to "the decisions are made; the LLM executes them." Every feature Claude Code adds to your backend conforms to the same invariants as the original generated output, across the full lifetime of the project.
+
+For Codex, the repo now includes a skill bundle at `skills/developable/SKILL.md`.
 
 ```
 # Inside Claude Code — generate from an existing schema
@@ -496,6 +498,7 @@ The skill will:
 ## Roadmap
 
 - [x] **Claude Code skill** — package the proven template as a publishable `/developable` slash command
+- [x] **Codex skill bundle** — ship the same workflow and standards via `skills/developable/SKILL.md`
 - [x] **Schema from prompt** — describe your app in plain English; skill generates `schema.prisma` + `rules.yaml` before codegen
 - [ ] Filter and sort on list endpoints
 - [ ] UUID / cuid ID support

@@ -63,6 +63,7 @@ _SECRETS_INSTRUCTIONS: dict[str, list[str]] = {
     "aws": [
         "AWS_ACCESS_KEY_ID       — your AWS access key",
         "AWS_SECRET_ACCESS_KEY   — your AWS secret key (keep this secret!)",
+        "AWS_SESSION_TOKEN       — required when using temporary STS credentials",
     ],
     "heroku": [
         "HEROKU_API_KEY          — your Heroku API token",
@@ -79,8 +80,13 @@ _PROVIDER_GITHUB_SECRETS: dict[str, dict[str, str]] = {
     "aws": {
         "AWS_ACCESS_KEY_ID": "access_key",
         "AWS_SECRET_ACCESS_KEY": "secret_key",
+        "AWS_SESSION_TOKEN": "session_token",
     },
     "gcp": {"GCP_CREDENTIALS": "credentials_b64"},
+}
+
+_OPTIONAL_PROVIDER_GITHUB_SECRETS: dict[str, set[str]] = {
+    "aws": {"AWS_SESSION_TOKEN"},
 }
 
 
@@ -255,11 +261,19 @@ class Deployment:
         if self._has_github_remote():
             if gitignore_changed:
                 self._push_gitignore_to_github()
-            print(f"\n  Generating and pushing CI/CD deploy workflow to GitHub...")
             workflow_yaml = provider.generate_deploy_workflow(project_name, record)
-            pushed = self._push_workflow_to_github(workflow_yaml)
-            if pushed:
-                self._provision_github_secrets(provider_name, creds)
+            print(f"\n  Preparing GitHub Actions deploy workflow...")
+            secrets_ready = self._provision_github_secrets(provider_name, creds)
+            if secrets_ready:
+                print(f"  Pushing CI/CD deploy workflow to GitHub...")
+                self._push_workflow_to_github(workflow_yaml)
+            else:
+                print(
+                    "  Skipping deploy.yml push for now because the required GitHub Actions "
+                    "secrets are not confirmed yet.\n"
+                    "  After adding the secrets, re-run deployment to publish the workflow "
+                    "without risking a first-run failure."
+                )
 
         # ── 10. Remote smoke tests ─────────────────────────────────────────────
         self._run_remote_tests(record["endpoint"])
@@ -438,7 +452,7 @@ class Deployment:
 
     def _provision_github_secrets(
         self, provider_name: str, creds: dict[str, Any]
-    ) -> None:
+    ) -> bool:
         """
         Set the required GitHub Actions secrets for the deploy workflow.
 
@@ -451,14 +465,15 @@ class Deployment:
         """
         secret_map = _PROVIDER_GITHUB_SECRETS.get(provider_name, {})
         if not secret_map:
-            return
+            return True
+        optional_secrets = _OPTIONAL_PROVIDER_GITHUB_SECRETS.get(provider_name, set())
 
         token = self._github_token()
         repo = self._github_repo_fullname()
 
         if not token or not repo:
             self._print_secrets_instructions(provider_name, creds)
-            return
+            return False
 
         try:
             from nacl import encoding, public as nacl_public
@@ -468,7 +483,7 @@ class Deployment:
                 "  Run: pip install PyNaCl"
             )
             self._print_secrets_instructions(provider_name, creds)
-            return
+            return False
 
         headers = {
             "Authorization": f"Bearer {token}",
@@ -485,7 +500,7 @@ class Deployment:
         if not key_resp.ok:
             print(f"  Could not fetch repo public key ({key_resp.status_code}) — skipping auto-set.")
             self._print_secrets_instructions(provider_name, creds)
-            return
+            return False
 
         key_data = key_resp.json()
         pub_key_bytes = base64.b64decode(key_data["key"])
@@ -497,6 +512,8 @@ class Deployment:
         for secret_name, cred_key in secret_map.items():
             value = creds.get(cred_key, "")
             if not value:
+                if secret_name in optional_secrets:
+                    continue
                 failed.append(secret_name)
                 continue
 
@@ -518,11 +535,16 @@ class Deployment:
 
         if set_ok:
             print(f"\n  GitHub Actions secrets set automatically: {', '.join(set_ok)}")
-            print("  The deploy workflow will trigger after the next successful CI run on main.")
 
         if failed:
             print(f"\n  Could not auto-set: {', '.join(failed)}")
             self._print_secrets_instructions(provider_name, creds)
+            return False
+
+        if set_ok:
+            print("  Secrets are ready — the deploy workflow can now be pushed safely.")
+
+        return True
 
     def _github_token(self) -> str | None:
         """
