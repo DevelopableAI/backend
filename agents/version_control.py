@@ -106,9 +106,20 @@ class VersionControl:
     def _init_git(self) -> None:
         is_new_repo = not (self.out_dir / ".git").exists()
         self._git("init")
-        # Set repo-scoped identity so git commit works even when global config is absent
-        self._git("config", "user.email", "generated@developable.ai")
-        self._git("config", "user.name", "Developable")
+        # Only set a fallback identity when the user has no global git config —
+        # never override their own name/email.
+        has_name = subprocess.run(
+            ["git", "config", "--global", "user.name"],
+            cwd=self.out_dir, capture_output=True,
+        ).returncode == 0
+        has_email = subprocess.run(
+            ["git", "config", "--global", "user.email"],
+            cwd=self.out_dir, capture_output=True,
+        ).returncode == 0
+        if not has_name:
+            self._git("config", "user.name", "Developable")
+        if not has_email:
+            self._git("config", "user.email", "generated@developable.ai")
         self._git("add", ".")
         # Skip commit if nothing is staged (re-run with no changes)
         has_staged = subprocess.run(
