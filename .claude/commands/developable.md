@@ -165,7 +165,7 @@ Then ask the user explicitly:
 
 **If the user says `edit: <instruction>`:** apply the change to both files, redisplay the changed file(s), and ask again.
 
-**If the user says `ok`:** set `schema_path` to the just-written `schema.prisma` and proceed to Phase 0b.
+**If the user says `ok`:** set `schema_path` to the just-written `schema.prisma`, set `rules_path` to the just-written `rules.yaml`, and proceed to Phase 0b.
 
 **If the user says `stop`:** print `Schema saved to schema.prisma. Run /developable schema.prisma whenever you're ready.` and end.
 
@@ -325,13 +325,14 @@ Output progress at each phase boundary and after each file write. This text appe
 
 ## Phase 0b — Collect Configuration (ask before doing anything else)
 
-Before reading any file or generating anything, collect the four configuration values below.
+Before reading any file or generating anything, collect the five configuration values below.
 
 **Default values (use these when the user has not explicitly stated otherwise):**
 - `out_dir` → `./output`
 - `github_enabled` → `false`
 - `deploy_provider` → `none`
 - `project_name` → derive from schema filename or first entity name (e.g. `blog_api.prisma` → "Blog Api")
+- `rules_path` → **no default — must be provided by the user**
 
 **Step 1 — Apply anything the user already stated in their invocation message.** If the user wrote `/developable the project name is Blog REST backend. The schema is at ./test_schema.prisma`, then `project_name = "Blog REST backend"` and `schema_path = ./test_schema.prisma` are already known. Do not ask for them again.
 
@@ -342,10 +343,13 @@ Here's the configuration I'll use — reply "ok" to proceed or tell me what to c
 
   Project name : {project_name}
   Schema       : {schema_path}
+  Rules file   : {rules_path | ⚠ required — not provided yet}
   Output dir   : {out_dir}
   GitHub push  : {yes → username/repo-name (public|private) | no}
   Deploy to    : {provider | none}
 ```
+
+**Do not proceed past this step until `rules_path` is set.** If it is missing, show the config block with the `⚠ required` warning and wait for the user to provide it before accepting "ok".
 
 If the user says "ok" (or equivalent like "yes", "looks good", "go ahead"): proceed to Phase 0c.
 
@@ -363,7 +367,7 @@ If the user changes a value: update it and show the config block again. Repeat u
 
 **Store the confirmed values as variables for all later phases:**
 - `project_name`, `project_slug` (lowercase, hyphens)
-- `schema_path`, `out_dir`
+- `schema_path`, `rules_path`, `out_dir`
 - `github_enabled`, `github_user`, `github_repo`, `github_private`
 - `deploy_provider`, `deploy_config`
 
@@ -372,6 +376,7 @@ After the user confirms, print:
 ━━━ Configuration confirmed ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Project : {project_name}
   Schema  : {schema_path}
+  Rules   : {rules_path}
   Output  : {out_dir}
   GitHub  : {yes → github_user/github_repo (public|private) | no}
   Deploy  : {provider | none}
@@ -575,7 +580,7 @@ which developable 2>/dev/null || echo "NOT_FOUND"
 Build the command via the command builder (single source of truth for flag mapping), then run it.
 
 Construct the JSON config using the confirmed Phase 0b values:
-- Always include: `cli`, `schema_path`, `out_dir`, `tests_out`
+- Always include: `cli`, `schema_path`, `rules`, `out_dir`, `tests_out`
 - If `github_enabled` is true: include `github: true`, `github_user`, `github_repo`, `github_private`, and `github_token` (read from `GITHUB_TOKEN` env var or `gh auth token`)
 - If `deploy_provider` is not "none": include `deploy_to` and any provider-specific keys (`aws_region`, `gcp_project`, `gcp_region`, `heroku_app`)
 
@@ -586,6 +591,7 @@ CLI_CMD=$(python core/command_builder.py << 'JSON'
 {
   "cli": "{cli_command}",
   "schema_path": "{schema_path}",
+  "rules": "{rules_path}",
   "out_dir": "{out_dir}",
   "tests_out": "{out_dir}/tests",
   "github": {github_enabled},

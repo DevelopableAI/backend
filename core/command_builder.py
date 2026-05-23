@@ -16,13 +16,13 @@ def build_cli_command(config: dict) -> str:
 
     Required keys:
         schema_path  (str)
+        rules        (str)   path to .rules.yaml — always required
 
     Optional keys:
         cli           (str)   CLI binary — default "python main.py"
         out_dir       (str)   default "./output"
         tests_out     (str)   if set, appends --tests-out <value>
         no_llm        (bool)  default True (skill fills LLM sections in Phase 2)
-        rules         (str)   path to .rules.yaml, appended if provided
         force         (bool)  default False
         github        (bool)  if True, appends --github + credentials flags
         github_token  (str)   appended as --github-token if github=True
@@ -39,6 +39,10 @@ def build_cli_command(config: dict) -> str:
     if not schema_path:
         raise ValueError("schema_path is required")
 
+    rules = config.get("rules")
+    if not rules:
+        raise ValueError("rules is required — pass the path to the .rules.yaml file")
+
     cli = config.get("cli", "python main.py")
     parts = [cli, str(schema_path)]
 
@@ -52,9 +56,7 @@ def build_cli_command(config: dict) -> str:
     if tests_out:
         parts += ["--tests-out", str(tests_out)]
 
-    rules = config.get("rules")
-    if rules:
-        parts += ["--rules", str(rules)]
+    parts += ["--rules", str(rules)]
 
     if config.get("force", False):
         parts.append("--force")
