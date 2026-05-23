@@ -192,58 +192,48 @@ class Deployment:
         # ── 3. Ensure Dockerfile ───────────────────────────────────────────────
         self._ensure_dockerfile(spec)
 
-        # ── 4. Provision database ──────────────────────────────────────────────
-        # For Heroku: the app must exist before we can add the addon, so we
-        # allow providers to set up prerequisites in provision_database()
-        # themselves (Heroku creates the app in deploy(), so we call deploy()
-        # first and provision_database() second for Heroku).
-        if provider_name == "heroku":
-            # Heroku needs the app to exist before addon provisioning.
-            # Build + push + release first, then add the addon.
-            env_vars = self._read_env_file()
-            image_tag = f"developable/{project_name}:latest"
-            print(f"\n  Building Docker image '{image_tag}'...")
-            self._docker_build(image_tag)
+        # ── 4. Provision + deploy via Terraform (all providers) ───────────────
+        tf_dir = self.out_dir / "terraform"
+        tf_available = tf_dir.is_dir() and (tf_dir / "main.tf").exists()
 
-            print(f"\n  Deploying container to {provider.display_name}...")
-            record = provider.deploy(spec, image_tag, env_vars, deployment_id)
-
-            print(f"\n  Provisioning Heroku Postgres database...")
-            db_url, db_resources = provider.provision_database(spec, project_name, deployment_id)
-
-            print(f"\n  Applying Prisma schema to remote database...")
-            provider.apply_schema(db_url)
-
-            # Heroku sets DATABASE_URL in config vars automatically after addon provisioning.
-            # The app restarts on config var changes, so no extra release needed.
-            record["resources"].extend(db_resources)
-
-            # Wait for the dyno to become healthy now that DATABASE_URL is set.
-            provider.wait_for_ready(record["endpoint"])
-
-        else:
-            # AWS with Terraform files → use terraform apply as the provisioner.
-            # GCP falls through to the existing boto3 path.
-            tf_dir = self.out_dir / "terraform"
-            if provider_name == "aws" and tf_dir.is_dir() and (tf_dir / "main.tf").exists():
+        if tf_available:
+            if provider_name == "aws":
                 record = self._terraform_deploy_aws(
                     spec, provider, creds, project_name, deployment_id
                 )
-            else:
-                # GCP / AWS without generated terraform files — existing boto3 path.
-                print(f"\n  Provisioning managed PostgreSQL database...")
-                db_url, db_resources = provider.provision_database(spec, project_name, deployment_id)
-
-                print(f"\n  Applying Prisma schema to remote database...")
-                provider.apply_schema(db_url)
-
+            elif provider_name == "gcp":
+                record = self._terraform_deploy_gcp(
+                    spec, provider, creds, project_name, deployment_id
+                )
+            else:  # heroku
+                record = self._terraform_deploy_heroku(
+                    spec, provider, creds, project_name, deployment_id
+                )
+        else:
+            # Fallback: no terraform files — use legacy boto3/SDK path.
+            if provider_name == "heroku":
+                env_vars = self._read_env_file()
                 image_tag = f"developable/{project_name}:latest"
                 print(f"\n  Building Docker image '{image_tag}'...")
                 self._docker_build(image_tag)
-
+                print(f"\n  Deploying container to {provider.display_name}...")
+                record = provider.deploy(spec, image_tag, env_vars, deployment_id)
+                print(f"\n  Provisioning Heroku Postgres database...")
+                db_url, db_resources = provider.provision_database(spec, project_name, deployment_id)
+                print(f"\n  Applying Prisma schema to remote database...")
+                provider.apply_schema(db_url)
+                record["resources"].extend(db_resources)
+                provider.wait_for_ready(record["endpoint"])
+            else:
+                print(f"\n  Provisioning managed PostgreSQL database...")
+                db_url, db_resources = provider.provision_database(spec, project_name, deployment_id)
+                print(f"\n  Applying Prisma schema to remote database...")
+                provider.apply_schema(db_url)
+                image_tag = f"developable/{project_name}:latest"
+                print(f"\n  Building Docker image '{image_tag}'...")
+                self._docker_build(image_tag)
                 env_vars = self._read_env_file()
                 env_vars["DATABASE_URL"] = db_url
-
                 print(f"\n  Deploying container to {provider.display_name}...")
                 record = provider.deploy(spec, image_tag, env_vars, deployment_id)
                 record["resources"].extend(db_resources)
@@ -814,6 +804,237 @@ class Deployment:
             content = TemplateGenerator().render(f"terraform/{provider}/backend.tf.j2", context)
             backend_tf.write_text(content)
             print(f"    Updated terraform/backend.tf → bucket: {backend_config['bucket']}")
+
+    # ── Terraform-based GCP deployment ────────────────────────────────────────
+
+    def _terraform_deploy_gcp(
+        self,
+        spec: dict[str, Any],
+        provider: Any,
+        creds: dict[str, Any],
+        project_name: str,
+        deployment_id: str,
+    ) -> dict[str, Any]:
+        """
+        Provision GCP infrastructure via `terraform apply` and deploy the container.
+
+        Flow:
+          1. Write terraform.auto.tfvars.json with db_password, jwt_secret, image_tag="placeholder".
+          2. terraform init  (connects to GCS backend bootstrapped in step 2 of deploy()).
+          3. terraform apply (first pass) — creates Artifact Registry, Cloud SQL, Cloud Run
+             with a placeholder image. Cloud SQL takes 5-10 minutes.
+          4. Parse terraform output for cloud_run_url, artifact_registry_url, cloud_sql_public_ip.
+          5. Apply Prisma schema to Cloud SQL via provider.apply_schema().
+          6. Build Docker image locally.
+          7. Push image to Artifact Registry.
+          8. terraform apply (second pass) with image_tag="latest" → forces new Cloud Run revision.
+        """
+        import json
+        import secrets as _secrets
+
+        tf_dir = self.out_dir / "terraform"
+        project_id = creds.get("project_id", "")
+        region = creds.get("region", "us-central1")
+
+        env_file_vars = self._read_env_file()
+        db_password = env_file_vars.get("DB_PASSWORD") or _secrets.token_urlsafe(24)
+        jwt_secret = env_file_vars.get("JWT_SECRET") or _secrets.token_urlsafe(32)
+
+        tfvars_path = tf_dir / "terraform.auto.tfvars.json"
+        tfvars_path.write_text(json.dumps({
+            "project_name": project_name,
+            "gcp_project": project_id,
+            "gcp_region": region,
+            "db_password": db_password,
+            "jwt_secret": jwt_secret,
+            "image_tag": "placeholder",
+        }, indent=2))
+        self._ensure_gitignored("terraform/*.tfvars.json")
+
+        tf_env = {**os.environ, "GOOGLE_CLOUD_PROJECT": project_id}
+        if creds.get("credentials_file"):
+            tf_env["GOOGLE_APPLICATION_CREDENTIALS"] = creds["credentials_file"]
+
+        print("\n  [Terraform] Initializing backend...")
+        self._tf_run(tf_dir, ["terraform", "init", "-input=false"], env=tf_env)
+
+        print("\n  [Terraform] Provisioning infrastructure (Artifact Registry, Cloud SQL, Cloud Run)...")
+        print("  Cloud SQL provisioning takes 5-10 minutes — please wait.\n")
+        self._tf_run(tf_dir, ["terraform", "apply", "-auto-approve", "-input=false"], env=tf_env)
+
+        out = subprocess.run(
+            ["terraform", "output", "-json"],
+            cwd=tf_dir, capture_output=True, text=True, env=tf_env,
+        )
+        if out.returncode != 0:
+            print(f"Error reading Terraform outputs:\n{out.stderr}", file=sys.stderr)
+            sys.exit(1)
+        outputs = {k: v["value"] for k, v in json.loads(out.stdout).items()}
+
+        cloud_run_url = outputs["cloud_run_url"]
+        ar_url = outputs["artifact_registry_url"]
+        cloud_sql_ip = outputs["cloud_sql_public_ip"]
+
+        db_name = project_name.replace("-", "_")
+        db_url = f"postgresql://postgres:{db_password}@{cloud_sql_ip}:5432/{db_name}"
+
+        print("\n  Applying Prisma schema to Cloud SQL...")
+        provider.apply_schema(db_url)
+
+        local_tag = f"developable/{project_name}:latest"
+        image_uri = f"{ar_url}:latest"
+        ar_host = f"{region}-docker.pkg.dev"
+
+        print(f"\n  Building Docker image '{local_tag}'...")
+        self._docker_build(local_tag)
+
+        print(f"\n  Pushing image to Artifact Registry...")
+        provider._push_to_registry(creds, local_tag, image_uri, ar_host)
+
+        # Second apply: update image_tag to "latest" so Cloud Run creates a new revision.
+        tfvars_path.write_text(json.dumps({
+            "project_name": project_name,
+            "gcp_project": project_id,
+            "gcp_region": region,
+            "db_password": db_password,
+            "jwt_secret": jwt_secret,
+            "image_tag": "latest",
+        }, indent=2))
+        print("\n  [Terraform] Deploying new Cloud Run revision with pushed image...")
+        self._tf_run(tf_dir, ["terraform", "apply", "-auto-approve", "-input=false"], env=tf_env)
+
+        print(f"\n  ✓ Deployed — endpoint: {cloud_run_url}")
+
+        from core.deployment_state import DeploymentState
+        return DeploymentState.make_record(
+            provider="gcp",
+            region=region,
+            endpoint=cloud_run_url,
+            image_uri=image_uri,
+            resources=[{"type": "terraform_managed", "id": project_name, "arn": None}],
+            tags=provider.build_tags(project_name, deployment_id, spec),
+        )
+
+    # ── Terraform-based Heroku deployment ─────────────────────────────────────
+
+    def _terraform_deploy_heroku(
+        self,
+        spec: dict[str, Any],
+        provider: Any,
+        creds: dict[str, Any],
+        project_name: str,
+        deployment_id: str,
+    ) -> dict[str, Any]:
+        """
+        Provision Heroku infrastructure via `terraform apply` and deploy the container.
+
+        Flow:
+          1. Write terraform.auto.tfvars.json with jwt_secret (heroku_api_key via env var).
+          2. terraform init  (local state backend — no remote state to bootstrap).
+          3. terraform apply — creates heroku_app, heroku_addon (postgres), config_association.
+          4. Parse terraform output for app_url and database_url (sensitive).
+          5. Apply Prisma schema to Heroku Postgres via provider.apply_schema().
+          6. Build Docker image locally.
+          7. Docker login to registry.heroku.com, push image, release via Formation API.
+        """
+        import json
+        import secrets as _secrets
+
+        tf_dir = self.out_dir / "terraform"
+        api_key = creds.get("api_key", "")
+
+        env_file_vars = self._read_env_file()
+        jwt_secret = env_file_vars.get("JWT_SECRET") or _secrets.token_urlsafe(32)
+
+        tfvars_path = tf_dir / "terraform.auto.tfvars.json"
+        tfvars_path.write_text(json.dumps({
+            "project_name": project_name,
+            "jwt_secret": jwt_secret,
+        }, indent=2))
+        self._ensure_gitignored("terraform/*.tfvars.json")
+
+        # Heroku API key passed via env var — never written to a file.
+        tf_env = {**os.environ, "TF_VAR_heroku_api_key": api_key}
+
+        print("\n  [Terraform] Initializing (local state)...")
+        self._tf_run(tf_dir, ["terraform", "init", "-input=false"], env=tf_env)
+
+        print("\n  [Terraform] Provisioning Heroku app and Postgres addon...")
+        print("  Postgres addon provisioning typically takes 1-2 minutes.\n")
+        self._tf_run(tf_dir, ["terraform", "apply", "-auto-approve", "-input=false"], env=tf_env)
+
+        # sensitive outputs are still present as actual values in -json output.
+        out = subprocess.run(
+            ["terraform", "output", "-json"],
+            cwd=tf_dir, capture_output=True, text=True, env=tf_env,
+        )
+        if out.returncode != 0:
+            print(f"Error reading Terraform outputs:\n{out.stderr}", file=sys.stderr)
+            sys.exit(1)
+        outputs = {k: v["value"] for k, v in json.loads(out.stdout).items()}
+
+        app_url = outputs.get("app_url", f"https://{project_name}.herokuapp.com")
+        db_url = outputs.get("database_url", "")
+
+        # Normalize scheme: Heroku uses postgres://, Prisma 5 requires postgresql://
+        if db_url.startswith("postgres://"):
+            db_url = "postgresql://" + db_url[len("postgres://"):]
+
+        print("\n  Applying Prisma schema to Heroku Postgres...")
+        provider.apply_schema(db_url)
+
+        local_tag = f"developable/{project_name}:latest"
+        print(f"\n  Building Docker image '{local_tag}'...")
+        self._docker_build(local_tag)
+
+        heroku_image = f"registry.heroku.com/{project_name}/web"
+        print(f"\n  Authenticating Docker to Heroku registry...")
+        provider._docker_login(api_key)
+
+        print(f"\n  Pushing image to {heroku_image}...")
+        subprocess.run(["docker", "tag", local_tag, heroku_image], check=True)
+        provider._docker_push_with_retry(heroku_image)
+
+        # Heroku Formation API requires the image config digest (not manifest digest).
+        manifest_result = subprocess.run(
+            ["docker", "manifest", "inspect", heroku_image],
+            capture_output=True, text=True,
+        )
+        if manifest_result.returncode != 0:
+            print(f"\nFailed to inspect manifest: {manifest_result.stderr}", file=sys.stderr)
+            sys.exit(1)
+        manifest = json.loads(manifest_result.stdout)
+        image_id = manifest.get("config", {}).get("digest", "")
+        if not image_id:
+            print("\nCould not read config digest from manifest.", file=sys.stderr)
+            sys.exit(1)
+        print(f"  [Heroku] Config digest: {image_id}")
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/vnd.heroku+json; version=3",
+            "Content-Type": "application/json",
+        }
+        # Set provider state so helper methods work without re-initialisation.
+        provider._api_headers = headers
+        provider._app_name_resolved = project_name
+
+        print(f"\n  Releasing web dyno...")
+        provider._release(headers, project_name, image_id)
+        provider._print_release_status(headers, project_name)
+
+        endpoint = provider._get_app_domain(headers, project_name)
+        print(f"\n  ✓ Deployed — endpoint: {endpoint}")
+
+        from core.deployment_state import DeploymentState
+        return DeploymentState.make_record(
+            provider="heroku",
+            region=None,
+            endpoint=endpoint,
+            image_uri=heroku_image,
+            resources=[{"type": "terraform_managed", "id": project_name, "arn": None}],
+            tags=provider.build_tags(project_name, deployment_id, spec),
+        )
 
     @staticmethod
     def _normalise_kwargs(kwargs: dict[str, Any]) -> dict[str, dict[str, Any]]:

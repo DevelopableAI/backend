@@ -15,3 +15,9 @@ variable "project_name" {
   default     = "{{ project_name }}"
   description = "Heroku app name. Must be globally unique across Heroku."
 }
+
+variable "jwt_secret" {
+  type        = string
+  sensitive   = true
+  description = "JWT signing secret. Set via terraform.auto.tfvars.json — never hardcode."
+}

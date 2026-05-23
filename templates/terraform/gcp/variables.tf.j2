@@ -27,3 +27,9 @@ variable "image_tag" {
   default     = "latest"
   description = "Docker image tag to deploy from Artifact Registry."
 }
+
+variable "jwt_secret" {
+  type        = string
+  sensitive   = true
+  description = "JWT signing secret. Set via terraform.auto.tfvars.json — never hardcode."
+}

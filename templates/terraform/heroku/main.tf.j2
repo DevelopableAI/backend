@@ -37,4 +37,8 @@ resource "heroku_app_config_association" "main" {
     NODE_ENV = "production"
     PORT     = "3000"
   }
+
+  sensitive_vars = {
+    JWT_SECRET = var.jwt_secret
+  }
 }

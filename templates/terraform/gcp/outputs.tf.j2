@@ -8,6 +8,11 @@ output "cloud_sql_connection_name" {
   value       = google_sql_database_instance.main.connection_name
 }
 
+output "cloud_sql_public_ip" {
+  description = "Cloud SQL public IP address — used by the deployment agent to run Prisma migrations."
+  value       = google_sql_database_instance.main.public_ip_address
+}
+
 output "artifact_registry_url" {
   description = "Artifact Registry Docker repository URL — push your image here before applying."
   value       = "${var.gcp_region}-docker.pkg.dev/${var.gcp_project}/developable/${var.project_name}"
