@@ -222,25 +222,31 @@ class Deployment:
             provider.wait_for_ready(record["endpoint"])
 
         else:
-            # AWS / GCP: provision DB first, then deploy container.
-            print(f"\n  Provisioning managed PostgreSQL database...")
-            db_url, db_resources = provider.provision_database(spec, project_name, deployment_id)
+            # AWS with Terraform files → use terraform apply as the provisioner.
+            # GCP falls through to the existing boto3 path.
+            tf_dir = self.out_dir / "terraform"
+            if provider_name == "aws" and tf_dir.is_dir() and (tf_dir / "main.tf").exists():
+                record = self._terraform_deploy_aws(
+                    spec, provider, creds, project_name, deployment_id
+                )
+            else:
+                # GCP / AWS without generated terraform files — existing boto3 path.
+                print(f"\n  Provisioning managed PostgreSQL database...")
+                db_url, db_resources = provider.provision_database(spec, project_name, deployment_id)
 
-            print(f"\n  Applying Prisma schema to remote database...")
-            provider.apply_schema(db_url)
+                print(f"\n  Applying Prisma schema to remote database...")
+                provider.apply_schema(db_url)
 
-            # Build image
-            image_tag = f"developable/{project_name}:latest"
-            print(f"\n  Building Docker image '{image_tag}'...")
-            self._docker_build(image_tag)
+                image_tag = f"developable/{project_name}:latest"
+                print(f"\n  Building Docker image '{image_tag}'...")
+                self._docker_build(image_tag)
 
-            # Override DATABASE_URL with the remote DB URL before deploying
-            env_vars = self._read_env_file()
-            env_vars["DATABASE_URL"] = db_url
+                env_vars = self._read_env_file()
+                env_vars["DATABASE_URL"] = db_url
 
-            print(f"\n  Deploying container to {provider.display_name}...")
-            record = provider.deploy(spec, image_tag, env_vars, deployment_id)
-            record["resources"].extend(db_resources)
+                print(f"\n  Deploying container to {provider.display_name}...")
+                record = provider.deploy(spec, image_tag, env_vars, deployment_id)
+                record["resources"].extend(db_resources)
 
         # ── 8. Persist state ───────────────────────────────────────────────────
         state = DeploymentState(self.out_dir)
@@ -617,6 +623,175 @@ class Deployment:
             [sys.executable, str(tests_dir / "run_all.py"), endpoint],
         )
         # Non-fatal: test failures are printed but do not halt the deployment pipeline.
+
+    # ── Terraform-based AWS deployment ────────────────────────────────────────
+
+    def _terraform_deploy_aws(
+        self,
+        spec: dict[str, Any],
+        provider: Any,
+        creds: dict[str, Any],
+        project_name: str,
+        deployment_id: str,
+    ) -> dict[str, Any]:
+        """
+        Provision AWS infrastructure via `terraform apply` and deploy the container.
+
+        Flow:
+          1. Write terraform.auto.tfvars.json with db_password + jwt_secret.
+          2. terraform init  (connects to S3 backend bootstrapped in step 2 of deploy()).
+          3. terraform apply (first pass) — creates ECR, RDS, ECS, ALB, VPC, IAM.
+             RDS takes ~5-10 minutes; ECS task starts failing (no image yet).
+          4. Parse terraform output for rds_endpoint, ecr_repository_url, alb_dns_name.
+          5. Apply Prisma schema to RDS via provider.apply_schema().
+          6. Build Docker image locally.
+          7. Push image to ECR.
+          8. Force-new ECS deployment so the service picks up the pushed image.
+        """
+        import json
+        import secrets as _secrets
+
+        tf_dir = self.out_dir / "terraform"
+        region = creds.get("region", "us-east-1")
+
+        # Read secrets from .env if present, otherwise generate.
+        env_file_vars = self._read_env_file()
+        db_password = env_file_vars.get("DB_PASSWORD") or _secrets.token_urlsafe(24)
+        jwt_secret = env_file_vars.get("JWT_SECRET") or _secrets.token_urlsafe(32)
+
+        # Write sensitive tfvars file — never committed (gitignored below).
+        tfvars_path = tf_dir / "terraform.auto.tfvars.json"
+        tfvars_path.write_text(json.dumps({
+            "project_name": project_name,
+            "aws_region": region,
+            "db_password": db_password,
+            "jwt_secret": jwt_secret,
+        }, indent=2))
+        self._ensure_gitignored("terraform/*.tfvars.json")
+
+        # Pass AWS credentials to Terraform via environment variables.
+        tf_env = {
+            **os.environ,
+            "AWS_ACCESS_KEY_ID": creds.get("access_key", ""),
+            "AWS_SECRET_ACCESS_KEY": creds.get("secret_key", ""),
+            "AWS_DEFAULT_REGION": region,
+        }
+        if creds.get("session_token"):
+            tf_env["AWS_SESSION_TOKEN"] = creds["session_token"]
+
+        print("\n  [Terraform] Initializing backend...")
+        self._tf_run(tf_dir, ["terraform", "init", "-input=false"], env=tf_env)
+
+        print("\n  [Terraform] Provisioning infrastructure (ECR, RDS, ECS Fargate, ALB, VPC)...")
+        print("  RDS provisioning takes 5-10 minutes — please wait.\n")
+        self._tf_run(tf_dir, ["terraform", "apply", "-auto-approve", "-input=false"], env=tf_env)
+
+        # Parse outputs.
+        out = subprocess.run(
+            ["terraform", "output", "-json"],
+            cwd=tf_dir, capture_output=True, text=True, env=tf_env,
+        )
+        if out.returncode != 0:
+            print(f"Error reading Terraform outputs:\n{out.stderr}", file=sys.stderr)
+            sys.exit(1)
+        outputs = {k: v["value"] for k, v in json.loads(out.stdout).items()}
+
+        rds_endpoint = outputs["rds_endpoint"]        # "host:5432"
+        ecr_url = outputs["ecr_repository_url"]
+        alb_dns = outputs["alb_dns_name"]
+
+        db_name = project_name.replace("-", "_")
+        db_url = f"postgresql://postgres:{db_password}@{rds_endpoint}/{db_name}"
+
+        print("\n  Applying Prisma schema to remote database...")
+        provider.apply_schema(db_url)
+
+        local_tag = f"developable/{project_name}:latest"
+        image_uri = f"{ecr_url}:latest"
+        print(f"\n  Building Docker image '{local_tag}'...")
+        self._docker_build(local_tag)
+
+        print(f"\n  Pushing image to ECR...")
+        self._ecr_push(local_tag, image_uri, region, creds)
+
+        print(f"\n  Triggering ECS deployment with pushed image...")
+        self._ecs_force_deploy(project_name, region, creds)
+
+        endpoint = f"http://{alb_dns}"
+        print(f"\n  ✓ Deployed — endpoint: {endpoint}")
+
+        from core.deployment_state import DeploymentState
+        return DeploymentState.make_record(
+            provider="aws",
+            region=region,
+            endpoint=endpoint,
+            image_uri=image_uri,
+            resources=[{"type": "terraform_managed", "id": project_name, "arn": None}],
+            tags=provider.build_tags(project_name, deployment_id, spec),
+        )
+
+    def _tf_run(self, tf_dir: Path, cmd: list[str], env: dict | None = None) -> None:
+        """Run a Terraform command, streaming output. Exits on failure."""
+        result = subprocess.run(cmd, cwd=tf_dir, env=env)
+        if result.returncode != 0:
+            print(f"\nTerraform command failed: {' '.join(cmd)}", file=sys.stderr)
+            sys.exit(1)
+
+    def _ecr_push(
+        self, local_tag: str, image_uri: str, region: str, creds: dict[str, Any]
+    ) -> None:
+        """Docker-login to ECR via boto3 token, then tag and push the image."""
+        import base64
+        import boto3
+
+        session = boto3.Session(
+            aws_access_key_id=creds.get("access_key"),
+            aws_secret_access_key=creds.get("secret_key"),
+            aws_session_token=creds.get("session_token"),
+            region_name=region,
+        )
+        ecr = session.client("ecr")
+        auth = ecr.get_authorization_token()["authorizationData"][0]
+        username, password = base64.b64decode(auth["authorizationToken"]).decode().split(":", 1)
+        registry = auth["proxyEndpoint"]
+
+        subprocess.run(
+            ["docker", "login", "--username", username, "--password-stdin", registry],
+            input=password.encode(), capture_output=True, check=True,
+        )
+        subprocess.run(["docker", "tag", local_tag, image_uri], check=True)
+        result = subprocess.run(["docker", "push", image_uri])
+        if result.returncode != 0:
+            print(f"Error pushing image to ECR.", file=sys.stderr)
+            sys.exit(1)
+
+    def _ecs_force_deploy(self, project_name: str, region: str, creds: dict[str, Any]) -> None:
+        """Force ECS to start a new deployment so it pulls the just-pushed image."""
+        import boto3
+
+        session = boto3.Session(
+            aws_access_key_id=creds.get("access_key"),
+            aws_secret_access_key=creds.get("secret_key"),
+            aws_session_token=creds.get("session_token"),
+            region_name=region,
+        )
+        ecs = session.client("ecs")
+        ecs.update_service(
+            cluster=project_name,
+            service=project_name,
+            forceNewDeployment=True,
+        )
+        print(f"  ECS service '{project_name}' redeployment triggered.")
+
+    def _ensure_gitignored(self, pattern: str) -> None:
+        """Append pattern to .gitignore if not already present."""
+        gitignore = self.out_dir / ".gitignore"
+        if gitignore.exists():
+            content = gitignore.read_text()
+            if pattern not in content:
+                gitignore.write_text(content.rstrip() + f"\n{pattern}\n")
+        else:
+            gitignore.write_text(f"{pattern}\n")
 
     def _rerender_terraform_backend(
         self, spec: dict[str, Any], provider: str, backend_config: dict[str, Any]

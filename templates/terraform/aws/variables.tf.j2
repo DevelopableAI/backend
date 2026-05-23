@@ -19,3 +19,9 @@ variable "ecr_image_tag" {
   default = "latest"
   description = "Docker image tag to deploy from ECR."
 }
+
+variable "jwt_secret" {
+  type      = string
+  sensitive = true
+  description = "JWT signing secret. Set via terraform.auto.tfvars.json — never hardcode."
+}
