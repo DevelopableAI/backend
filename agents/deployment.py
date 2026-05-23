@@ -635,9 +635,10 @@ class Deployment:
           3. terraform apply (first pass) — creates ECR, RDS, ECS, ALB, VPC, IAM.
              RDS takes ~5-10 minutes; ECS task starts failing (no image yet).
           4. Parse terraform output for rds_endpoint, ecr_repository_url, alb_dns_name.
-          5. Apply Prisma schema to RDS via provider.apply_schema().
-          6. Build Docker image locally.
-          7. Push image to ECR.
+          5. Build Docker image locally.
+          6. Push image to ECR (image must exist before migration task can run).
+          7. Run Prisma migration as a one-off ECS task inside the VPC (RDS is not
+             reachable from localhost — only from inside the VPC security group).
           8. Force-new ECS deployment so the service picks up the pushed image.
         """
         import json
@@ -695,19 +696,18 @@ class Deployment:
         db_name = project_name.replace("-", "_")
         db_url = f"postgresql://postgres:{db_password}@{rds_endpoint}/{db_name}"
 
-        rds_host, _, rds_port = rds_endpoint.partition(":")
-        self._wait_for_db_tcp(rds_host, int(rds_port or 5432))
-
-        print("\n  Applying Prisma schema to remote database...")
-        provider.apply_schema(db_url)
-
         local_tag = f"developable/{project_name}:latest"
         image_uri = f"{ecr_url}:latest"
         print(f"\n  Building Docker image '{local_tag}'...")
         self._docker_build(local_tag)
 
+        # Push image before migration — the ECS migration task uses this image.
         print(f"\n  Pushing image to ECR...")
         self._ecr_push(local_tag, image_uri, region, creds)
+
+        # RDS is in a private subnet (not reachable from localhost).
+        # Run the Prisma migration as a one-off ECS task inside the VPC.
+        self._run_ecs_migration(project_name, db_url, region, creds)
 
         print(f"\n  Triggering ECS deployment with pushed image...")
         self._ecs_force_deploy(project_name, region, creds)
@@ -759,6 +759,85 @@ class Deployment:
         if result.returncode != 0:
             print(f"Error pushing image to ECR.", file=sys.stderr)
             sys.exit(1)
+
+    def _run_ecs_migration(
+        self, project_name: str, db_url: str, region: str, creds: dict[str, Any]
+    ) -> None:
+        """
+        Run `prisma db push` as a one-off ECS Fargate task inside the VPC.
+
+        RDS is in a private subnet — port 5432 is only reachable from within
+        the VPC security group. We reuse the existing task definition (which
+        already has DATABASE_URL set) and override the container command.
+        The network config is read from the ECS service so we land in the same
+        subnets and security group that have RDS access.
+        """
+        import boto3
+
+        session = boto3.Session(
+            aws_access_key_id=creds.get("access_key"),
+            aws_secret_access_key=creds.get("secret_key"),
+            aws_session_token=creds.get("session_token"),
+            region_name=region,
+        )
+        ecs = session.client("ecs")
+
+        # Borrow network config from the service — same subnets + security group.
+        svc_resp = ecs.describe_services(cluster=project_name, services=[project_name])
+        network_config = svc_resp["services"][0]["networkConfiguration"]
+
+        print("\n  Running Prisma migration as ECS task inside VPC...")
+        run_resp = ecs.run_task(
+            cluster=project_name,
+            taskDefinition=project_name,
+            launchType="FARGATE",
+            networkConfiguration=network_config,
+            overrides={
+                "containerOverrides": [{
+                    "name": project_name,
+                    "command": [
+                        "sh", "-c",
+                        "npx prisma db push --accept-data-loss",
+                    ],
+                    "environment": [{"name": "DATABASE_URL", "value": db_url}],
+                }]
+            },
+        )
+
+        failures = run_resp.get("failures", [])
+        if not run_resp.get("tasks"):
+            print(
+                f"\n  Warning: ECS migration task did not start: {failures}\n"
+                "  Apply the schema manually:\n"
+                f"    DATABASE_URL='{db_url}' npx prisma db push --accept-data-loss",
+                file=sys.stderr,
+            )
+            return
+
+        task_arn = run_resp["tasks"][0]["taskArn"]
+        short_id = task_arn.split("/")[-1]
+        print(f"  Migration task started: {short_id} — waiting for completion...")
+
+        waiter = ecs.get_waiter("tasks_stopped")
+        waiter.wait(
+            cluster=project_name,
+            tasks=[task_arn],
+            WaiterConfig={"Delay": 10, "MaxAttempts": 60},   # up to 10 minutes
+        )
+
+        result = ecs.describe_tasks(cluster=project_name, tasks=[task_arn])
+        container = result["tasks"][0]["containers"][0]
+        exit_code = container.get("exitCode")
+        if exit_code == 0:
+            print("  ✓ Prisma migration completed successfully.")
+        else:
+            reason = container.get("reason", "unknown error")
+            print(
+                f"\n  Warning: Prisma migration task exited with code {exit_code}: {reason}\n"
+                "  Apply the schema manually:\n"
+                f"    DATABASE_URL='{db_url}' npx prisma db push --accept-data-loss",
+                file=sys.stderr,
+            )
 
     def _ecs_force_deploy(self, project_name: str, region: str, creds: dict[str, Any]) -> None:
         """Force ECS to start a new deployment so it pulls the just-pushed image."""
