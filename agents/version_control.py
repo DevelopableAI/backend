@@ -103,23 +103,69 @@ class VersionControl:
     def _write_gitignore(self) -> None:
         (self.out_dir / ".gitignore").write_text(DEFAULT_GITIGNORE_CONTENT)
 
+    def _ensure_git_identity(self) -> None:
+        """
+        Ensure git user.name and user.email are set before committing.
+
+        If either is missing from global config, tell the user, offer to set
+        them now, and only fall back to the Developable placeholder if the
+        user explicitly declines.
+        """
+        def _global(key: str) -> str:
+            r = subprocess.run(
+                ["git", "config", "--global", key],
+                capture_output=True, text=True,
+            )
+            return r.stdout.strip() if r.returncode == 0 else ""
+
+        name = _global("user.name")
+        email = _global("user.email")
+
+        if name and email:
+            return  # user's own identity is already configured — nothing to do
+
+        missing = []
+        if not name:
+            missing.append("user.name")
+        if not email:
+            missing.append("user.email")
+
+        print(
+            f"\n  ⚠  No global git identity found ({', '.join(missing)}).\n"
+            "  Commits will be attributed to whoever you set here.\n"
+        )
+        choice = input(
+            "  Set your git identity now? [Y/n] "
+        ).strip().lower()
+
+        if choice in ("", "y", "yes"):
+            if not name:
+                name = input("  Your name  (e.g. Jane Smith): ").strip()
+                if name:
+                    subprocess.run(["git", "config", "--global", "user.name", name])
+            if not email:
+                email = input("  Your email (e.g. jane@example.com): ").strip()
+                if email:
+                    subprocess.run(["git", "config", "--global", "user.email", email])
+            if name or email:
+                print("  ✓ Git identity saved to global config.")
+                return
+
+        # User declined or provided nothing — use placeholder so git commit works.
+        print(
+            "  Using fallback identity for this commit "
+            "(name: Developable, email: generated@developable.ai).\n"
+            "  Set your own anytime: git config --global user.name 'Your Name'"
+        )
+        if not name:
+            self._git("config", "user.name", "Developable")
+        if not email:
+            self._git("config", "user.email", "generated@developable.ai")
+
     def _init_git(self) -> None:
         is_new_repo = not (self.out_dir / ".git").exists()
         self._git("init")
-        # Only set a fallback identity when the user has no global git config —
-        # never override their own name/email.
-        has_name = subprocess.run(
-            ["git", "config", "--global", "user.name"],
-            cwd=self.out_dir, capture_output=True,
-        ).returncode == 0
-        has_email = subprocess.run(
-            ["git", "config", "--global", "user.email"],
-            cwd=self.out_dir, capture_output=True,
-        ).returncode == 0
-        if not has_name:
-            self._git("config", "user.name", "Developable")
-        if not has_email:
-            self._git("config", "user.email", "generated@developable.ai")
+        self._ensure_git_identity()
         self._git("add", ".")
         # Skip commit if nothing is staged (re-run with no changes)
         has_staged = subprocess.run(
