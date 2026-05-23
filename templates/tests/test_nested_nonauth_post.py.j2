@@ -1,3 +1,4 @@
+{% set missing_id = "00000000-0000-4000-8000-000000000000" if parent_entity.pk_strategy == "uuid" else ("c000000000000000000000000" if parent_entity.pk_strategy == "cuid" else "9999999") %}
 """
 Section {{ section_num }} — Nested routes: GET/POST /api/{{ parent_entity.name_plural }}/:id/{{ nested_route.relation_name }}.
 
@@ -60,9 +61,9 @@ def run(ctx: TestContext) -> None:
                 ctx.ok("limit=1 respected on parent-nested {{ nested_route.relation_name }}")
 
     # {{ section_num }}-3  Non-existent parent → empty list (not 404)
-    resp = ctx.req("GET", "/api/{{ parent_entity.name_plural }}/9999999/{{ nested_route.relation_name }}")
+    resp = ctx.req("GET", "/api/{{ parent_entity.name_plural }}/{{ missing_id }}/{{ nested_route.relation_name }}")
     if ctx.assert_status(resp, 200,
-                         "GET /api/{{ parent_entity.name_plural }}/9999999/{{ nested_route.relation_name }} → 200 empty"):
+                         "GET /api/{{ parent_entity.name_plural }}/{{ missing_id }}/{{ nested_route.relation_name }} → 200 empty"):
         total = ctx.safe_json(resp).get("meta", {}).get("total", -1)
         if total == 0:
             ctx.ok("Non-existent parent's {{ nested_route.relation_name }} returns total=0")
