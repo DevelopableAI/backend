@@ -41,8 +41,10 @@ Usage (from main.py)
 import base64
 import os
 import re
+import socket
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -693,6 +695,9 @@ class Deployment:
         db_name = project_name.replace("-", "_")
         db_url = f"postgresql://postgres:{db_password}@{rds_endpoint}/{db_name}"
 
+        rds_host, _, rds_port = rds_endpoint.partition(":")
+        self._wait_for_db_tcp(rds_host, int(rds_port or 5432))
+
         print("\n  Applying Prisma schema to remote database...")
         provider.apply_schema(db_url)
 
@@ -772,6 +777,27 @@ class Deployment:
             forceNewDeployment=True,
         )
         print(f"  ECS service '{project_name}' redeployment triggered.")
+
+    def _wait_for_db_tcp(self, host: str, port: int, timeout_s: int = 300) -> None:
+        """
+        Poll TCP port until it accepts a connection, then return.
+
+        RDS (and Cloud SQL) report "available" in Terraform before PostgreSQL
+        is actually ready to accept connections — typically 30-90 seconds later.
+        Polling here prevents the Prisma migration from failing consistently.
+        """
+        deadline = time.time() + timeout_s
+        interval = 5
+        print(f"  Waiting for database at {host}:{port} to accept connections", end="", flush=True)
+        while time.time() < deadline:
+            try:
+                with socket.create_connection((host, port), timeout=5):
+                    print(" ready.")
+                    return
+            except OSError:
+                print(".", end="", flush=True)
+                time.sleep(interval)
+        print(f"\n  Warning: database at {host}:{port} did not become reachable within {timeout_s}s.", file=sys.stderr)
 
     def _ensure_gitignored(self, pattern: str) -> None:
         """Append pattern to .gitignore if not already present."""
@@ -877,6 +903,8 @@ class Deployment:
 
         db_name = project_name.replace("-", "_")
         db_url = f"postgresql://postgres:{db_password}@{cloud_sql_ip}:5432/{db_name}"
+
+        self._wait_for_db_tcp(cloud_sql_ip, 5432)
 
         print("\n  Applying Prisma schema to Cloud SQL...")
         provider.apply_schema(db_url)
