@@ -318,8 +318,9 @@ class AWSProvider(BaseProvider):
     ) -> str:
         """Return a GitHub Actions deploy.yml for AWS ECS Fargate."""
         region = record.get("region", "us-east-1")
-        cluster_name = f"{project_name}-cluster"
-        service_name = f"{project_name}-service"
+        # Terraform names both resources var.project_name (e.g. "test-api").
+        cluster_name = project_name
+        service_name = project_name
 
         # Build ECR registry URL from the image_uri in the record
         image_uri = record.get("image_uri", "")
