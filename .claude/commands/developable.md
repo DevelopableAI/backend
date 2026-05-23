@@ -579,6 +579,8 @@ Construct the JSON config using the confirmed Phase 0b values:
 - If `github_enabled` is true: include `github: true`, `github_user`, `github_repo`, `github_private`, and `github_token` (read from `GITHUB_TOKEN` env var or `gh auth token`)
 - If `deploy_provider` is not "none": include `deploy_to` and any provider-specific keys (`aws_region`, `gcp_project`, `gcp_region`, `heroku_app`)
 
+Run the CLI in the background so Phase 2 can start in parallel once files exist:
+
 ```bash
 CLI_CMD=$(python core/command_builder.py << 'JSON'
 {
@@ -599,23 +601,44 @@ CLI_CMD=$(python core/command_builder.py << 'JSON'
 }
 JSON
 )
-$CLI_CMD
+$CLI_CMD > /tmp/developable_cli.log 2>&1 &
+CLI_PID=$!
 ```
 
-- Stream the CLI output directly so the user sees the generator's own progress lines
-- On non-zero exit code: stop and show the full error — do NOT proceed to Phase 2 with broken output
-- The CLI handles GitHub push and cloud deployment internally — Phase 3 only needs to report results
+### Step 1c — Wait for files, then hand off to Phase 2
 
-### Step 1c — Report
+Poll until the generated source files appear, then start Phase 2 immediately — do not wait for deployment to finish:
 
+```bash
+# Wait for src/ to be populated (generator writes these before starting deployment)
+until [ -d {out_dir}/src ] && [ "$(find {out_dir}/src -name '*.ts' | wc -l)" -gt 0 ]; do
+  sleep 2
+done
+```
+
+Count generated files and print:
 ```bash
 find {out_dir}/src -name "*.ts" | wc -l
 find {out_dir}/tests -name "*.py" 2>/dev/null | wc -l
 ```
 
-Print:
 ```
-  Phase 1 complete — {N} TypeScript files + {M} test files generated
+  Phase 1 structural files ready — {N} TypeScript files + {M} test files
+  (deployment continuing in background — starting Phase 2 now)
+```
+
+Then immediately begin Phase 2. The CLI process (`$CLI_PID`) continues running in the background handling GitHub push and deployment while Phase 2 fills LLM sections.
+
+After Phase 2 completes (including its git push), wait for the CLI to finish:
+
+```bash
+wait $CLI_PID
+CLI_EXIT=$?
+```
+
+If `CLI_EXIT` is non-zero: show the tail of `/tmp/developable_cli.log` and report the error. Otherwise print:
+```
+  ✓ Deployment complete — see endpoint above in CLI output
 ```
 
 ---
@@ -737,33 +760,34 @@ Use `Edit` to replace the content **between** `# LLM_SECTION_START` and `# LLM_S
 
 ---
 
-After all files are processed, print:
+After all files are processed, push them to GitHub (if `github_enabled` is true):
+
+```bash
+cd {out_dir}
+git status --short src/validators/ tests/
+git add src/validators/ tests/
+git diff --cached --quiet || git commit -m "Fill validation logic and test cases (Developable Phase 2)"
+git push origin main
 ```
+
+- `git diff --cached --quiet` skips the commit if nothing changed (e.g. `--no-llm` run with no markers)
+- On push failure: warn the user and print the manual command, then continue
+
+Print:
+```
+  ✓ Phase 2 changes pushed to GitHub
   Phase 2 complete — {N} validators + {M} test files filled
 ```
 
 ---
 
-## Phase 3 — Publish
+## Phase 3 — Report
 
 ```
-━━━ Phase 3/3: Publish ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━ Phase 3/3: Done ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-The CLI invoked in Phase 1 already handled GitHub push and cloud deployment.
-Phase 2 filled the LLM sections locally — those changes must be pushed now.
-
-### Push Phase 2 changes (if `github_enabled` is true)
-
-```bash
-cd {out_dir}
-git add src/validators/ tests/
-git commit -m "Fill validation logic and test cases (Developable Phase 2)"
-git push origin main
-```
-
-- If there are no changes to commit (e.g. `--no-llm` was used), skip silently
-- On push failure: warn the user and print the manual command, then continue to the summary
+Wait for the background CLI process to finish (see Step 1c), then print the final summary.
 
 ### Final Summary
 
