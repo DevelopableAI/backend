@@ -660,7 +660,6 @@ class Deployment:
             "db_password": db_password,
             "jwt_secret": jwt_secret,
         }, indent=2))
-        self._ensure_gitignored("terraform/*.tfvars.json")
 
         # Pass AWS credentials to Terraform via environment variables.
         tf_env = {
@@ -954,7 +953,6 @@ class Deployment:
             "jwt_secret": jwt_secret,
             "image_tag": "placeholder",
         }, indent=2))
-        self._ensure_gitignored("terraform/*.tfvars.json")
 
         tf_env = {**os.environ, "GOOGLE_CLOUD_PROJECT": project_id}
         if creds.get("credentials_file"):
@@ -1058,7 +1056,6 @@ class Deployment:
             "project_name": project_name,
             "jwt_secret": jwt_secret,
         }, indent=2))
-        self._ensure_gitignored("terraform/*.tfvars.json")
 
         # Heroku API key passed via env var — never written to a file.
         tf_env = {**os.environ, "TF_VAR_heroku_api_key": api_key}
