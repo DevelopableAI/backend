@@ -316,6 +316,26 @@ class Deployment:
         Assembler(out_dir=self.out_dir, use_llm=False).assemble(spec, plan)
         print(f"  Generated {len(plan['files'])} infrastructure file(s).")
 
+    def _ensure_docker_running(self) -> None:
+        """Block until Docker daemon is reachable, prompting the user if it isn't."""
+        while True:
+            probe = subprocess.run(
+                ["docker", "info"],
+                capture_output=True,
+            )
+            if probe.returncode == 0:
+                return
+            print(
+                "\n  Docker is not running.\n"
+                "  Please start Docker Desktop (or your Docker daemon) and press Enter to retry...",
+                flush=True,
+            )
+            try:
+                input()
+            except EOFError:
+                # Non-interactive environment — poll silently every 10 s.
+                time.sleep(10)
+
     def _docker_build(self, image_tag: str) -> None:
         """Build the Docker image from the output directory, streaming output.
 
@@ -328,6 +348,7 @@ class Deployment:
         - --load                   loads the built image into the local Docker daemon
                                    (required when buildx is used with --platform)
         """
+        self._ensure_docker_running()
         result = subprocess.run([
             "docker", "buildx", "build",
             "--platform", "linux/amd64",
