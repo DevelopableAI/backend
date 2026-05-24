@@ -53,6 +53,16 @@ class Planner:
                 "needs_llm": False,
             },
             {
+                "path": "AGENTS.md",
+                "template": "express/api/AGENTS.md.j2",
+                "context": {
+                    "project_name": project_name,
+                    "entities": entities,
+                    "auth_entity_name": auth_entity_name,
+                },
+                "needs_llm": False,
+            },
+            {
                 "path": "package.json",
                 "template": "express/api/package.json.j2",
                 "context": {},

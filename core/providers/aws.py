@@ -345,11 +345,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Verify AWS secrets are configured
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::error::AWS_ACCESS_KEY_ID and/or AWS_SECRET_ACCESS_KEY secret is not set."
+            echo "Add them at: GitHub repo -> Settings -> Secrets and variables -> Actions"
+            exit 1
+          fi
+        env:
+          AWS_ACCESS_KEY_ID: ${{{{ secrets.AWS_ACCESS_KEY_ID }}}}
+          AWS_SECRET_ACCESS_KEY: ${{{{ secrets.AWS_SECRET_ACCESS_KEY }}}}
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{{{ secrets.AWS_ACCESS_KEY_ID }}}}
           aws-secret-access-key: ${{{{ secrets.AWS_SECRET_ACCESS_KEY }}}}
+          aws-session-token: ${{{{ secrets.AWS_SESSION_TOKEN }}}}
           aws-region: {region}
 
       - name: Login to Amazon ECR
