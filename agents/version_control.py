@@ -107,9 +107,11 @@ class VersionControl:
         """
         Ensure git user.name and user.email are set before committing.
 
-        If either is missing from global config, tell the user, offer to set
-        them now, and only fall back to the Developable placeholder if the
-        user explicitly declines.
+        Resolution order:
+          1. Global git config (already set on the machine) — use as-is.
+          2. GitHub API (token is already held from publish()) — auto-populate.
+          3. Interactive prompt — ask the user and save to global config.
+          4. Placeholder fallback — only if the user explicitly declines.
         """
         def _global(key: str) -> str:
             r = subprocess.run(
@@ -122,21 +124,28 @@ class VersionControl:
         email = _global("user.email")
 
         if name and email:
-            return  # user's own identity is already configured — nothing to do
+            return  # already configured — nothing to do
 
-        missing = []
-        if not name:
-            missing.append("user.name")
-        if not email:
-            missing.append("user.email")
+        # Try GitHub API first (token is available when --github was used).
+        if self.github_token and (not name or not email):
+            gh_name, gh_email = self._fetch_github_identity()
+            if not name:
+                name = gh_name
+            if not email:
+                email = gh_email
+            if name and email:
+                subprocess.run(["git", "config", "--global", "user.name", name])
+                subprocess.run(["git", "config", "--global", "user.email", email])
+                print(f"  ✓ Git identity set from GitHub account: {name} <{email}>")
+                return
 
+        # GitHub API didn't fill everything — prompt the user.
+        missing = [k for k, v in [("user.name", name), ("user.email", email)] if not v]
         print(
-            f"\n  ⚠  No global git identity found ({', '.join(missing)}).\n"
+            f"\n  ⚠  No git identity found for {', '.join(missing)}.\n"
             "  Commits will be attributed to whoever you set here.\n"
         )
-        choice = input(
-            "  Set your git identity now? [Y/n] "
-        ).strip().lower()
+        choice = input("  Set your git identity now? [Y/n] ").strip().lower()
 
         if choice in ("", "y", "yes"):
             if not name:
@@ -151,7 +160,7 @@ class VersionControl:
                 print("  ✓ Git identity saved to global config.")
                 return
 
-        # User declined or provided nothing — use placeholder so git commit works.
+        # User declined or provided nothing — local placeholder so git commit works.
         print(
             "  Using fallback identity for this commit "
             "(name: Developable, email: generated@developable.ai).\n"
@@ -161,6 +170,31 @@ class VersionControl:
             self._git("config", "user.name", "Developable")
         if not email:
             self._git("config", "user.email", "generated@developable.ai")
+
+    def _fetch_github_identity(self) -> tuple[str, str]:
+        """Return (name, email) from the GitHub API using the stored token."""
+        try:
+            resp = requests.get(
+                "https://api.github.com/user",
+                headers={
+                    "Authorization": f"token {self.github_token}",
+                    "Accept": "application/vnd.github.v3+json",
+                },
+                timeout=10,
+            )
+            if resp.ok:
+                data = resp.json()
+                name = (data.get("name") or "").strip()
+                login = (data.get("login") or "").strip()
+                # Public emails: /user endpoint returns primary email if set.
+                # If null, fall back to the noreply GitHub email (always available).
+                email = (data.get("email") or "").strip()
+                if not email and login:
+                    email = f"{login}@users.noreply.github.com"
+                return name or login, email
+        except Exception:
+            pass
+        return "", ""
 
     def _init_git(self) -> None:
         is_new_repo = not (self.out_dir / ".git").exists()

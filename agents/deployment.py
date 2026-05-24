@@ -483,8 +483,9 @@ class Deployment:
             timeout=15,
         )
         if not key_resp.ok:
-            print(f"  Could not fetch repo public key ({key_resp.status_code}) — skipping auto-set.")
+            print(f"  Could not fetch repo public key ({key_resp.status_code}).")
             self._print_secrets_instructions(provider_name, creds)
+            input("  Press Enter once you have added the secrets to continue...")
             return
 
         key_data = key_resp.json()
@@ -523,6 +524,7 @@ class Deployment:
         if failed:
             print(f"\n  Could not auto-set: {', '.join(failed)}")
             self._print_secrets_instructions(provider_name, creds)
+            input("  Press Enter once you have added the secrets to continue...")
 
     def _github_token(self) -> str | None:
         """
@@ -570,21 +572,29 @@ class Deployment:
     def _print_secrets_instructions(
         self, provider_name: str, creds: dict[str, Any]
     ) -> None:
-        """Print instructions for setting the required GitHub Actions secrets."""
-        secrets_needed = _SECRETS_INSTRUCTIONS.get(provider_name, [])
-        if not secrets_needed:
+        """Print exact secret names and values the user must add to GitHub."""
+        secret_map = _PROVIDER_GITHUB_SECRETS.get(provider_name, {})
+        if not secret_map:
             return
+
+        repo = self._github_repo_fullname() or "<your-repo>"
+        settings_url = f"https://github.com/{repo}/settings/secrets/actions"
+
         print(
-            "\n  ─────────────────────────────────────────────────────────────────\n"
-            "  To enable automated deployments, add these secrets to your\n"
-            "  GitHub repository (Settings → Secrets and variables → Actions):\n"
-            "  ─────────────────────────────────────────────────────────────────"
+            "\n  ╔═══════════════════════════════════════════════════════════════╗\n"
+            "  ║  ACTION REQUIRED — GitHub Actions secrets not set             ║\n"
+            "  ║  The deploy workflow will fail until these are added.         ║\n"
+            "  ╚═══════════════════════════════════════════════════════════════╝\n"
+            f"\n  Go to: {settings_url}\n"
+            "  Add the following secrets (New repository secret):\n"
         )
-        for line in secrets_needed:
-            print(f"    {line}")
+        for secret_name, cred_key in secret_map.items():
+            value = creds.get(cred_key, "<not available>")
+            print(f"    {secret_name}")
+            print(f"      Value: {value}\n")
         print(
-            "  ─────────────────────────────────────────────────────────────────\n"
-            "  Workflow file: .github/workflows/deploy.yml"
+            "  Workflow file: .github/workflows/deploy.yml\n"
+            "  ───────────────────────────────────────────────────────────────"
         )
 
     def _run_remote_tests(self, endpoint: str) -> None:
