@@ -584,10 +584,10 @@ Construct the JSON config using the confirmed Phase 0b values:
 - If `github_enabled` is true: include `github: true`, `github_user`, `github_repo`, `github_private`, and `github_token` (read from `GITHUB_TOKEN` env var or `gh auth token`)
 - If `deploy_provider` is not "none": include `deploy_to` and any provider-specific keys (`aws_region`, `gcp_project`, `gcp_region`, `heroku_app`)
 
-Run the CLI in the background so Phase 2 can start in parallel once files exist:
+**Step 1 — Build the command string** (foreground Bash call):
 
 ```bash
-CLI_CMD=$(python core/command_builder.py << 'JSON'
+python core/command_builder.py << 'JSON'
 {
   "cli": "{cli_command}",
   "schema_path": "{schema_path}",
@@ -606,14 +606,22 @@ CLI_CMD=$(python core/command_builder.py << 'JSON'
   "heroku_app": "{deploy_config.heroku_app}"
 }
 JSON
-)
-$CLI_CMD > /tmp/developable_cli.log 2>&1 &
-CLI_PID=$!
 ```
+
+Capture the printed command from that output.
+
+**Step 2 — Launch the CLI** using a **separate Bash tool call with `run_in_background: true`** and a 600000ms timeout. Do NOT use `&` — background child processes of a regular Bash call are killed when the shell exits. `run_in_background: true` keeps the process alive under the session and notifies you when it finishes:
+
+```bash
+# This entire command is the run_in_background: true Bash call
+{cli_command_from_step_1} 2>&1 | tee /tmp/developable_cli.log
+```
+
+You will be notified automatically when this background process completes.
 
 ### Step 1c — Wait for files, then hand off to Phase 2
 
-Poll until the generated source files appear, then start Phase 2 immediately — do not wait for deployment to finish:
+After launching the background CLI, poll for the generated source files using regular foreground Bash calls — these work normally while the background process runs:
 
 ```bash
 # Wait for src/ to be populated (generator writes these before starting deployment)
@@ -633,19 +641,9 @@ find {out_dir}/tests -name "*.py" 2>/dev/null | wc -l
   (deployment continuing in background — starting Phase 2 now)
 ```
 
-Then immediately begin Phase 2. The CLI process (`$CLI_PID`) continues running in the background handling GitHub push and deployment while Phase 2 fills LLM sections.
+Immediately begin Phase 2. The CLI process continues running in the background — handling GitHub push and the full deployment (boto3 provisioning + terraform import + migration) — while Phase 2 fills LLM sections.
 
-After Phase 2 completes (including its git push), wait for the CLI to finish:
-
-```bash
-wait $CLI_PID
-CLI_EXIT=$?
-```
-
-If `CLI_EXIT` is non-zero: show the tail of `/tmp/developable_cli.log` and report the error. Otherwise print:
-```
-  ✓ Deployment complete — see endpoint above in CLI output
-```
+**Phase 3 waits for the background-completion notification** before printing the final summary. When the notification arrives, check `/tmp/developable_cli.log` for the endpoint and any errors.
 
 ---
 
