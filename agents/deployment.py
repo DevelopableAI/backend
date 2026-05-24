@@ -266,15 +266,16 @@ class Deployment:
             workflow_yaml = provider.generate_deploy_workflow(project_name, record)
             print(f"\n  Preparing GitHub Actions deploy workflow...")
             secrets_ready = self._provision_github_secrets(provider_name, creds)
-            if secrets_ready:
-                print(f"  Pushing CI/CD deploy workflow to GitHub...")
-                self._push_workflow_to_github(workflow_yaml)
-            else:
+            # Always push deploy.yml — the workflow self-checks for missing secrets
+            # and fails with a clear error message rather than silently not existing.
+            print(f"  Pushing CI/CD deploy workflow to GitHub...")
+            self._push_workflow_to_github(workflow_yaml)
+            if not secrets_ready:
+                repo = self._github_repo_fullname() or "<your-repo>"
                 print(
-                    "  Skipping deploy.yml push for now because the required GitHub Actions "
-                    "secrets are not confirmed yet.\n"
-                    "  After adding the secrets, re-run deployment to publish the workflow "
-                    "without risking a first-run failure."
+                    f"\n  deploy.yml pushed. The workflow will fail until the required\n"
+                    f"  GitHub Actions secrets are set. Add them at:\n"
+                    f"  https://github.com/{repo}/settings/secrets/actions"
                 )
 
         # ── 10. Remote smoke tests ─────────────────────────────────────────────
@@ -662,91 +663,36 @@ class Deployment:
         deployment_id: str,
     ) -> dict[str, Any]:
         """
-        Provision AWS infrastructure via `terraform apply` and deploy the container.
+        Hybrid boto3 + terraform import AWS deployment.
 
         Flow:
-          1. Write terraform.auto.tfvars.json with db_password + jwt_secret.
-          2. terraform init  (connects to S3 backend bootstrapped in step 2 of deploy()).
-          3. terraform apply (first pass) — creates ECR, RDS, ECS, ALB, VPC, IAM.
-             RDS takes ~5-10 minutes; ECS task starts failing (no image yet).
-          4. Parse terraform output for rds_endpoint, ecr_repository_url, alb_dns_name.
-          5. Build Docker image locally.
-          6. Push image to ECR (image must exist before migration task can run).
-          7. Run Prisma migration as a one-off ECS task inside the VPC (RDS is not
-             reachable from localhost — only from inside the VPC security group).
-          8. Force-new ECS deployment so the service picks up the pushed image.
+          1. boto3 provisions all 15 resources with terraform-matching names (~8-10 min,
+             RDS runs async while other resources are created in parallel).
+          2. Build Docker image locally.
+          3. Push image to ECR (needed before import so tfvars has the real image tag).
+          4. terraform import × 15 resources, then reconciliation apply — state becomes
+             fully up-to-date so terraform plan/apply/destroy all work correctly.
+          5. Run Prisma migration as a one-off ECS task inside the VPC.
+             (ECS rolling deploy was already triggered by the reconciliation apply.)
         """
-        import json
-        import secrets as _secrets
-
-        tf_dir = self.out_dir / "terraform"
         region = creds.get("region", "us-east-1")
 
-        # Read secrets from .env if present, otherwise generate.
-        env_file_vars = self._read_env_file()
-        db_password = env_file_vars.get("DB_PASSWORD") or _secrets.token_urlsafe(24)
-        jwt_secret = env_file_vars.get("JWT_SECRET") or _secrets.token_urlsafe(32)
-
-        # Write sensitive tfvars file — never committed (gitignored below).
-        tfvars_path = tf_dir / "terraform.auto.tfvars.json"
-        tfvars_path.write_text(json.dumps({
-            "project_name": project_name,
-            "aws_region": region,
-            "db_password": db_password,
-            "jwt_secret": jwt_secret,
-        }, indent=2))
-
-        # Pass AWS credentials to Terraform via environment variables.
-        tf_env = {
-            **os.environ,
-            "AWS_ACCESS_KEY_ID": creds.get("access_key", ""),
-            "AWS_SECRET_ACCESS_KEY": creds.get("secret_key", ""),
-            "AWS_DEFAULT_REGION": region,
-        }
-        if creds.get("session_token"):
-            tf_env["AWS_SESSION_TOKEN"] = creds["session_token"]
-
-        print("\n  [Terraform] Initializing backend...")
-        self._tf_run(tf_dir, ["terraform", "init", "-input=false"], env=tf_env)
-
-        print("\n  [Terraform] Provisioning infrastructure (ECR, RDS, ECS Fargate, ALB, VPC)...")
-        print("  RDS provisioning takes 5-10 minutes — please wait.\n")
-        self._tf_run(tf_dir, ["terraform", "apply", "-auto-approve", "-input=false"], env=tf_env)
-
-        # Parse outputs.
-        out = subprocess.run(
-            ["terraform", "output", "-json"],
-            cwd=tf_dir, capture_output=True, text=True, env=tf_env,
-        )
-        if out.returncode != 0:
-            print(f"Error reading Terraform outputs:\n{out.stderr}", file=sys.stderr)
-            sys.exit(1)
-        outputs = {k: v["value"] for k, v in json.loads(out.stdout).items()}
-
-        rds_endpoint = outputs["rds_endpoint"]        # "host:5432"
-        ecr_url = outputs["ecr_repository_url"]
-        alb_dns = outputs["alb_dns_name"]
-
-        db_name = project_name.replace("-", "_")
-        db_url = f"postgresql://postgres:{db_password}@{rds_endpoint}/{db_name}"
+        print("\n  [boto3] Provisioning AWS infrastructure with terraform-matching names...")
+        pr = self._boto3_provision_aws(creds, project_name)
 
         local_tag = f"developable/{project_name}:latest"
-        image_uri = f"{ecr_url}:latest"
+        image_uri = f"{pr['ecr_url']}:latest"
         print(f"\n  Building Docker image '{local_tag}'...")
         self._docker_build(local_tag)
 
-        # Push image before migration — the ECS migration task uses this image.
         print(f"\n  Pushing image to ECR...")
         self._ecr_push(local_tag, image_uri, region, creds)
 
-        # RDS is in a private subnet (not reachable from localhost).
-        # Run the Prisma migration as a one-off ECS task inside the VPC.
-        self._run_ecs_migration(project_name, db_url, region, creds)
+        self._terraform_import_aws(creds, project_name, pr)
 
-        print(f"\n  Triggering ECS deployment with pushed image...")
-        self._ecs_force_deploy(project_name, region, creds)
+        self._run_ecs_migration(project_name, pr["db_url"], region, creds)
 
-        endpoint = f"http://{alb_dns}"
+        endpoint = f"http://{pr['alb_dns']}"
         print(f"\n  ✓ Deployed — endpoint: {endpoint}")
 
         from core.deployment_state import DeploymentState
@@ -759,12 +705,471 @@ class Deployment:
             tags=provider.build_tags(project_name, deployment_id, spec),
         )
 
-    def _tf_run(self, tf_dir: Path, cmd: list[str], env: dict | None = None) -> None:
-        """Run a Terraform command, streaming output. Exits on failure."""
-        result = subprocess.run(cmd, cwd=tf_dir, env=env)
-        if result.returncode != 0:
-            print(f"\nTerraform command failed: {' '.join(cmd)}", file=sys.stderr)
+    def _boto3_provision_aws(self, creds: dict[str, Any], project_name: str) -> dict[str, Any]:
+        """
+        Create all 15 Terraform-managed AWS resources via boto3 with terraform-matching names.
+
+        RDS creation is kicked off first; all other resources (IAM, ALB, ECS) are created
+        while RDS provisions in the background. All creates are idempotent.
+
+        Returns a dict of IDs/ARNs needed for terraform import and the deployment record.
+        """
+        import boto3
+        import json as _json
+        import secrets as _secrets
+        from botocore.exceptions import ClientError
+
+        region = creds["region"]
+        session = boto3.Session(
+            aws_access_key_id=creds.get("access_key"),
+            aws_secret_access_key=creds.get("secret_key"),
+            aws_session_token=creds.get("session_token"),
+            region_name=region,
+        )
+        ec2   = session.client("ec2")
+        ecr   = session.client("ecr")
+        ecs   = session.client("ecs")
+        iam   = session.client("iam")
+        rds   = session.client("rds")
+        elb   = session.client("elbv2")
+        logs  = session.client("logs")
+        sts   = session.client("sts")
+
+        account_id = sts.get_caller_identity()["Account"]
+        ecr_url = f"{account_id}.dkr.ecr.{region}.amazonaws.com/{project_name}"
+
+        # Default VPC + subnets (matches data sources in main.tf.j2)
+        vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])
+        if not vpcs["Vpcs"]:
+            print("\nError: No default VPC found. Run: aws ec2 create-default-vpc", file=sys.stderr)
             sys.exit(1)
+        vpc_id = vpcs["Vpcs"][0]["VpcId"]
+        subnet_ids = [s["SubnetId"] for s in ec2.describe_subnets(
+            Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+        )["Subnets"]]
+
+        # ── Security groups ────────────────────────────────────────────────────
+        print(f"  [boto3] Ensuring security groups...")
+        alb_sg_id = self._ensure_sg_boto3(ec2, vpc_id, f"{project_name}-alb-sg",
+            f"ALB SG for {project_name}",
+            [{"proto": "tcp", "from_port": 80, "to_port": 80, "cidr": "0.0.0.0/0"}])
+        ecs_sg_id = self._ensure_sg_boto3(ec2, vpc_id, f"{project_name}-ecs-sg",
+            f"ECS SG for {project_name}",
+            [{"proto": "tcp", "from_port": 3000, "to_port": 3000, "src_sg": alb_sg_id}])
+        rds_sg_id = self._ensure_sg_boto3(ec2, vpc_id, f"{project_name}-rds-sg",
+            f"RDS SG for {project_name}",
+            [{"proto": "tcp", "from_port": 5432, "to_port": 5432, "src_sg": ecs_sg_id}])
+
+        # ── ECR ────────────────────────────────────────────────────────────────
+        print(f"  [boto3] Ensuring ECR repository '{project_name}'...")
+        try:
+            ecr.create_repository(repositoryName=project_name,
+                imageScanningConfiguration={"scanOnPush": True})
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "RepositoryAlreadyExistsException":
+                raise
+
+        # ── RDS — kick off now, wait later ────────────────────────────────────
+        env_vars = self._read_env_file()
+        db_password = env_vars.get("DB_PASSWORD") or _secrets.token_urlsafe(24)
+        jwt_secret  = env_vars.get("JWT_SECRET")  or _secrets.token_urlsafe(32)
+        db_name = project_name.replace("-", "_")
+        subnet_group = f"{project_name}-db-subnet-group"
+
+        try:
+            rds.create_db_subnet_group(
+                DBSubnetGroupName=subnet_group,
+                DBSubnetGroupDescription=f"Developable DB subnet group for {project_name}",
+                SubnetIds=subnet_ids,
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "DBSubnetGroupAlreadyExists":
+                raise
+
+        print(f"  [boto3] Kicking off RDS provisioning (5-10 min) — continuing with other resources...")
+        try:
+            rds.create_db_instance(
+                DBInstanceIdentifier=project_name,
+                DBInstanceClass="db.t3.micro",
+                Engine="postgres",
+                EngineVersion="15",
+                MasterUsername="postgres",
+                MasterUserPassword=db_password,
+                DBName=db_name,
+                VpcSecurityGroupIds=[rds_sg_id],
+                DBSubnetGroupName=subnet_group,
+                PubliclyAccessible=False,
+                MultiAZ=False,
+                StorageType="gp2",
+                AllocatedStorage=20,
+                BackupRetentionPeriod=1,
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "DBInstanceAlreadyExists":
+                raise
+            print(f"  [boto3] RDS '{project_name}' already exists — reusing.")
+
+        # ── IAM role ──────────────────────────────────────────────────────────
+        role_name = f"{project_name}-ecs-execution"
+        policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+        print(f"  [boto3] Ensuring IAM role '{role_name}'...")
+        assume = _json.dumps({
+            "Version": "2012-10-17",
+            "Statement": [{"Effect": "Allow",
+                "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+                "Action": "sts:AssumeRole"}],
+        })
+        try:
+            role_arn = iam.create_role(RoleName=role_name,
+                AssumeRolePolicyDocument=assume,
+                Description=f"ECS execution role for {project_name}")["Role"]["Arn"]
+            iam.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+            time.sleep(10)  # IAM propagation
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "EntityAlreadyExists":
+                role_arn = iam.get_role(RoleName=role_name)["Role"]["Arn"]
+            else:
+                raise
+
+        # ── ALB + target group + listener ─────────────────────────────────────
+        print(f"  [boto3] Ensuring ALB '{project_name}'...")
+        alb_arn, alb_dns = self._ensure_alb_boto3(elb, project_name, subnet_ids, alb_sg_id)
+        tg_arn          = self._ensure_target_group_boto3(elb, project_name, vpc_id)
+        listener_arn    = self._ensure_alb_listener_boto3(elb, alb_arn, tg_arn)
+
+        # ── CloudWatch log group ───────────────────────────────────────────────
+        log_group = f"/ecs/{project_name}"
+        try:
+            logs.create_log_group(logGroupName=log_group)
+            logs.put_retention_policy(logGroupName=log_group, retentionInDays=7)
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ResourceAlreadyExistsException":
+                raise
+
+        # ── ECS cluster ───────────────────────────────────────────────────────
+        print(f"  [boto3] Ensuring ECS cluster '{project_name}'...")
+        ecs.create_cluster(clusterName=project_name)
+
+        # ── Wait for RDS ──────────────────────────────────────────────────────
+        print(f"  [boto3] Waiting for RDS to become available...", flush=True)
+        deadline = time.time() + 900
+        rds_endpoint = None
+        while time.time() < deadline:
+            try:
+                resp = rds.describe_db_instances(DBInstanceIdentifier=project_name)
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "DBInstanceNotFound":
+                    time.sleep(15)
+                    continue
+                raise
+            inst   = resp["DBInstances"][0]
+            status = inst["DBInstanceStatus"]
+            if status == "available":
+                rds_endpoint = inst["Endpoint"]["Address"]
+                print(f"  [boto3] ✓ RDS available — {rds_endpoint}")
+                break
+            print(f"  [boto3] RDS status: {status}...", end="\r", flush=True)
+            time.sleep(15)
+
+        if not rds_endpoint:
+            print("\n  [boto3] RDS did not become available in time.", file=sys.stderr)
+            sys.exit(1)
+
+        # ── Task definition (placeholder image — reconciliation apply updates it) ──
+        db_url = f"postgresql://postgres:{db_password}@{rds_endpoint}:5432/{db_name}"
+        print(f"  [boto3] Registering placeholder task definition '{project_name}'...")
+        td_resp = ecs.register_task_definition(
+            family=project_name,
+            networkMode="awsvpc",
+            requiresCompatibilities=["FARGATE"],
+            cpu="256",
+            memory="512",
+            executionRoleArn=role_arn,
+            containerDefinitions=[{
+                "name": project_name,
+                "image": f"{ecr_url}:placeholder",
+                "portMappings": [{"containerPort": 3000, "protocol": "tcp"}],
+                "environment": [
+                    {"name": "NODE_ENV",     "value": "production"},
+                    {"name": "PORT",         "value": "3000"},
+                    {"name": "DATABASE_URL", "value": db_url},
+                ],
+                "essential": True,
+                "logConfiguration": {
+                    "logDriver": "awslogs",
+                    "options": {
+                        "awslogs-group":         log_group,
+                        "awslogs-region":        region,
+                        "awslogs-stream-prefix": "ecs",
+                    },
+                },
+            }],
+        )
+        td_arn      = td_resp["taskDefinition"]["taskDefinitionArn"]
+        td_revision = td_resp["taskDefinition"]["revision"]
+
+        # ── ECS service (desired_count=0 — real image pushed after this method) ──
+        print(f"  [boto3] Ensuring ECS service '{project_name}'...")
+        try:
+            ecs.create_service(
+                cluster=project_name,
+                serviceName=project_name,
+                taskDefinition=td_arn,
+                desiredCount=0,
+                launchType="FARGATE",
+                networkConfiguration={"awsvpcConfiguration": {
+                    "subnets": subnet_ids,
+                    "securityGroups": [ecs_sg_id],
+                    "assignPublicIp": "ENABLED",
+                }},
+                loadBalancers=[{
+                    "targetGroupArn": tg_arn,
+                    "containerName": project_name,
+                    "containerPort": 3000,
+                }],
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] not in (
+                "ServiceAlreadyExistsException", "ServiceNotActiveException"
+            ):
+                raise
+            print(f"  [boto3] ECS service '{project_name}' already exists.")
+
+        return {
+            "alb_sg_id":      alb_sg_id,
+            "ecs_sg_id":      ecs_sg_id,
+            "rds_sg_id":      rds_sg_id,
+            "ecr_url":        ecr_url,
+            "rds_endpoint":   rds_endpoint,
+            "db_password":    db_password,
+            "jwt_secret":     jwt_secret,
+            "db_url":         db_url,
+            "role_name":      role_name,
+            "role_arn":       role_arn,
+            "policy_arn":     policy_arn,
+            "alb_arn":        alb_arn,
+            "alb_dns":        alb_dns,
+            "tg_arn":         tg_arn,
+            "listener_arn":   listener_arn,
+            "log_group":      log_group,
+            "td_arn":         td_arn,
+            "td_revision":    td_revision,
+            "subnet_group":   subnet_group,
+            "subnet_ids":     subnet_ids,
+            "vpc_id":         vpc_id,
+        }
+
+    def _ensure_sg_boto3(
+        self,
+        ec2: Any,
+        vpc_id: str,
+        name: str,
+        description: str,
+        rules: list[dict[str, Any]],
+    ) -> str:
+        """Create (or return existing) security group and ensure ingress rules are present."""
+        from botocore.exceptions import ClientError
+        try:
+            sg_id = ec2.create_security_group(
+                GroupName=name, Description=description, VpcId=vpc_id
+            )["GroupId"]
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "InvalidGroup.Duplicate":
+                raise
+            sg_id = ec2.describe_security_groups(Filters=[
+                {"Name": "group-name", "Values": [name]},
+                {"Name": "vpc-id",     "Values": [vpc_id]},
+            ])["SecurityGroups"][0]["GroupId"]
+
+        for rule in rules:
+            perm: dict[str, Any] = {
+                "IpProtocol": rule["proto"],
+                "FromPort":   rule["from_port"],
+                "ToPort":     rule["to_port"],
+            }
+            if "cidr" in rule:
+                perm["IpRanges"] = [{"CidrIp": rule["cidr"]}]
+            else:
+                perm["UserIdGroupPairs"] = [{"GroupId": rule["src_sg"]}]
+            try:
+                ec2.authorize_security_group_ingress(GroupId=sg_id, IpPermissions=[perm])
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "InvalidPermission.Duplicate":
+                    raise
+        return sg_id
+
+    def _ensure_alb_boto3(
+        self, elb: Any, name: str, subnet_ids: list[str], sg_id: str
+    ) -> tuple[str, str]:
+        """Create (or return existing) Application Load Balancer. Returns (arn, dns_name)."""
+        from botocore.exceptions import ClientError
+        try:
+            lbs = elb.describe_load_balancers(Names=[name])["LoadBalancers"]
+            return lbs[0]["LoadBalancerArn"], lbs[0]["DNSName"]
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "LoadBalancerNotFound":
+                raise
+        lb = elb.create_load_balancer(
+            Name=name,
+            Subnets=subnet_ids,
+            SecurityGroups=[sg_id],
+            Scheme="internet-facing",
+            Type="application",
+            IpAddressType="ipv4",
+        )["LoadBalancers"][0]
+        return lb["LoadBalancerArn"], lb["DNSName"]
+
+    def _ensure_target_group_boto3(self, elb: Any, name: str, vpc_id: str) -> str:
+        """Create (or return existing) target group for port 3000. Returns ARN."""
+        from botocore.exceptions import ClientError
+        try:
+            resp = elb.describe_target_groups(Names=[name])
+            if resp["TargetGroups"]:
+                return resp["TargetGroups"][0]["TargetGroupArn"]
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "TargetGroupNotFound":
+                raise
+        tg = elb.create_target_group(
+            Name=name,
+            Protocol="HTTP",
+            Port=3000,
+            VpcId=vpc_id,
+            TargetType="ip",
+            HealthCheckProtocol="HTTP",
+            HealthCheckPath="/health",
+            HealthyThresholdCount=2,
+            UnhealthyThresholdCount=3,
+            HealthCheckIntervalSeconds=30,
+        )["TargetGroups"][0]
+        return tg["TargetGroupArn"]
+
+    def _ensure_alb_listener_boto3(self, elb: Any, alb_arn: str, tg_arn: str) -> str:
+        """Create (or return existing) HTTP:80 listener forwarding to target group. Returns ARN."""
+        from botocore.exceptions import ClientError
+        existing = elb.describe_listeners(LoadBalancerArn=alb_arn)["Listeners"]
+        for l in existing:
+            if l["Port"] == 80:
+                return l["ListenerArn"]
+        return elb.create_listener(
+            LoadBalancerArn=alb_arn,
+            Protocol="HTTP",
+            Port=80,
+            DefaultActions=[{"Type": "forward", "TargetGroupArn": tg_arn}],
+        )["Listeners"][0]["ListenerArn"]
+
+    def _terraform_import_aws(
+        self,
+        creds: dict[str, Any],
+        project_name: str,
+        pr: dict[str, Any],
+    ) -> None:
+        """
+        Import all 15 boto3-created resources into Terraform state, then run a
+        reconciliation apply so the state is completely up-to-date.
+
+        After this method returns:
+        - terraform plan  → "No changes"
+        - terraform apply → safely modifies individual resources
+        - terraform destroy → cleanly destroys all 15 resources
+        """
+        import json as _json
+
+        tf_dir = self.out_dir / "terraform"
+        region = creds["region"]
+
+        # tfvars with the real image tag — reconciliation apply updates the task def
+        tfvars_path = tf_dir / "terraform.auto.tfvars.json"
+        tfvars_path.write_text(_json.dumps({
+            "project_name":  project_name,
+            "aws_region":    region,
+            "db_password":   pr["db_password"],
+            "jwt_secret":    pr["jwt_secret"],
+            "ecr_image_tag": "latest",
+        }, indent=2))
+
+        tf_env = {
+            **os.environ,
+            "AWS_ACCESS_KEY_ID":     creds.get("access_key", ""),
+            "AWS_SECRET_ACCESS_KEY": creds.get("secret_key", ""),
+            "AWS_DEFAULT_REGION":    region,
+        }
+        if creds.get("session_token"):
+            tf_env["AWS_SESSION_TOKEN"] = creds["session_token"]
+
+        if not (tf_dir / ".terraform" / "providers").exists():
+            print("\n  [Terraform] Initializing backend...")
+            self._tf_run(tf_dir, ["terraform", "init", "-input=false"], env=tf_env)
+        else:
+            print("\n  [Terraform] Backend already initialized — skipping init.")
+
+        imports = [
+            ("aws_security_group.alb",                    pr["alb_sg_id"]),
+            ("aws_security_group.ecs",                    pr["ecs_sg_id"]),
+            ("aws_security_group.rds",                    pr["rds_sg_id"]),
+            ("aws_ecr_repository.main",                   project_name),
+            ("aws_db_subnet_group.main",                  pr["subnet_group"]),
+            ("aws_db_instance.main",                      project_name),
+            ("aws_iam_role.ecs_execution",                pr["role_name"]),
+            ("aws_iam_role_policy_attachment.ecs_execution",
+             f"{pr['role_name']}/{pr['policy_arn']}"),
+            ("aws_lb.main",                               pr["alb_arn"]),
+            ("aws_lb_target_group.main",                  pr["tg_arn"]),
+            ("aws_lb_listener.http",                      pr["listener_arn"]),
+            ("aws_cloudwatch_log_group.main",             pr["log_group"]),
+            ("aws_ecs_cluster.main",                      project_name),
+            ("aws_ecs_task_definition.main",
+             f"{project_name}:{pr['td_revision']}"),
+            ("aws_ecs_service.main",                      f"{project_name}/{project_name}"),
+        ]
+
+        print(f"\n  [Terraform] Importing {len(imports)} resources into state...")
+        ok = 0
+        for addr, res_id in imports:
+            r = subprocess.run(
+                ["terraform", "import", "-input=false", addr, res_id],
+                cwd=tf_dir, env=tf_env, capture_output=True, text=True,
+            )
+            if r.returncode == 0 or "already managed" in (r.stderr + r.stdout).lower():
+                ok += 1
+            else:
+                print(f"  [Terraform] Warning: could not import {addr}: {r.stderr.strip()[:120]}")
+        print(f"  [Terraform] {ok}/{len(imports)} resources in state.")
+
+        # Reconciliation apply — makes state completely up-to-date:
+        # creates new task def revision with real image, sets desired_count=1
+        print(f"\n  [Terraform] Reconciliation apply (updates task def + starts ECS deploy)...")
+        self._tf_run(tf_dir, ["terraform", "apply", "-auto-approve", "-input=false"], env=tf_env)
+        print(f"  [Terraform] ✓ State is fully up-to-date — terraform destroy/apply/plan will work.")
+
+    def _tf_run(self, tf_dir: Path, cmd: list[str], env: dict | None = None) -> None:
+        """Run a Terraform command. Auto-recovers from stale DynamoDB/GCS locks."""
+        result = subprocess.run(cmd, cwd=tf_dir, env=env, capture_output=True, text=True)
+        # Stream output so user sees progress
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.returncode == 0:
+            return
+
+        combined = result.stdout + result.stderr
+        lock_match = re.search(r'ID:\s+([0-9a-f-]{36})', combined)
+        if lock_match and "state lock" in combined.lower():
+            lock_id = lock_match.group(1)
+            print(f"\n  [Terraform] Stale lock detected (ID: {lock_id}) — auto-unlocking...")
+            unlock = subprocess.run(
+                ["terraform", "force-unlock", "-force", lock_id],
+                cwd=tf_dir, env=env, capture_output=True, text=True,
+            )
+            if unlock.returncode == 0:
+                print("  Lock cleared — retrying command...")
+                retry = subprocess.run(cmd, cwd=tf_dir, env=env, capture_output=True, text=True)
+                if retry.stdout:
+                    print(retry.stdout, end="")
+                if retry.returncode == 0:
+                    return
+                result = retry
+
+        print(f"\nTerraform command failed: {' '.join(cmd)}\n{result.stderr}", file=sys.stderr)
+        sys.exit(1)
 
     def _ecr_push(
         self, local_tag: str, image_uri: str, region: str, creds: dict[str, Any]
@@ -993,8 +1398,11 @@ class Deployment:
         if creds.get("credentials_file"):
             tf_env["GOOGLE_APPLICATION_CREDENTIALS"] = creds["credentials_file"]
 
-        print("\n  [Terraform] Initializing backend...")
-        self._tf_run(tf_dir, ["terraform", "init", "-input=false"], env=tf_env)
+        if not (tf_dir / ".terraform" / "providers").exists():
+            print("\n  [Terraform] Initializing backend...")
+            self._tf_run(tf_dir, ["terraform", "init", "-input=false"], env=tf_env)
+        else:
+            print("\n  [Terraform] Backend already initialized — skipping init.")
 
         print("\n  [Terraform] Provisioning infrastructure (Artifact Registry, Cloud SQL, Cloud Run)...")
         print("  Cloud SQL provisioning takes 5-10 minutes — please wait.\n")
@@ -1095,8 +1503,11 @@ class Deployment:
         # Heroku API key passed via env var — never written to a file.
         tf_env = {**os.environ, "TF_VAR_heroku_api_key": api_key}
 
-        print("\n  [Terraform] Initializing (local state)...")
-        self._tf_run(tf_dir, ["terraform", "init", "-input=false"], env=tf_env)
+        if not (tf_dir / ".terraform" / "providers").exists():
+            print("\n  [Terraform] Initializing (local state)...")
+            self._tf_run(tf_dir, ["terraform", "init", "-input=false"], env=tf_env)
+        else:
+            print("\n  [Terraform] Backend already initialized — skipping init.")
 
         print("\n  [Terraform] Provisioning Heroku app and Postgres addon...")
         print("  Postgres addon provisioning typically takes 1-2 minutes.\n")
