@@ -270,6 +270,7 @@ def main():
             heroku_app=args.heroku_app,
             gcp_project=args.gcp_project,
             gcp_region=args.gcp_region,
+            github_token=gh["token"] if args.github else "",
         )
         record = deployer.deploy(spec, api_plan)
         print(f"\n✓ Deployment complete!")

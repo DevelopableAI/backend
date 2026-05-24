@@ -110,11 +110,13 @@ class Deployment:
         out_dir: Path,
         provider: str | None = None,
         tests_dir: Path | None = None,
+        github_token: str = "",
         **kwargs: Any,
     ) -> None:
         self.out_dir = out_dir
         self.provider_name = provider
         self.tests_dir = tests_dir
+        self.github_token = github_token
         self.provider_kwargs = self._normalise_kwargs(kwargs)
 
     # ── Public API ─────────────────────────────────────────────────────────────
@@ -551,10 +553,14 @@ class Deployment:
         Resolve a GitHub token for the Secrets API.
 
         Tries in order:
-        1. GITHUB_TOKEN environment variable.
-        2. Token embedded in the git remote URL
+        1. Token passed explicitly at construction (from main.py / skill).
+        2. GITHUB_TOKEN environment variable.
+        3. Token embedded in the git remote URL
            (https://<token>@github.com/owner/repo.git).
         """
+        if self.github_token:
+            return self.github_token
+
         token = os.environ.get("GITHUB_TOKEN", "").strip()
         if token:
             return token
@@ -592,7 +598,10 @@ class Deployment:
     def _print_secrets_instructions(
         self, provider_name: str, creds: dict[str, Any]
     ) -> None:
-        """Print exact secret names + values and block until user confirms."""
+        """
+        Fallback: print secret names when the GitHub API could not set them
+        automatically (e.g. token lacks the 'secrets' write permission).
+        """
         secret_map = _PROVIDER_GITHUB_SECRETS.get(provider_name, {})
         optional = _OPTIONAL_PROVIDER_GITHUB_SECRETS.get(provider_name, set())
         if not secret_map:
@@ -602,26 +611,16 @@ class Deployment:
         settings_url = f"https://github.com/{repo}/settings/secrets/actions"
 
         print(
-            "\n  ╔═══════════════════════════════════════════════════════════════╗\n"
-            "  ║  ACTION REQUIRED — GitHub Actions secrets not set             ║\n"
-            "  ║  The deploy workflow will fail on every push until you do.    ║\n"
-            "  ╚═══════════════════════════════════════════════════════════════╝\n"
-            f"\n  Go to: {settings_url}\n"
-            "  Click 'New repository secret' and add each of the following:\n"
+            "\n  ─────────────────────────────────────────────────────────────────\n"
+            "  Could not auto-set GitHub Actions secrets (token may lack\n"
+            "  'secrets' write permission — needs full 'repo' scope).\n"
+            f"  Add them manually at: {settings_url}\n"
+            "  ─────────────────────────────────────────────────────────────────"
         )
         for secret_name, cred_key in secret_map.items():
-            value = creds.get(cred_key, "")
-            suffix = "  (optional — only needed for temporary STS credentials)" if secret_name in optional else ""
-            if value:
-                print(f"    Name : {secret_name}{suffix}")
-                print(f"    Value: {value}\n")
-            elif secret_name not in optional:
-                print(f"    Name : {secret_name}  ⚠ value not available — set manually\n")
-        print(
-            "  Workflow file: .github/workflows/deploy.yml\n"
-            "  ───────────────────────────────────────────────────────────────"
-        )
-        input("\n  Press Enter once you have added the secrets to continue...")
+            suffix = "  (optional)" if secret_name in optional else ""
+            print(f"    {secret_name}{suffix}")
+        print("  ─────────────────────────────────────────────────────────────────")
 
     def _run_remote_tests(self, endpoint: str) -> None:
         """
