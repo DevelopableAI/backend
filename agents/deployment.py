@@ -830,13 +830,13 @@ class Deployment:
         # ── Security groups ────────────────────────────────────────────────────
         print(f"  [boto3] Ensuring security groups...")
         alb_sg_id = self._ensure_sg_boto3(ec2, vpc_id, f"{project_name}-alb-sg",
-            f"ALB SG for {project_name}",
+            "Managed by Terraform",
             [{"proto": "tcp", "from_port": 80, "to_port": 80, "cidr": "0.0.0.0/0"}])
         ecs_sg_id = self._ensure_sg_boto3(ec2, vpc_id, f"{project_name}-ecs-sg",
-            f"ECS SG for {project_name}",
+            "Managed by Terraform",
             [{"proto": "tcp", "from_port": 3000, "to_port": 3000, "src_sg": alb_sg_id}])
         rds_sg_id = self._ensure_sg_boto3(ec2, vpc_id, f"{project_name}-rds-sg",
-            f"RDS SG for {project_name}",
+            "Managed by Terraform",
             [{"proto": "tcp", "from_port": 5432, "to_port": 5432, "src_sg": ecs_sg_id}])
 
         # ── ECR ────────────────────────────────────────────────────────────────
