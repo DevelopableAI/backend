@@ -206,47 +206,77 @@ class Deployment:
         tf_dir = self.out_dir / "terraform"
         tf_available = tf_dir.is_dir() and (tf_dir / "main.tf").exists()
 
-        if tf_available:
-            if provider_name == "aws":
-                record = self._terraform_deploy_aws(
-                    spec, provider, creds, project_name, deployment_id
-                )
-            elif provider_name == "gcp":
-                record = self._terraform_deploy_gcp(
-                    spec, provider, creds, project_name, deployment_id
-                )
-            else:  # heroku
-                record = self._terraform_deploy_heroku(
-                    spec, provider, creds, project_name, deployment_id
-                )
-        else:
-            # Fallback: no terraform files — use legacy boto3/SDK path.
-            if provider_name == "heroku":
-                env_vars = self._read_env_file()
-                image_tag = f"developable/{project_name}:latest"
-                print(f"\n  Building Docker image '{image_tag}'...")
-                self._docker_build(image_tag)
-                print(f"\n  Deploying container to {provider.display_name}...")
-                record = provider.deploy(spec, image_tag, env_vars, deployment_id)
-                print(f"\n  Provisioning Heroku Postgres database...")
-                db_url, db_resources = provider.provision_database(spec, project_name, deployment_id)
-                print(f"\n  Applying Prisma schema to remote database...")
-                provider.apply_schema(db_url)
-                record["resources"].extend(db_resources)
-                provider.wait_for_ready(record["endpoint"])
+        record: dict[str, Any] | None = None
+        try:
+            if tf_available:
+                if provider_name == "aws":
+                    record = self._terraform_deploy_aws(
+                        spec, provider, creds, project_name, deployment_id
+                    )
+                elif provider_name == "gcp":
+                    record = self._terraform_deploy_gcp(
+                        spec, provider, creds, project_name, deployment_id
+                    )
+                else:  # heroku
+                    record = self._terraform_deploy_heroku(
+                        spec, provider, creds, project_name, deployment_id
+                    )
             else:
-                print(f"\n  Provisioning managed PostgreSQL database...")
-                db_url, db_resources = provider.provision_database(spec, project_name, deployment_id)
-                print(f"\n  Applying Prisma schema to remote database...")
-                provider.apply_schema(db_url)
-                image_tag = f"developable/{project_name}:latest"
-                print(f"\n  Building Docker image '{image_tag}'...")
-                self._docker_build(image_tag)
-                env_vars = self._read_env_file()
-                env_vars["DATABASE_URL"] = db_url
-                print(f"\n  Deploying container to {provider.display_name}...")
-                record = provider.deploy(spec, image_tag, env_vars, deployment_id)
-                record["resources"].extend(db_resources)
+                # Fallback: no terraform files — use legacy boto3/SDK path.
+                if provider_name == "heroku":
+                    env_vars = self._read_env_file()
+                    image_tag = f"developable/{project_name}:latest"
+                    print(f"\n  Building Docker image '{image_tag}'...")
+                    self._docker_build(image_tag)
+                    print(f"\n  Deploying container to {provider.display_name}...")
+                    record = provider.deploy(spec, image_tag, env_vars, deployment_id)
+                    print(f"\n  Provisioning Heroku Postgres database...")
+                    db_url, db_resources = provider.provision_database(spec, project_name, deployment_id)
+                    print(f"\n  Applying Prisma schema to remote database...")
+                    provider.apply_schema(db_url)
+                    record["resources"].extend(db_resources)
+                    provider.wait_for_ready(record["endpoint"])
+                else:
+                    print(f"\n  Provisioning managed PostgreSQL database...")
+                    db_url, db_resources = provider.provision_database(spec, project_name, deployment_id)
+                    print(f"\n  Applying Prisma schema to remote database...")
+                    provider.apply_schema(db_url)
+                    image_tag = f"developable/{project_name}:latest"
+                    print(f"\n  Building Docker image '{image_tag}'...")
+                    self._docker_build(image_tag)
+                    env_vars = self._read_env_file()
+                    env_vars["DATABASE_URL"] = db_url
+                    print(f"\n  Deploying container to {provider.display_name}...")
+                    record = provider.deploy(spec, image_tag, env_vars, deployment_id)
+                    record["resources"].extend(db_resources)
+        finally:
+            # ── 9. Push CI/CD deploy workflow ─────────────────────────────────
+            # Always push deploy.yml even if deployment failed — the workflow
+            # self-checks for secrets and will re-trigger when the user re-runs.
+            # Skipped only when record is None (deployment failed before any
+            # resources were created, so there is no endpoint/image to embed).
+            if self._has_github_remote() and record is not None:
+                try:
+                    gitignore_changed = self._ensure_deployment_state_ignored()
+                    if gitignore_changed:
+                        self._push_gitignore_to_github()
+                    workflow_yaml = provider.generate_deploy_workflow(project_name, record)
+                    print(f"\n  Preparing GitHub Actions deploy workflow...")
+                    secrets_ready = self._provision_github_secrets(provider_name, creds)
+                    print(f"  Pushing CI/CD deploy workflow to GitHub...")
+                    self._push_workflow_to_github(workflow_yaml)
+                    if not secrets_ready:
+                        repo = self._github_repo_fullname() or "<your-repo>"
+                        print(
+                            f"\n  deploy.yml pushed. The workflow will fail until the required\n"
+                            f"  GitHub Actions secrets are set. Add them at:\n"
+                            f"  https://github.com/{repo}/settings/secrets/actions"
+                        )
+                except Exception as exc:
+                    print(f"\n  Warning: could not push deploy.yml: {exc}", file=sys.stderr)
+
+        if record is None:
+            sys.exit(1)
 
         # ── 8. Persist state ───────────────────────────────────────────────────
         state = DeploymentState(self.out_dir)
@@ -256,27 +286,6 @@ class Deployment:
         )
         state.add(record)
         state.save()
-
-        gitignore_changed = self._ensure_deployment_state_ignored()
-
-        # ── 9. Push CI/CD deploy workflow + set GitHub secrets ────────────────
-        if self._has_github_remote():
-            if gitignore_changed:
-                self._push_gitignore_to_github()
-            workflow_yaml = provider.generate_deploy_workflow(project_name, record)
-            print(f"\n  Preparing GitHub Actions deploy workflow...")
-            secrets_ready = self._provision_github_secrets(provider_name, creds)
-            # Always push deploy.yml — the workflow self-checks for missing secrets
-            # and fails with a clear error message rather than silently not existing.
-            print(f"  Pushing CI/CD deploy workflow to GitHub...")
-            self._push_workflow_to_github(workflow_yaml)
-            if not secrets_ready:
-                repo = self._github_repo_fullname() or "<your-repo>"
-                print(
-                    f"\n  deploy.yml pushed. The workflow will fail until the required\n"
-                    f"  GitHub Actions secrets are set. Add them at:\n"
-                    f"  https://github.com/{repo}/settings/secrets/actions"
-                )
 
         # ── 10. Remote smoke tests ─────────────────────────────────────────────
         self._run_remote_tests(record["endpoint"])
@@ -335,6 +344,17 @@ class Deployment:
             except EOFError:
                 # Non-interactive environment — poll silently every 10 s.
                 time.sleep(10)
+
+    def _wait_for_user_action(self, message: str, steps: list[str]) -> None:
+        """Print an actionable error with numbered resolution steps, then block until Enter."""
+        print(f"\n  ⚠  {message}", flush=True)
+        for i, step in enumerate(steps, 1):
+            print(f"  {i}. {step}")
+        print("\n  Press Enter once resolved to retry...", flush=True)
+        try:
+            input()
+        except EOFError:
+            time.sleep(10)
 
     def _docker_build(self, image_tag: str) -> None:
         """Build the Docker image from the output directory, streaming output.
@@ -756,14 +776,52 @@ class Deployment:
         logs  = session.client("logs")
         sts   = session.client("sts")
 
-        account_id = sts.get_caller_identity()["Account"]
+        # ── Validate credentials — prompt and retry on auth errors ───────────
+        while True:
+            try:
+                account_id = sts.get_caller_identity()["Account"]
+                break
+            except ClientError as e:
+                if e.response["Error"]["Code"] in (
+                    "InvalidClientTokenId", "ExpiredTokenException",
+                    "AuthFailure", "UnauthorizedOperation",
+                ):
+                    self._wait_for_user_action(
+                        "AWS credentials are invalid or expired.",
+                        [
+                            "Export fresh credentials in this terminal:",
+                            "  export AWS_ACCESS_KEY_ID=<key>",
+                            "  export AWS_SECRET_ACCESS_KEY=<secret>",
+                            "  export AWS_SESSION_TOKEN=<token>  # if using STS/assumed role",
+                            "Verify with: aws sts get-caller-identity",
+                        ],
+                    )
+                    session = boto3.Session(
+                        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+                        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+                        aws_session_token=os.environ.get("AWS_SESSION_TOKEN"),
+                        region_name=region,
+                    )
+                    sts = session.client("sts")
+                else:
+                    raise
         ecr_url = f"{account_id}.dkr.ecr.{region}.amazonaws.com/{project_name}"
 
         # Default VPC + subnets (matches data sources in main.tf.j2)
         vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])
         if not vpcs["Vpcs"]:
-            print("\nError: No default VPC found. Run: aws ec2 create-default-vpc", file=sys.stderr)
-            sys.exit(1)
+            self._wait_for_user_action(
+                "No default VPC found in this AWS region.",
+                [
+                    f"Create one with: aws ec2 create-default-vpc --region {region}",
+                    "Or create it in the VPC console: https://console.aws.amazon.com/vpc/",
+                    "Then press Enter to retry",
+                ],
+            )
+            vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])
+            if not vpcs["Vpcs"]:
+                print(f"\nError: still no default VPC in {region}.", file=sys.stderr)
+                sys.exit(1)
         vpc_id = vpcs["Vpcs"][0]["VpcId"]
         subnet_ids = [s["SubnetId"] for s in ec2.describe_subnets(
             Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
@@ -875,26 +933,36 @@ class Deployment:
         print(f"  [boto3] Waiting for RDS to become available...", flush=True)
         deadline = time.time() + 900
         rds_endpoint = None
-        while time.time() < deadline:
-            try:
-                resp = rds.describe_db_instances(DBInstanceIdentifier=project_name)
-            except ClientError as e:
-                if e.response["Error"]["Code"] == "DBInstanceNotFound":
-                    time.sleep(15)
-                    continue
-                raise
-            inst   = resp["DBInstances"][0]
-            status = inst["DBInstanceStatus"]
-            if status == "available":
-                rds_endpoint = inst["Endpoint"]["Address"]
-                print(f"  [boto3] ✓ RDS available — {rds_endpoint}")
-                break
-            print(f"  [boto3] RDS status: {status}...", end="\r", flush=True)
-            time.sleep(15)
+        while True:
+            deadline = time.time() + 900
+            while time.time() < deadline:
+                try:
+                    resp = rds.describe_db_instances(DBInstanceIdentifier=project_name)
+                except ClientError as e:
+                    if e.response["Error"]["Code"] == "DBInstanceNotFound":
+                        time.sleep(15)
+                        continue
+                    raise
+                inst   = resp["DBInstances"][0]
+                status = inst["DBInstanceStatus"]
+                if status == "available":
+                    rds_endpoint = inst["Endpoint"]["Address"]
+                    print(f"  [boto3] ✓ RDS available — {rds_endpoint}")
+                    break
+                print(f"  [boto3] RDS status: {status}...", end="\r", flush=True)
+                time.sleep(15)
 
-        if not rds_endpoint:
-            print("\n  [boto3] RDS did not become available in time.", file=sys.stderr)
-            sys.exit(1)
+            if rds_endpoint:
+                break
+            self._wait_for_user_action(
+                f"RDS instance '{project_name}' did not become available within 15 minutes.",
+                [
+                    f"Check the RDS console: https://console.aws.amazon.com/rds/",
+                    f"Look for instance: {project_name}  (region: {region})",
+                    "If status is 'failed' or 'incompatible-parameters': delete the instance and press Enter to retry provisioning",
+                    "If status is still 'creating': press Enter to wait another 15 minutes",
+                ],
+            )
 
         # ── Task definition (placeholder image — reconciliation apply updates it) ──
         db_url = f"postgresql://postgres:{db_password}@{rds_endpoint}:5432/{db_name}"
@@ -1163,15 +1231,16 @@ class Deployment:
         print(f"  [Terraform] ✓ State is fully up-to-date — terraform destroy/apply/plan will work.")
 
     def _tf_run(self, tf_dir: Path, cmd: list[str], env: dict | None = None) -> None:
-        """Run a Terraform command. Auto-recovers from stale DynamoDB/GCS locks."""
+        """Run a Terraform command. Auto-recovers from stale locks; prompts on user-fixable errors."""
         result = subprocess.run(cmd, cwd=tf_dir, env=env, capture_output=True, text=True)
-        # Stream output so user sees progress
         if result.stdout:
             print(result.stdout, end="")
         if result.returncode == 0:
             return
 
         combined = result.stdout + result.stderr
+
+        # ── Auto-recover stale DynamoDB/GCS lock ──────────────────────────────
         lock_match = re.search(r'ID:\s+([0-9a-f-]{36})', combined)
         if lock_match and "state lock" in combined.lower():
             lock_id = lock_match.group(1)
@@ -1188,6 +1257,96 @@ class Deployment:
                 if retry.returncode == 0:
                     return
                 result = retry
+                combined = result.stdout + result.stderr
+
+        # Derive project name from tf_dir for actionable messages (tf_dir = <out_dir>/terraform).
+        project = tf_dir.parent.name
+
+        # ── Stale S3/GCS state checksum conflict ──────────────────────────────
+        if any(p in combined for p in (
+            "checksum", "digest mismatch",
+            "state data in S3 does not have",
+            "Error refreshing state",
+        )):
+            self._wait_for_user_action(
+                "Terraform found a stale state file — the S3/GCS state does not match the DynamoDB lock table.",
+                [
+                    f"Open DynamoDB console → table '{project}-tf-lock'",
+                    f"  Delete the item whose LockID ends with '/terraform.tfstate'",
+                    f"Open S3 console → bucket '{project}-tf-state'",
+                    f"  Delete 'terraform.tfstate' (contains stale data from a prior run)",
+                    "Press Enter — Terraform will initialize with a fresh empty state",
+                ],
+            )
+            retry = subprocess.run(cmd, cwd=tf_dir, env=env, capture_output=True, text=True)
+            if retry.stdout:
+                print(retry.stdout, end="")
+            if retry.returncode == 0:
+                return
+            result = retry
+
+        # ── State backend bucket missing ──────────────────────────────────────
+        elif any(p in combined.lower() for p in (
+            "nosuchbucket", "no such bucket", "bucketnotfound",
+        )):
+            self._wait_for_user_action(
+                "Terraform state backend bucket not found — it may have been deleted.",
+                [
+                    "Re-run the deployment from the beginning",
+                    "  The bootstrap step will recreate the S3 bucket and DynamoDB table",
+                ],
+            )
+            retry = subprocess.run(cmd, cwd=tf_dir, env=env, capture_output=True, text=True)
+            if retry.stdout:
+                print(retry.stdout, end="")
+            if retry.returncode == 0:
+                return
+            result = retry
+
+        # ── Backend credentials rejected ──────────────────────────────────────
+        elif any(p in combined for p in (
+            "AccessDenied",
+            "Error: error configuring S3 Backend",
+            "googleapi: Error 403",
+        )):
+            self._wait_for_user_action(
+                "Terraform backend access denied — credentials may be expired or lack S3/GCS permissions.",
+                [
+                    "For AWS: export fresh credentials:",
+                    "  export AWS_ACCESS_KEY_ID=<key>",
+                    "  export AWS_SECRET_ACCESS_KEY=<secret>",
+                    "  export AWS_SESSION_TOKEN=<token>  # if using STS",
+                    "For GCP: re-authenticate:",
+                    "  gcloud auth application-default login",
+                ],
+            )
+            retry = subprocess.run(cmd, cwd=tf_dir, env=env, capture_output=True, text=True)
+            if retry.stdout:
+                print(retry.stdout, end="")
+            if retry.returncode == 0:
+                return
+            result = retry
+
+        # ── GCP API not enabled ───────────────────────────────────────────────
+        elif any(p in combined for p in (
+            "has not been used in project",
+            "API has not been enabled",
+            "SERVICE_DISABLED",
+        )):
+            self._wait_for_user_action(
+                "A required GCP API is not enabled for this project.",
+                [
+                    "Open GCP console → APIs & Services → Library",
+                    "Enable the API named in the error above",
+                    "Common APIs needed: Cloud Run API, Cloud SQL Admin API, Artifact Registry API",
+                ],
+            )
+            retry = subprocess.run(cmd, cwd=tf_dir, env=env, capture_output=True, text=True)
+            if retry.stdout:
+                print(retry.stdout, end="")
+            if retry.returncode == 0:
+                return
+            result = retry
 
         print(f"\nTerraform command failed: {' '.join(cmd)}\n{result.stderr}", file=sys.stderr)
         sys.exit(1)
@@ -1429,18 +1588,37 @@ class Deployment:
         print("  Cloud SQL provisioning takes 5-10 minutes — please wait.\n")
         self._tf_run(tf_dir, ["terraform", "apply", "-auto-approve", "-input=false"], env=tf_env)
 
-        out = subprocess.run(
-            ["terraform", "output", "-json"],
-            cwd=tf_dir, capture_output=True, text=True, env=tf_env,
-        )
-        if out.returncode != 0:
-            print(f"Error reading Terraform outputs:\n{out.stderr}", file=sys.stderr)
-            sys.exit(1)
-        outputs = {k: v["value"] for k, v in json.loads(out.stdout).items()}
-
-        cloud_run_url = outputs["cloud_run_url"]
-        ar_url = outputs["artifact_registry_url"]
-        cloud_sql_ip = outputs["cloud_sql_public_ip"]
+        while True:
+            out = subprocess.run(
+                ["terraform", "output", "-json"],
+                cwd=tf_dir, capture_output=True, text=True, env=tf_env,
+            )
+            if out.returncode != 0:
+                self._wait_for_user_action(
+                    "Could not read Terraform outputs — apply may not have completed successfully.",
+                    [
+                        "Check the Terraform apply output above for errors",
+                        "You can also run: cd terraform && terraform output -json",
+                        "Once the issue is resolved, press Enter to retry reading outputs",
+                    ],
+                )
+                continue
+            try:
+                raw = {k: v["value"] for k, v in json.loads(out.stdout).items()}
+                cloud_run_url = raw["cloud_run_url"]
+                ar_url        = raw["artifact_registry_url"]
+                cloud_sql_ip  = raw["cloud_sql_public_ip"]
+                break
+            except (KeyError, json.JSONDecodeError) as exc:
+                self._wait_for_user_action(
+                    f"Terraform output is missing an expected value ({exc}).",
+                    [
+                        "Check the GCP console to confirm Cloud Run, Cloud SQL, and Artifact Registry were all created",
+                        "If any resource is missing, run: cd terraform && terraform apply -auto-approve",
+                        "Then press Enter to retry reading outputs",
+                    ],
+                )
+                # retry loop
 
         db_name = project_name.replace("-", "_")
         db_url = f"postgresql://postgres:{db_password}@{cloud_sql_ip}:5432/{db_name}"
