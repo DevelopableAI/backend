@@ -281,7 +281,7 @@ class VersionControl:
         payload = {
             "name": self.repo_name,
             "private": self.private,
-            "description": self._repo_description(spec),
+            "description": self._repo_description(self._spec),
             "auto_init": False,
         }
         response = requests.post(
