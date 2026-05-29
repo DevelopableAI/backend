@@ -401,7 +401,15 @@ Only check credentials that are actually needed based on the Phase 0b answers.
 gh auth status
 ```
 
-**If the command succeeds:** print `  ✓ GitHub: authenticated` and continue.
+**If the command succeeds:** also capture the token so it can be forwarded to `deploy.py`:
+
+```bash
+# Prefer an explicit env var; fall back to the token gh CLI has cached.
+GITHUB_TOKEN="${GITHUB_TOKEN:-$(gh auth token 2>/dev/null)}"
+echo "$GITHUB_TOKEN"
+```
+
+Set `{github_token}` to the printed value. Print `  ✓ GitHub: authenticated` and continue.
 
 **If it fails or `gh` is not installed:**
 ```
@@ -424,7 +432,7 @@ gh auth status
 
   Reply "done" once authenticated and I will continue.
 ```
-Wait for the user to reply before proceeding.
+Wait for the user to reply before proceeding. After they confirm, re-run both checks and capture `{github_token}` as above.
 
 ---
 
