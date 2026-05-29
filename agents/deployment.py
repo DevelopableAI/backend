@@ -914,7 +914,37 @@ class Deployment:
         print(f"  [boto3] Ensuring ALB '{project_name}'...")
         alb_arn, alb_dns = self._ensure_alb_boto3(elb, project_name, subnet_ids, alb_sg_id)
         tg_arn          = self._ensure_target_group_boto3(elb, project_name, vpc_id)
-        listener_arn    = self._ensure_alb_listener_boto3(elb, alb_arn, tg_arn)
+        try:
+            listener_arn = self._ensure_alb_listener_boto3(elb, alb_arn, tg_arn)
+        except ClientError as _tg_err:
+            if _tg_err.response["Error"]["Code"] != "TargetGroupAssociationLimitException":
+                raise
+            # Stale association from a previous partial run — AWS hasn't fully released
+            # the TG from the old ALB yet. Poll-delete it (ResourceInUse clears ~60s after
+            # the old ALB is gone), then recreate and retry.
+            print(f"  [boto3] Stale TG association — recycling target group (may take ~60s)...", flush=True)
+            _tg_deadline = time.time() + 300
+            while time.time() < _tg_deadline:
+                try:
+                    elb.delete_target_group(TargetGroupArn=tg_arn)
+                    break
+                except ClientError as _de:
+                    if _de.response["Error"]["Code"] != "ResourceInUse":
+                        raise
+                    time.sleep(10)
+            else:
+                raise RuntimeError(f"Stale target group {tg_arn} could not be deleted within 5 minutes")
+            _gone_deadline = time.time() + 60
+            while time.time() < _gone_deadline:
+                try:
+                    elb.describe_target_groups(TargetGroupArns=[tg_arn])
+                    time.sleep(5)
+                except ClientError as _ge:
+                    if _ge.response["Error"]["Code"] == "TargetGroupNotFound":
+                        break
+                    raise
+            tg_arn = self._ensure_target_group_boto3(elb, project_name, vpc_id)
+            listener_arn = self._ensure_alb_listener_boto3(elb, alb_arn, tg_arn)
 
         # ── CloudWatch log group ───────────────────────────────────────────────
         log_group = f"/ecs/{project_name}"
