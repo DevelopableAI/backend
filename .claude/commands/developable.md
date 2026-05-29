@@ -577,14 +577,9 @@ which developable 2>/dev/null || echo "NOT_FOUND"
 
 ### Step 1b — Run the CLI
 
-Build the command via the command builder (single source of truth for flag mapping), then run it.
+Build both commands up front (single source of truth), then run them in sequence.
 
-Construct the JSON config using the confirmed Phase 0b values:
-- Always include: `cli`, `schema_path`, `rules`, `out_dir`, `tests_out`
-- If `github_enabled` is true: include `github: true`, `github_user`, `github_repo`, `github_private`, and `github_token` (read from `GITHUB_TOKEN` env var or `gh auth token`)
-- If `deploy_provider` is not "none": include `deploy_to` and any provider-specific keys (`aws_region`, `gcp_project`, `gcp_region`, `heroku_app`)
-
-**Step 1 — Build the command string** (foreground Bash call):
+**Step 1 — Build the `main.py` command** (foreground Bash call):
 
 ```bash
 python core/command_builder.py << 'JSON'
@@ -599,25 +594,41 @@ python core/command_builder.py << 'JSON'
   "github_user": "{github_user}",
   "github_repo": "{github_repo}",
   "github_private": {github_private},
-  "deploy_to": "{deploy_provider}",
-  "aws_region": "{deploy_config.aws_region}",
-  "gcp_project": "{deploy_config.gcp_project}",
-  "gcp_region": "{deploy_config.gcp_region}",
-  "heroku_app": "{deploy_config.heroku_app}"
+  "project_name": "{project_name}"
 }
 JSON
 ```
 
-Capture the printed command from that output.
+Capture the printed command as `{main_cmd}`.
 
-**Step 2 — Launch the CLI** using a **separate Bash tool call with `run_in_background: true`** and a 600000ms timeout. Do NOT use `&` — background child processes of a regular Bash call are killed when the shell exits. `run_in_background: true` keeps the process alive under the session and notifies you when it finishes:
+**Step 2 — Build the `deploy.py` command** (only if `deploy_provider` is not "none"):
+
+```bash
+python core/command_builder.py << 'JSON'
+{
+  "command": "deploy",
+  "cli": "{cli_command}",
+  "out_dir": "{out_dir}",
+  "deploy_to": "{deploy_provider}",
+  "aws_region": "{deploy_config.aws_region}",
+  "gcp_project": "{deploy_config.gcp_project}",
+  "gcp_region": "{deploy_config.gcp_region}",
+  "heroku_app": "{deploy_config.heroku_app}",
+  "github_token": "{github_token}"
+}
+JSON
+```
+
+Capture the printed command as `{deploy_cmd}`. Skip this step if `deploy_provider` is "none".
+
+**Step 3 — Launch `main.py`** using a **separate Bash tool call with `run_in_background: true`** and a 600000ms timeout. Do NOT use `&` — background child processes of a regular Bash call are killed when the shell exits. `run_in_background: true` keeps the process alive under the session and notifies you when it finishes:
 
 ```bash
 # This entire command is the run_in_background: true Bash call
-{cli_command_from_step_1} 2>&1 | tee /tmp/developable_cli.log
+{main_cmd} 2>&1 | tee /tmp/developable_cli.log
 ```
 
-You will be notified automatically when this background process completes.
+You will be notified automatically when this background process completes. `main.py` handles code generation and the GitHub push — it does not deploy to cloud.
 
 ### Step 1c — Wait for files, then hand off to Phase 2
 
@@ -638,12 +649,12 @@ find {out_dir}/tests -name "*.py" 2>/dev/null | wc -l
 
 ```
   Phase 1 structural files ready — {N} TypeScript files + {M} test files
-  (deployment continuing in background — starting Phase 2 now)
+  (main.py continuing in background — GitHub push in progress — starting Phase 2 now)
 ```
 
-Immediately begin Phase 2. The CLI process continues running in the background — handling GitHub push and the full deployment (boto3 provisioning + terraform import + migration) — while Phase 2 fills LLM sections.
+Immediately begin Phase 2. `main.py` continues in the background handling the GitHub push while Phase 2 fills LLM sections.
 
-**Phase 3 waits for the background-completion notification** before printing the final summary. When the notification arrives, check `/tmp/developable_cli.log` for the endpoint and any errors.
+**The background-completion notification signals that `main.py` is done.** When it arrives (typically during or just after Phase 2), check `/tmp/developable_cli.log` for errors. Cloud deployment (`deploy.py`) runs as a separate step after Phase 2 completes.
 
 ---
 
@@ -785,15 +796,50 @@ Print:
 
 ---
 
+## Phase 2.5 — Cloud Deployment (skip if `deploy_provider` is "none")
+
+If `deploy_provider` is "none", skip this phase entirely and go straight to Phase 3.
+
+Otherwise, verify `main.py` has finished (wait for the background-completion notification if it hasn't arrived yet), then launch `deploy.py`:
+
+```
+━━━ Deploying to {deploy_provider} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+Run `deploy.py` using a **separate Bash tool call with `run_in_background: true`** and a 600000ms timeout:
+
+```bash
+# This entire command is the run_in_background: true Bash call
+{deploy_cmd} 2>&1 | tee /tmp/developable_deploy.log
+```
+
+Print immediately after launching:
+
+```
+  Cloud deployment started — this takes 15–20 minutes.
+  AWS: RDS + ECS + ALB provisioning running in background.
+  GCP: Cloud SQL + Cloud Run provisioning running in background.
+  Heroku: app + Postgres addon provisioning running in background.
+  You will be notified when it completes — Phase 3 report will follow.
+```
+
+**Phase 3 waits for the `deploy.py` background-completion notification** before printing the final summary. When it arrives, check `/tmp/developable_deploy.log` for the endpoint and any errors.
+
+---
+
 ## Phase 3 — Report
 
 ```
 ━━━ Phase 3/3: Done ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-Wait for the background CLI process to finish (see Step 1c), then print the final summary.
+If `deploy_provider` is not "none": wait for the Phase 2.5 background-completion notification, then check `/tmp/developable_deploy.log` for the endpoint and any errors.
+
+Otherwise: check `/tmp/developable_cli.log` for any errors, then print the final summary.
 
 ### Final Summary
+
+For deployment runs: parse the endpoint from `/tmp/developable_deploy.log` (look for the `Endpoint :` line printed by `deploy.py`).
 
 Print the done block, adapting lines to what was enabled:
 

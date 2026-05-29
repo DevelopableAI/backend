@@ -1,10 +1,15 @@
 """
-Translates a skill config dict into a Developable CLI invocation string.
+Translates a skill config dict into Developable CLI invocation strings.
 
-This is the single source of truth for how skill config maps to main.py flags.
+This is the single source of truth for how skill config maps to CLI flags.
 
-CLI usage (reads JSON from stdin, prints the command):
-    echo '{"schema_path": "./prisma/schema.prisma", "out_dir": "./output"}' | python core/command_builder.py
+CLI usage (reads JSON from stdin):
+  - Default: prints the main.py command
+  - With "command": "deploy": prints the deploy.py command
+
+Examples:
+    echo '{"schema_path": "./schema.prisma", "rules": "./rules.yaml"}' | python core/command_builder.py
+    echo '{"command": "deploy", "out_dir": "./output", "deploy_to": "aws"}' | python core/command_builder.py
 """
 import json
 import sys
@@ -29,11 +34,6 @@ def build_cli_command(config: dict) -> str:
         github_user   (str)   appended as --github-user if github=True
         github_repo   (str)   appended as --github-repo if github=True
         github_private(bool)  appends --private if github=True and private=True
-        deploy_to     (str)   "aws" | "gcp" | "heroku" | None
-        aws_region    (str)   appended as --aws-region when deploy_to="aws"
-        gcp_project   (str)   appended as --gcp-project when deploy_to="gcp"
-        gcp_region    (str)   appended as --gcp-region when deploy_to="gcp"
-        heroku_app    (str)   appended as --heroku-app when deploy_to="heroku"
     """
     schema_path = config.get("schema_path")
     if not schema_path:
@@ -74,18 +74,47 @@ def build_cli_command(config: dict) -> str:
         if config.get("github_private"):
             parts.append("--private")
 
+    return " ".join(parts)
+
+
+def build_deploy_command(config: dict) -> str:
+    """
+    Build a deploy.py CLI invocation from a skill config dict.
+
+    Required keys:
+        deploy_to    (str)   "aws" | "gcp" | "heroku"
+
+    Optional keys:
+        cli           (str)   CLI binary — default "python deploy.py"
+        out_dir       (str)   default "./output"
+        aws_region    (str)   appended as --aws-region when deploy_to="aws"
+        gcp_project   (str)   appended as --gcp-project when deploy_to="gcp"
+        gcp_region    (str)   appended as --gcp-region when deploy_to="gcp"
+        heroku_app    (str)   appended as --heroku-app when deploy_to="heroku"
+        github_token  (str)   appended as --github-token (for Secrets API)
+    """
     deploy_to = config.get("deploy_to")
-    if deploy_to and deploy_to != "none":
-        parts += ["--deploy-to", deploy_to]
-        if deploy_to == "aws" and config.get("aws_region"):
-            parts += ["--aws-region", config["aws_region"]]
-        if deploy_to == "gcp":
-            if config.get("gcp_project"):
-                parts += ["--gcp-project", config["gcp_project"]]
-            if config.get("gcp_region"):
-                parts += ["--gcp-region", config["gcp_region"]]
-        if deploy_to == "heroku" and config.get("heroku_app"):
-            parts += ["--heroku-app", config["heroku_app"]]
+    if not deploy_to or deploy_to == "none":
+        raise ValueError("deploy_to is required and must not be 'none'")
+
+    cli = config.get("cli", "python deploy.py")
+    # Normalise: if caller passed the main.py cli binary, swap to deploy.py
+    cli = cli.replace("main.py", "deploy.py")
+
+    out_dir = config.get("out_dir", "./output")
+    parts = [cli, "--out", str(out_dir), "--deploy-to", deploy_to]
+
+    if deploy_to == "aws" and config.get("aws_region"):
+        parts += ["--aws-region", config["aws_region"]]
+    if deploy_to == "gcp":
+        if config.get("gcp_project"):
+            parts += ["--gcp-project", config["gcp_project"]]
+        if config.get("gcp_region"):
+            parts += ["--gcp-region", config["gcp_region"]]
+    if deploy_to == "heroku" and config.get("heroku_app"):
+        parts += ["--heroku-app", config["heroku_app"]]
+    if config.get("github_token"):
+        parts += ["--github-token", config["github_token"]]
 
     return " ".join(parts)
 
@@ -97,4 +126,8 @@ if __name__ == "__main__":
     except json.JSONDecodeError as exc:
         print(f"Error: invalid JSON — {exc}", file=sys.stderr)
         sys.exit(1)
-    print(build_cli_command(config))
+
+    if config.get("command") == "deploy":
+        print(build_deploy_command(config))
+    else:
+        print(build_cli_command(config))

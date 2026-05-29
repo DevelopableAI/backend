@@ -6,6 +6,7 @@ from pathlib import Path
 
 from core.parser import PrismaParser
 from core.rules_parser import BusinessRulesParser
+from core.project_config import ProjectConfig
 from agents.developer import Developer
 from agents.tester import Tester
 from generators.llm import get_session_summary, reset_session
@@ -67,23 +68,6 @@ def collect_github_config(args: argparse.Namespace, spec: dict) -> dict:
     return {"token": token, "user": user, "repo": repo, "private": private, "project_name": project_name}
 
 
-def _build_minimal_tf_provider_config(args: argparse.Namespace, provider: str) -> dict:
-    """
-    Build a minimal provider_config for Terraform file generation.
-
-    Only region/project defaults are needed — no credentials. The generated
-    .tf files use these as variable defaults (user can override with -var flags).
-    """
-    if provider == "aws":
-        return {"aws_region": getattr(args, "aws_region", None) or "us-east-1"}
-    if provider == "gcp":
-        return {
-            "gcp_project": getattr(args, "gcp_project", None) or "",
-            "gcp_region": getattr(args, "gcp_region", None) or "us-central1",
-        }
-    return {}  # Heroku: no provider-specific template vars needed
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Developable Backend Engineer — generates production-ready backend services from a Prisma schema"
@@ -137,29 +121,6 @@ def main():
             "Overwrite all files, including ones you have modified since the last commit. "
             "By default, re-runs skip files that differ from HEAD in the output git repo."
         ),
-    )
-
-    # ── Deployment agent flags ─────────────────────────────────────────────────
-    parser.add_argument(
-        "--deploy-to", default=None, metavar="PROVIDER",
-        choices=["aws", "heroku", "gcp"],
-        help="Deploy the generated API to a cloud provider: aws | heroku | gcp",
-    )
-    parser.add_argument(
-        "--aws-region", default=None, metavar="REGION",
-        help="AWS region for ECS Fargate deployment (default: us-east-1 or from ~/.aws/config)",
-    )
-    parser.add_argument(
-        "--heroku-app", default=None, metavar="NAME",
-        help="Heroku app name (default: <project-name>)",
-    )
-    parser.add_argument(
-        "--gcp-project", default=None, metavar="PROJECT_ID",
-        help="GCP project ID for Cloud Run deployment",
-    )
-    parser.add_argument(
-        "--gcp-region", default=None, metavar="REGION",
-        help="GCP region for Cloud Run deployment (default: us-central1)",
     )
 
     args = parser.parse_args()
@@ -227,19 +188,7 @@ def main():
     vc = VersionControl(out_dir=out_dir)
     vc.generate_infra(spec)
 
-    # ── Terraform agent: generate IaC files ───────────────────────────────────
-    # Runs before the GitHub push so terraform/ is version-controlled and
-    # CI can run `terraform validate`. No cloud credentials required here —
-    # state backend names are derived deterministically from project_name.
-    # TerraformBackend.bootstrap() (inside Deployment.deploy()) creates the
-    # actual S3/GCS resources when the user runs --deploy-to.
-    if args.deploy_to:
-        from agents.terraform import TerraformAgent
-        tf_config = _build_minimal_tf_provider_config(args, args.deploy_to)
-        print(f"\n[Terraform] Generating IaC files for {args.deploy_to.upper()}...")
-        TerraformAgent(out_dir, args.deploy_to, tf_config).generate(spec)
-        print(f"  Terraform files written to {out_dir}/terraform/")
-
+    github_info: dict | None = None
     if args.github:
         gh = collect_github_config(args, spec)
         vc.github_token = gh["token"]
@@ -257,28 +206,19 @@ def main():
         print("  cp .env.example .env  # fill in your values")
         print("  docker compose up")
 
-    # ── Deployment agent: deploy to cloud ─────────────────────────────────────
-    if args.deploy_to:
-        from agents.deployment import Deployment
+        github_info = {"user": gh["user"], "repo": gh["repo"], "repo_url": repo_url}
 
-        print(f"\n[Deployment] Deploying to {args.deploy_to.upper()}...")
-        deployer = Deployment(
-            out_dir=out_dir,
-            provider=args.deploy_to,
-            tests_dir=Path(tests_out) if tests_out else None,
-            aws_region=args.aws_region,
-            heroku_app=args.heroku_app,
-            gcp_project=args.gcp_project,
-            gcp_region=args.gcp_region,
-            github_token=gh["token"] if args.github else "",
-        )
-        record = deployer.deploy(spec, api_plan)
-        print(f"\n✓ Deployment complete!")
-        print(f"  Endpoint : {record['endpoint']}")
-        if record.get("region"):
-            print(f"  Region   : {record['region']}")
-        print(f"  Provider : {record['provider']}")
-        print(f"  State    : {out_dir}/.developable/state.json")
+    # ── Persist generation metadata for deploy.py ──────────────────────────────
+    ProjectConfig.save(
+        out_dir=out_dir,
+        schema_path=schema_path,
+        spec=spec,
+        tests_dir=Path(tests_out) if tests_out else None,
+        github_info=github_info,
+    )
+    print(f"\nGeneration config saved to {out_dir}/.developable/config.json")
+    print("To deploy to a cloud provider, run:")
+    print(f"  python deploy.py --out {out_dir} --deploy-to aws|gcp|heroku")
 
     # ── LLM usage summary ──────────────────────────────────────────────────────
     if not args.no_llm:
