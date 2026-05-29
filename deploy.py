@@ -186,13 +186,18 @@ def main():
             tests_dir = candidate
 
     # ── Resolve GitHub token (for Secrets API) ────────────────────────────────
-    github_token = (
-        args.github_token
-        or os.environ.get("GITHUB_TOKEN", "")
-        or cfg.get("github_user", "")  # token is not stored in config; env var is canonical
-    )
-    # Re-resolve cleanly: only CLI arg or env var supply the token; config holds user/repo.
+    # Token is never stored in config.json (security); supply it via --github-token
+    # or the GITHUB_TOKEN env var.  Without it, deploy.yml is pushed but the
+    # GitHub Actions secrets (AWS_ACCESS_KEY_ID etc.) cannot be set automatically.
     github_token = args.github_token or os.environ.get("GITHUB_TOKEN", "") or ""
+    if not github_token:
+        print(
+            "\n  Note: no GitHub token found (neither --github-token nor GITHUB_TOKEN env var).\n"
+            "  deploy.yml will be pushed, but GitHub Actions secrets cannot be set automatically.\n"
+            "  To fix: re-run with GITHUB_TOKEN=<token> deploy.py ... or --github-token <token>\n"
+            "  Or set them manually: https://github.com/<user>/<repo>/settings/secrets/actions\n",
+            file=sys.stderr,
+        )
 
     print(f"Parsing schema from {schema_path}...")
     spec = PrismaParser().parse(schema_path)
