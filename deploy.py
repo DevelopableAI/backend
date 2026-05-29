@@ -138,7 +138,34 @@ def main():
 
     print(f"Parsing schema from {schema_path}...")
     spec = PrismaParser().parse(schema_path)
-    print(f"Found {len(spec['entities'])} entities: {', '.join(e['name'] for e in spec['entities'])}")
+
+    # ── Resolved-config header ─────────────────────────────────────────────────
+    project_name = spec["entities"][0]["name_lower"] + "-api" if spec.get("entities") else "unknown"
+    config_source = f"{out_dir}/.developable/config.json" if cfg else "defaults only"
+    if github_token:
+        token_source = "✓  from --github-token flag" if args.github_token else "✓  from GITHUB_TOKEN env var"
+    else:
+        token_source = "✗  not set (deploy.yml secrets will need manual setup)"
+    region_display = args.aws_region or "us-east-1 (default)"
+    provider_detail = {
+        "aws":    f"AWS   ({region_display})",
+        "gcp":    f"GCP   ({args.gcp_project or 'project not set'} / {args.gcp_region or 'us-central1'})",
+        "heroku": f"Heroku ({args.heroku_app or project_name})",
+    }.get(args.deploy_to, args.deploy_to)
+
+    _SEP = "─" * 58
+    print(f"\n{_SEP}")
+    print(f"  Developable Deploy")
+    print(_SEP)
+    print(f"  Entities       : {', '.join(e['name'] for e in spec['entities'])}")
+    print(f"  Project        : {project_name}")
+    print(f"  Output dir     : {out_dir.resolve()}")
+    print(f"  Schema         : {schema_path}")
+    print(f"  Provider       : {provider_detail}")
+    print(f"  Tests dir      : {tests_dir or 'none detected'}")
+    print(f"  GitHub token   : {token_source}")
+    print(f"  Config source  : {config_source}")
+    print(f"{_SEP}\n")
 
     # ── Terraform agent: generate IaC files ───────────────────────────────────
     from agents.terraform import TerraformAgent
@@ -150,7 +177,58 @@ def main():
     # ── Deployment agent: provision + deploy ──────────────────────────────────
     from agents.deployment import Deployment
 
-    print(f"\n[Deployment] Deploying to {args.deploy_to.upper()}...")
+    _eta_steps = {
+        "aws": (
+            "AWS deployment — estimated 20–25 min total",
+            [
+                ("Validate AWS credentials",                         "~5s"),
+                ("Bootstrap S3 state bucket + DynamoDB lock table",  "~30s"),
+                ("Provision 15 AWS resources via boto3",             "~10–15 min  ← longest step"),
+                ("Build Docker image",                               "~3 min"),
+                ("Push image to ECR",                                "~1 min"),
+                ("Terraform import + reconciliation apply",          "~3 min"),
+                ("Run Prisma migration (ECS task inside VPC)",       "~2 min"),
+                ("Push deploy.yml + set GitHub Actions secrets",     "~30s"),
+                ("Remote smoke tests",                               "~1 min"),
+            ],
+        ),
+        "gcp": (
+            "GCP deployment — estimated 15–20 min total",
+            [
+                ("Validate GCP credentials",                          "~5s"),
+                ("Bootstrap GCS state bucket",                        "~30s"),
+                ("Terraform apply — Cloud SQL + Cloud Run",           "~10 min  ← longest step"),
+                ("Apply Prisma schema to Cloud SQL",                  "~1 min"),
+                ("Build Docker image",                                "~3 min"),
+                ("Push image to Artifact Registry",                   "~1 min"),
+                ("Terraform apply (second pass — new Cloud Run rev)", "~1 min"),
+                ("Push deploy.yml + set GitHub Actions secrets",      "~30s"),
+                ("Remote smoke tests",                                "~1 min"),
+            ],
+        ),
+        "heroku": (
+            "Heroku deployment — estimated 6–10 min total",
+            [
+                ("Validate Heroku credentials",                      "~5s"),
+                ("Terraform apply — app + Postgres addon",           "~2 min"),
+                ("Apply Prisma schema to Heroku Postgres",           "~1 min"),
+                ("Build Docker image",                               "~3 min"),
+                ("Push image + release container",                   "~1 min"),
+                ("Push deploy.yml + set GitHub Actions secrets",     "~30s"),
+                ("Remote smoke tests",                               "~1 min"),
+            ],
+        ),
+    }
+    if args.deploy_to in _eta_steps:
+        title, steps = _eta_steps[args.deploy_to]
+        print(f"\n{'─' * 58}")
+        print(f"  {title}")
+        print(f"{'─' * 58}")
+        for i, (label, eta) in enumerate(steps, 1):
+            print(f"  {i:>2}. {label:<50} {eta}")
+        print(f"{'─' * 58}\n")
+
+    print(f"[Deployment] Deploying to {args.deploy_to.upper()}...")
     deployer = Deployment(
         out_dir=out_dir,
         provider=args.deploy_to,

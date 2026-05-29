@@ -718,19 +718,38 @@ class Deployment:
         """
         region = creds.get("region", "us-east-1")
 
-        print("\n  [boto3] Provisioning AWS infrastructure with terraform-matching names...")
+        print(
+            f"\n  ┌─ Step 3/7 — Provision AWS infrastructure via boto3 ──────────────────\n"
+            f"  │  ETA: ~10–15 min  (RDS takes 8–10 min; other resources ~2 min)\n"
+            f"  │  Monitor RDS:  https://console.aws.amazon.com/rds/home?region={region}#databases:\n"
+            f"  │  Monitor ECS:  https://console.aws.amazon.com/ecs/home?region={region}#/clusters\n"
+            f"  └─────────────────────────────────────────────────────────────────────────"
+        )
         pr = self._boto3_provision_aws(creds, project_name)
 
         local_tag = f"developable/{project_name}:latest"
         image_uri = f"{pr['ecr_url']}:latest"
-        print(f"\n  Building Docker image '{local_tag}'...")
+        print(f"\n  ┌─ Step 4/7 — Build Docker image  (ETA: ~3 min) ─────────────────────")
+        print(f"  └─ Image tag: {local_tag}")
         self._docker_build(local_tag)
 
-        print(f"\n  Pushing image to ECR...")
+        print(f"\n  ┌─ Step 5/7 — Push image to ECR  (ETA: ~1 min) ──────────────────────")
+        print(f"  └─ Target:    {image_uri}")
         self._ecr_push(local_tag, image_uri, region, creds)
 
+        print(
+            f"\n  ┌─ Step 6/7 — Terraform import + reconciliation apply  (ETA: ~3 min) ──\n"
+            f"  │  Imports 15 resources into state, then apply makes state fully current.\n"
+            f"  └─────────────────────────────────────────────────────────────────────────"
+        )
         self._terraform_import_aws(creds, project_name, pr)
 
+        print(
+            f"\n  ┌─ Step 7/7 — Prisma migration via ECS task  (ETA: ~2 min) ───────────\n"
+            f"  │  Monitor: https://console.aws.amazon.com/ecs/home?region={region}"
+            f"#/clusters/{project_name}/tasks\n"
+            f"  └─────────────────────────────────────────────────────────────────────────"
+        )
         self._run_ecs_migration(project_name, pr["db_url"], region, creds)
 
         endpoint = f"http://{pr['alb_dns']}"
@@ -1584,8 +1603,13 @@ class Deployment:
         else:
             print("\n  [Terraform] Backend already initialized — skipping init.")
 
-        print("\n  [Terraform] Provisioning infrastructure (Artifact Registry, Cloud SQL, Cloud Run)...")
-        print("  Cloud SQL provisioning takes 5-10 minutes — please wait.\n")
+        print(
+            f"\n  ┌─ Step 3/7 — Terraform apply: Artifact Registry, Cloud SQL, Cloud Run ─\n"
+            f"  │  ETA: ~10 min  (Cloud SQL takes 8–10 min to provision)\n"
+            f"  │  Monitor Cloud SQL:  https://console.cloud.google.com/sql/instances?project={project_id}\n"
+            f"  │  Monitor Cloud Run:  https://console.cloud.google.com/run?project={project_id}\n"
+            f"  └─────────────────────────────────────────────────────────────────────────\n"
+        )
         self._tf_run(tf_dir, ["terraform", "apply", "-auto-approve", "-input=false"], env=tf_env)
 
         while True:
@@ -1632,10 +1656,12 @@ class Deployment:
         image_uri = f"{ar_url}:latest"
         ar_host = f"{region}-docker.pkg.dev"
 
-        print(f"\n  Building Docker image '{local_tag}'...")
+        print(f"\n  ┌─ Step 5/7 — Build Docker image  (ETA: ~3 min) ─────────────────────")
+        print(f"  └─ Image tag: {local_tag}")
         self._docker_build(local_tag)
 
-        print(f"\n  Pushing image to Artifact Registry...")
+        print(f"\n  ┌─ Step 6/7 — Push image to Artifact Registry  (ETA: ~1 min) ────────")
+        print(f"  └─ Target:    {image_uri}")
         provider._push_to_registry(creds, local_tag, image_uri, ar_host)
 
         # Second apply: update image_tag to "latest" so Cloud Run creates a new revision.
@@ -1647,7 +1673,10 @@ class Deployment:
             "jwt_secret": jwt_secret,
             "image_tag": "latest",
         }, indent=2))
-        print("\n  [Terraform] Deploying new Cloud Run revision with pushed image...")
+        print(
+            f"\n  ┌─ Step 7/7 — Deploy new Cloud Run revision  (ETA: ~1 min) ──────────\n"
+            f"  └─ Terraform apply with image_tag=latest — Cloud Run rolls to new revision."
+        )
         self._tf_run(tf_dir, ["terraform", "apply", "-auto-approve", "-input=false"], env=tf_env)
 
         print(f"\n  ✓ Deployed — endpoint: {cloud_run_url}")
@@ -1708,8 +1737,11 @@ class Deployment:
         else:
             print("\n  [Terraform] Backend already initialized — skipping init.")
 
-        print("\n  [Terraform] Provisioning Heroku app and Postgres addon...")
-        print("  Postgres addon provisioning typically takes 1-2 minutes.\n")
+        print(
+            f"\n  ┌─ Step 2/6 — Terraform apply: Heroku app + Postgres addon  (ETA: ~2 min)\n"
+            f"  │  Monitor: https://dashboard.heroku.com/apps\n"
+            f"  └─────────────────────────────────────────────────────────────────────────\n"
+        )
         self._tf_run(tf_dir, ["terraform", "apply", "-auto-approve", "-input=false"], env=tf_env)
 
         # sensitive outputs are still present as actual values in -json output.
@@ -1733,11 +1765,14 @@ class Deployment:
         provider.apply_schema(db_url)
 
         local_tag = f"developable/{project_name}:latest"
-        print(f"\n  Building Docker image '{local_tag}'...")
+        print(f"\n  ┌─ Step 4/6 — Build Docker image  (ETA: ~3 min) ─────────────────────")
+        print(f"  └─ Image tag: {local_tag}")
         self._docker_build(local_tag)
 
         heroku_image = f"registry.heroku.com/{project_name}/web"
-        print(f"\n  Authenticating Docker to Heroku registry...")
+        print(f"\n  ┌─ Step 5/6 — Push image + release container  (ETA: ~1 min) ─────────")
+        print(f"  │  Monitor: https://dashboard.heroku.com/apps/{project_name}/activity")
+        print(f"  └─ Target:  {heroku_image}")
         provider._docker_login(api_key)
 
         print(f"\n  Pushing image to {heroku_image}...")
