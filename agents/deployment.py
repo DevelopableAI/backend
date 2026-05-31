@@ -506,7 +506,27 @@ class Deployment:
 
         GitHub requires secrets to be encrypted client-side with the repo's
         public key (libsodium sealed-box) before transmission.
+
+        For GCP with ADC auth: auto-creates a 'developable-ci' service account
+        with minimum CI/CD roles, generates a key, and populates credentials_b64
+        so GCP_CREDENTIALS can be set automatically — no manual SA key needed.
         """
+        # ── GCP ADC: auto-create a CI SA key so GCP_CREDENTIALS can be set ────
+        if (
+            provider_name == "gcp"
+            and creds.get("credentials_type") == "adc"
+            and not creds.get("credentials_b64")
+        ):
+            from core.providers.gcp import GCPProvider
+            project_id = creds.get("project_id", "")
+            if project_id:
+                print("\n  [GCP] ADC detected — auto-creating CI service account key for GitHub Actions...")
+                gcp_provider = GCPProvider(project_id=project_id)
+                gcp_creds = gcp_provider._load_credentials(creds)
+                key_b64 = gcp_provider.ensure_ci_service_account(project_id, gcp_creds)
+                if key_b64:
+                    creds = {**creds, "credentials_b64": key_b64}
+
         secret_map = _PROVIDER_GITHUB_SECRETS.get(provider_name, {})
         if not secret_map:
             return True
