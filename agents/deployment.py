@@ -1683,6 +1683,19 @@ class Deployment:
             "image_tag":    "latest",
         }, indent=2))
 
+        endpoint = cloud_run_url or f"https://{project_name}.run.app"
+        print(f"\n  ✓ Deployed — endpoint: {endpoint}")
+
+        from core.deployment_state import DeploymentState
+        record = DeploymentState.make_record(
+            provider="gcp",
+            region=region,
+            endpoint=endpoint,
+            image_uri=image_uri,
+            resources=[{"type": "terraform_managed", "id": project_name, "arn": None}],
+            tags=provider.build_tags(project_name, deployment_id, spec),
+        )
+
         # ── Step 8: terraform import + reconciliation apply ────────────────────
         print(
             f"\n  ┌─ Step 8/8 — Terraform import + reconciliation apply  (ETA: ~2 min) ──\n"
@@ -1692,20 +1705,23 @@ class Deployment:
         tf_env = {**os.environ, "GOOGLE_CLOUD_PROJECT": project_id}
         if creds.get("credentials_file"):
             tf_env["GOOGLE_APPLICATION_CREDENTIALS"] = creds["credentials_file"]
-        self._terraform_import_gcp(creds, project_name, project_id, region, db_name, tf_env)
+        elif creds.get("credentials_type") == "adc":
+            # Using ADC — remove any stale GOOGLE_APPLICATION_CREDENTIALS from the
+            # shell env that points to a missing SA key file; Terraform will pick up
+            # ADC automatically via ~/.config/gcloud/application_default_credentials.json.
+            tf_env.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+        try:
+            self._terraform_import_gcp(creds, project_name, project_id, region, db_name, tf_env)
+        except SystemExit:
+            print(
+                "\n  Warning: Step 8 (Terraform state reconciliation) failed — "
+                "the app is live but terraform destroy/apply/plan won't cover all resources.\n"
+                "  To fix later: ensure GCP credentials are available and re-run step 8 manually "
+                "(terraform init && terraform import ... in the terraform/ directory).",
+                file=sys.stderr,
+            )
 
-        endpoint = cloud_run_url or f"https://{project_name}.run.app"
-        print(f"\n  ✓ Deployed — endpoint: {endpoint}")
-
-        from core.deployment_state import DeploymentState
-        return DeploymentState.make_record(
-            provider="gcp",
-            region=region,
-            endpoint=endpoint,
-            image_uri=image_uri,
-            resources=[{"type": "terraform_managed", "id": project_name, "arn": None}],
-            tags=provider.build_tags(project_name, deployment_id, spec),
-        )
+        return record
 
     def _gcloud_provision_gcp(
         self,
