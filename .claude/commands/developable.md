@@ -700,7 +700,7 @@ const postUpdateSchema = z.object({});
 /* LLM_SECTION_END */
 ```
 
-Also read the corresponding `src/types/{entity}.types.ts` (fully rendered by the CLI) for the complete field list and TypeScript types.
+The field list and TypeScript types are embedded in the `// Fields:` comment block inside the LLM_SECTION — use those directly.
 
 **Generate the Zod schemas using these rules — apply them exactly:**
 
@@ -722,7 +722,7 @@ Also read the corresponding `src/types/{entity}.types.ts` (fully rendered by the
 - **Update schema** → `{lower}CreateSchema.partial()` — never `.partial()` individual fields
 - **Match ts_type strictly** — never use `z.string()` for a `number` field or vice versa
 
-Use `Edit` to replace the content **between** `/* LLM_SECTION_START */` and `/* LLM_SECTION_END */`, keeping both marker lines in place.
+Use `Edit` to replace the **entire block** — from `/* LLM_SECTION_START */` through `/* LLM_SECTION_END */` inclusive — with just the generated Zod schemas. The marker lines must not appear in the output file.
 
 **Tool call description:** `[Phase 2] Fill Zod schemas — {Entity} validator`
 **After edit:** print `  ✓ src/validators/{entity}.validator.ts`
@@ -776,7 +776,7 @@ Each file contains context hints the template rendered:
 - Outermost statements at column 0; nested code indented 4 spaces
 - All string values must be single-line, under 80 characters
 
-Use `Edit` to replace the content **between** `# LLM_SECTION_START` and `# LLM_SECTION_END`, keeping both marker lines in place.
+Use `Edit` to replace the **entire block** — from `# LLM_SECTION_START` through `# LLM_SECTION_END` inclusive — with just the generated test cases. The marker lines must not appear in the output file.
 
 **Tool call description:** `[Phase 2] Fill test cases — {filename}`
 **After edit:** print `  ✓ tests/{filename}`
