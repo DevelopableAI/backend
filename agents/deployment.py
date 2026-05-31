@@ -176,7 +176,7 @@ class Deployment:
         _planner = TerraformPlanner()
         _minimal_config = {
             "aws_region": creds.get("region", "us-east-1"),
-            "gcp_project": creds.get("project", ""),
+            "gcp_project": creds.get("project_id", ""),
             "gcp_region": creds.get("region", "us-central1"),
         }
         _backend_cfg = _planner._derive_backend_config(provider_name, project_name, _minimal_config)
@@ -185,7 +185,7 @@ class Deployment:
             "state_bucket": _backend_cfg.get("bucket", ""),
             "dynamodb_table": _backend_cfg.get("dynamodb_table", ""),
             "aws_region": creds.get("region", "us-east-1"),
-            "gcp_project": creds.get("project", ""),
+            "gcp_project": creds.get("project_id", ""),
             "gcp_region": creds.get("region", "us-central1"),
         }
         print(f"\n  Bootstrapping Terraform state backend...")
