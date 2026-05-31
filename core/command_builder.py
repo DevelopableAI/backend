@@ -90,6 +90,7 @@ def build_deploy_command(config: dict) -> str:
         aws_region    (str)   appended as --aws-region when deploy_to="aws"
         gcp_project   (str)   appended as --gcp-project when deploy_to="gcp"
         gcp_region    (str)   appended as --gcp-region when deploy_to="gcp"
+        gcp_sa_path   (str)   appended as --gcp-sa-path when deploy_to="gcp" (omit for ADC)
         heroku_app    (str)   appended as --heroku-app when deploy_to="heroku"
         github_token  (str)   appended as --github-token (for Secrets API)
     """
@@ -111,6 +112,8 @@ def build_deploy_command(config: dict) -> str:
             parts += ["--gcp-project", config["gcp_project"]]
         if config.get("gcp_region"):
             parts += ["--gcp-region", config["gcp_region"]]
+        if config.get("gcp_sa_path"):
+            parts += ["--gcp-sa-path", config["gcp_sa_path"]]
     if deploy_to == "heroku" and config.get("heroku_app"):
         parts += ["--heroku-app", config["heroku_app"]]
     if config.get("github_token"):
