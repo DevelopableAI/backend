@@ -130,6 +130,10 @@ def main():
         "--gcp-region", default=None, metavar="REGION",
         help="GCP region for Cloud Run deployment (default: us-central1)",
     )
+    parser.add_argument(
+        "--gcp-sa-path", default=None, metavar="PATH",
+        help="Path to GCP service account JSON key (leave unset to use ADC via gcloud CLI)",
+    )
 
     # ── GitHub overrides (fall back to config.json values) ────────────────────
     parser.add_argument(
@@ -189,6 +193,9 @@ def main():
     # Token is never stored in config.json (security); supply it via --github-token
     # or the GITHUB_TOKEN env var.  Without it, deploy.yml is pushed but the
     # GitHub Actions secrets (AWS_ACCESS_KEY_ID etc.) cannot be set automatically.
+    if args.gcp_sa_path:
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = args.gcp_sa_path
+
     github_token = args.github_token or os.environ.get("GITHUB_TOKEN", "") or ""
     if not github_token:
         print(
@@ -212,7 +219,7 @@ def main():
     region_display = args.aws_region or "us-east-1 (default)"
     provider_detail = {
         "aws":    f"AWS   ({region_display})",
-        "gcp":    f"GCP   ({args.gcp_project or 'project not set'} / {args.gcp_region or 'us-central1'})",
+        "gcp":    f"GCP   ({args.gcp_project or 'project not set'} / {args.gcp_region or 'us-central1'} / {'SA: ' + args.gcp_sa_path if args.gcp_sa_path else 'ADC'})",
         "heroku": f"Heroku ({args.heroku_app or project_name})",
     }.get(args.deploy_to, args.deploy_to)
 

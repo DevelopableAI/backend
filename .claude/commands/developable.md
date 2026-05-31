@@ -346,7 +346,7 @@ Here's the configuration I'll use — reply "ok" to proceed or tell me what to c
   Rules file   : {rules_path | ⚠ required — not provided yet}
   Output dir   : {out_dir}
   GitHub push  : {yes → username/repo-name (public|private) | no}
-  Deploy to    : {provider | none}
+  Deploy to    : {provider | none}   [if gcp: (project: {gcp_project}, region: {gcp_region}, auth: {gcp_sa_path | gcloud CLI (ADC)})]
 ```
 
 **Do not proceed past this step until `rules_path` is set.** If it is missing, show the config block with the `⚠ required` warning and wait for the user to provide it before accepting "ok".
@@ -363,6 +363,7 @@ If the user changes a value: update it and show the config block again. Repeat u
 **Deploy sub-questions** — only ask these if the user changes "Deploy to" to aws/gcp/heroku and has not already provided them:
 - aws → AWS region (default: us-east-1)
 - gcp → GCP project ID + region (default: us-central1)
+         + "Do you have a GCP service account key file? Enter the path, or leave blank to use your gcloud CLI credentials (ADC)."
 - heroku → Heroku app name (default: `{project_slug}`)
 
 **Store the confirmed values as variables for all later phases:**
@@ -370,6 +371,7 @@ If the user changes a value: update it and show the config block again. Repeat u
 - `schema_path`, `rules_path`, `out_dir`
 - `github_enabled`, `github_user`, `github_repo`, `github_private`
 - `deploy_provider`, `deploy_config`
+- `gcp_sa_path` (absolute file path string, or empty string if using ADC — only relevant when `deploy_provider == "gcp"`)
 
 After the user confirms, print:
 ```
@@ -379,7 +381,7 @@ After the user confirms, print:
   Rules   : {rules_path}
   Output  : {out_dir}
   GitHub  : {yes → github_user/github_repo (public|private) | no}
-  Deploy  : {provider | none}
+  Deploy  : {provider | none}   [if gcp: auth: {gcp_sa_path | gcloud CLI (ADC)}]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
@@ -477,11 +479,31 @@ Wait for the user to reply before proceeding.
 
 ### GCP (check if `deploy_provider == "gcp"`)
 
+**If `gcp_sa_path` is set** — verify the file exists:
+```bash
+ls "{gcp_sa_path}"
+```
+
+If the file exists: print `  ✓ GCP: service account key found at {gcp_sa_path}` and continue.
+
+If the file is not found:
+```
+  ✗ GCP: service account key not found at {gcp_sa_path}
+
+  Check the path and try again, or leave the SA path blank to use your gcloud CLI credentials instead.
+
+  Reply with the correct path or "use adc" to switch to gcloud CLI authentication.
+```
+Wait for the user to reply before proceeding. If they reply "use adc", set `gcp_sa_path = ""` and proceed with the ADC check below.
+
+---
+
+**If `gcp_sa_path` is empty** — check gcloud ADC:
 ```bash
 gcloud auth list --filter=status:ACTIVE --format="value(account)"
 ```
 
-**If it returns an account:** print `  ✓ GCP: authenticated as {account}` and continue.
+**If it returns an account:** print `  ✓ GCP: authenticated as {account} (gcloud CLI / ADC)` and continue.
 
 **If it returns nothing or fails:**
 ```
@@ -491,10 +513,11 @@ gcloud auth list --filter=status:ACTIVE --format="value(account)"
 
   Option A — User account (recommended for local use):
     gcloud auth login
+    gcloud auth application-default login
     gcloud config set project {gcp_project_id}
 
-  Option B — Service account (for CI):
-    export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
+  Option B — Service account key file:
+    Provide the path to your service account JSON key when prompted above.
 
   To create a service account key: GCP Console → IAM & Admin →
   Service Accounts → Create → grant roles:
@@ -621,6 +644,7 @@ python core/command_builder.py << 'JSON'
   "aws_region": "{deploy_config.aws_region}",
   "gcp_project": "{deploy_config.gcp_project}",
   "gcp_region": "{deploy_config.gcp_region}",
+  "gcp_sa_path": "{gcp_sa_path}",
   "heroku_app": "{deploy_config.heroku_app}",
   "github_token": "{github_token}"
 }
