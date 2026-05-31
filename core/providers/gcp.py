@@ -89,14 +89,15 @@ class GCPProvider(BaseProvider):
 
         sa_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
         if sa_path:
-            if not Path(sa_path).exists():
+            abs_sa_path = str(Path(sa_path).resolve())
+            if not Path(abs_sa_path).exists():
                 return None
             return {
-                "credentials_file": sa_path,
+                "credentials_file": abs_sa_path,
                 "credentials_type": "service_account",
-                "project_id": project_id or self._read_project_from_sa(sa_path),
+                "project_id": project_id or self._read_project_from_sa(abs_sa_path),
                 "region": self._region,
-                "credentials_b64": self._encode_sa_file(sa_path),
+                "credentials_b64": self._encode_sa_file(abs_sa_path),
             }
 
         try:
@@ -139,7 +140,7 @@ class GCPProvider(BaseProvider):
 
         region = self._region or input(f"  Region [{_DEFAULT_REGION}]: ").strip() or _DEFAULT_REGION
 
-        resolved_sa = str(Path(sa_path).expanduser()) if sa_path else None
+        resolved_sa = str(Path(sa_path).expanduser().resolve()) if sa_path else None
         return {
             "credentials_file": resolved_sa,
             "credentials_type": "service_account" if sa_path else "adc",

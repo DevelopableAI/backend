@@ -98,10 +98,6 @@ resource "google_cloud_run_v2_service" "main" {
         value = "production"
       }
       env {
-        name  = "PORT"
-        value = "3000"
-      }
-      env {
         name  = "DATABASE_URL"
         value = "postgresql://postgres:${var.db_password}@${google_sql_database_instance.main.public_ip_address}:5432/${local.db_name}"
       }
