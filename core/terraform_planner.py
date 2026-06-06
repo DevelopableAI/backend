@@ -103,8 +103,17 @@ class TerraformPlanner:
                     break
             name = stem.replace("_", "-")
             if name and name not in ("schema", "prisma", "database", "db"):
-                return name + "-api"
+                return self._truncate_app_name(name + "-api")
         entities = spec.get("entities", [])
         if entities:
-            return entities[0]["name_lower"] + "-api"
+            return self._truncate_app_name(entities[0]["name_lower"] + "-api")
         return "generated-api"
+
+    @staticmethod
+    def _truncate_app_name(name: str, max_len: int = 30) -> str:
+        """Ensure the name fits Heroku's 30-char app name limit by truncating the prefix."""
+        if len(name) <= max_len:
+            return name
+        # Always keep the "-api" suffix; truncate the prefix to fit.
+        suffix = "-api"
+        return name[: max_len - len(suffix)] + suffix

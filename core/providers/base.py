@@ -203,6 +203,8 @@ class BaseProvider(ABC):
            Skipped when the stem is a generic placeholder like "schema".
         2. First entity name (e.g. User → user-api).
         3. Hard-coded fallback "generated-api".
+
+        Result is truncated to 30 characters to satisfy Heroku's app name limit.
         """
         schema_path = spec.get("schema_path", "")
         if schema_path:
@@ -213,11 +215,19 @@ class BaseProvider(ABC):
                     break
             name = stem.replace("_", "-")
             if name and name not in ("schema", "prisma", "database", "db"):
-                return name + "-api"
+                return self._truncate_slug(name + "-api")
         entities = spec.get("entities", [])
         if entities:
-            return entities[0]["name_lower"] + "-api"
+            return self._truncate_slug(entities[0]["name_lower"] + "-api")
         return "generated-api"
+
+    @staticmethod
+    def _truncate_slug(name: str, max_len: int = 30) -> str:
+        """Truncate a project slug to max_len chars, preserving the '-api' suffix."""
+        if len(name) <= max_len:
+            return name
+        suffix = "-api"
+        return name[: max_len - len(suffix)] + suffix
 
     def wait_for_ready(self, endpoint: str) -> None:
         """
