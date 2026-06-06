@@ -67,7 +67,7 @@ class HerokuProvider(BaseProvider):
         """Check HEROKU_API_KEY env var, then ~/.netrc."""
         api_key = os.environ.get("HEROKU_API_KEY", "").strip()
         if api_key:
-            return {"api_key": api_key, "app_name": self._app_name}
+            return {"api_key": api_key, "app_name": self._app_name, "heroku_region": "us"}
 
         try:
             nrc = netrc.netrc()
@@ -75,7 +75,7 @@ class HerokuProvider(BaseProvider):
             if auth:
                 token = auth[2]  # password field holds the API token
                 if token:
-                    return {"api_key": token, "app_name": self._app_name}
+                    return {"api_key": token, "app_name": self._app_name, "heroku_region": "us"}
         except (FileNotFoundError, netrc.NetrcParseError):
             pass
 
@@ -98,7 +98,12 @@ class HerokuProvider(BaseProvider):
             ).strip()
             app_name = entered or None
 
-        return {"api_key": api_key, "app_name": app_name}
+        region = input("  Heroku region [us/eu, default: us]: ").strip().lower() or "us"
+        if region not in ("us", "eu"):
+            print("  Warning: unrecognised region — defaulting to 'us'.")
+            region = "us"
+
+        return {"api_key": api_key, "app_name": app_name, "heroku_region": region}
 
     # ── Database provisioning ──────────────────────────────────────────────────
 
@@ -290,12 +295,13 @@ jobs:
 
       - name: Build and push image
         run: |
-          docker build -t registry.heroku.com/{app_name}/web .
+          docker build --platform linux/amd64 --provenance=false --load \
+            -t registry.heroku.com/{app_name}/web .
           docker push registry.heroku.com/{app_name}/web
 
       - name: Release web dyno
         run: |
-          IMAGE_ID=$(docker manifest inspect registry.heroku.com/{app_name}/web | python3 -c "import sys,json; m=json.load(sys.stdin); print(m['config']['digest'])")
+          IMAGE_ID=$(docker inspect --format='{{{{.Id}}}}' registry.heroku.com/{app_name}/web)
           curl -f -s -X PATCH https://api.heroku.com/apps/{app_name}/formation \\
             -H "Content-Type: application/json" \\
             -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \\
@@ -343,7 +349,8 @@ jobs:
                 return app_name  # Reuse our own app
 
             # Name taken by someone else — append suffix
-            new_name = f"{app_name}-{self._credentials.get('deployment_id', 'dev')[:6]}"
+            import secrets as _secrets
+            new_name = f"{app_name}-{_secrets.token_hex(3)}"
             print(f"  [Heroku] App name '{app_name}' is taken. Trying '{new_name}'...")
             retry = requests.post(
                 f"{_HEROKU_API}/apps",
@@ -589,9 +596,12 @@ jobs:
         Called by the deployment agent AFTER apply_schema() so DATABASE_URL is
         already set in Heroku's config vars and the dyno has restarted with it.
         """
-        print(f"  [Heroku] Waiting for dyno to become ready (up to {timeout_s}s)...", end="", flush=True)
+        print(
+            f"  [Heroku] Waiting for dyno to become ready (up to {timeout_s}s)"
+            f" — polling {endpoint}/health ...",
+            end="", flush=True,
+        )
         deadline = time.time() + timeout_s
-        print(f"  [Heroku] Endpoint to call: {endpoint}/health")
         while time.time() < deadline:
             try:
                 resp = requests.get(f"{endpoint}/health", timeout=5)

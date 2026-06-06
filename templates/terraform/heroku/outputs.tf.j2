@@ -1,6 +1,6 @@
 output "app_url" {
   description = "Heroku app URL — use this as your API base URL."
-  value       = "https://${heroku_app.main.name}.herokuapp.com"
+  value       = heroku_app.main.web_url
 }
 
 output "database_url" {

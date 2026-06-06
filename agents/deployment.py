@@ -1906,6 +1906,7 @@ class Deployment:
         tfvars_path.write_text(json.dumps({
             "project_name": project_name,
             "jwt_secret": jwt_secret,
+            "heroku_region": creds.get("heroku_region", "us"),
         }, indent=2))
 
         # Heroku API key passed via env var — never written to a file.
@@ -1937,6 +1938,14 @@ class Deployment:
         app_url = outputs.get("app_url", f"https://{project_name}.herokuapp.com")
         db_url = outputs.get("database_url", "")
 
+        if not db_url:
+            print(
+                "\nError: Terraform output 'database_url' is empty. "
+                "Run 'terraform output -json' in the terraform/ directory to diagnose.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
         # Normalize scheme: Heroku uses postgres://, Prisma 5 requires postgresql://
         if db_url.startswith("postgres://"):
             db_url = "postgresql://" + db_url[len("postgres://"):]
@@ -1959,18 +1968,20 @@ class Deployment:
         subprocess.run(["docker", "tag", local_tag, heroku_image], check=True)
         provider._docker_push_with_retry(heroku_image)
 
-        # Heroku Formation API requires the image config digest (not manifest digest).
-        manifest_result = subprocess.run(
-            ["docker", "manifest", "inspect", heroku_image],
+        # Heroku Formation API requires the image config digest.
+        # `docker inspect --format={{.Id}}` returns the config digest (sha256 of the
+        # image config JSON) from the local daemon — more reliable than
+        # `docker manifest inspect` which requires OCI/experimental support.
+        inspect_result = subprocess.run(
+            ["docker", "inspect", "--format={{.Id}}", heroku_image],
             capture_output=True, text=True,
         )
-        if manifest_result.returncode != 0:
-            print(f"\nFailed to inspect manifest: {manifest_result.stderr}", file=sys.stderr)
+        if inspect_result.returncode != 0:
+            print(f"\nFailed to inspect image: {inspect_result.stderr}", file=sys.stderr)
             sys.exit(1)
-        manifest = json.loads(manifest_result.stdout)
-        image_id = manifest.get("config", {}).get("digest", "")
+        image_id = inspect_result.stdout.strip()
         if not image_id:
-            print("\nCould not read config digest from manifest.", file=sys.stderr)
+            print("\nCould not read config digest from local image.", file=sys.stderr)
             sys.exit(1)
         print(f"  [Heroku] Config digest: {image_id}")
 
@@ -1989,6 +2000,8 @@ class Deployment:
 
         endpoint = provider._get_app_domain(headers, project_name)
         print(f"\n  ✓ Deployed — endpoint: {endpoint}")
+
+        provider.wait_for_ready(endpoint)
 
         from core.deployment_state import DeploymentState
         return DeploymentState.make_record(
