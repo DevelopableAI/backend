@@ -29,6 +29,8 @@ dist/
 terraform/.terraform/
 terraform/.terraform.lock.hcl
 terraform/*.tfvars.json
+terraform/*.tfstate
+terraform/*.tfstate.backup
 
 # OS
 .DS_Store
@@ -53,6 +55,8 @@ REQUIRED_GITIGNORE_PATTERNS = [
     "terraform/.terraform/",
     "terraform/.terraform.lock.hcl",
     "terraform/*.tfvars.json",
+    "terraform/*.tfstate",
+    "terraform/*.tfstate.backup",
 ]
 
 
