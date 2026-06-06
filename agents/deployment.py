@@ -1985,7 +1985,7 @@ class Deployment:
         provider._app_name_resolved = project_name
 
         print(f"\n  Releasing web dyno...")
-        provider._release(headers, project_name, image_id)
+        provider._release(api_key, project_name, image_id)
         provider._print_release_status(headers, project_name)
 
         endpoint = provider._get_app_domain(headers, project_name)

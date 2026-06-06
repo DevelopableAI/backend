@@ -211,7 +211,7 @@ class HerokuProvider(BaseProvider):
 
         # 6. Release
         print(f"  [Heroku] Releasing web dyno...")
-        self._release(headers, app_name, image_id)
+        self._release(api_key, app_name, image_id)
 
         # 7. Check that Heroku accepted the release and show dyno state
         self._print_release_status(headers, app_name)
@@ -293,10 +293,11 @@ jobs:
             -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
             https://registry.heroku.com/v2/{app_name}/web/manifests/latest \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['config']['digest'])")
+          BASIC=$(echo -n "_:$HEROKU_API_KEY" | base64)
           curl -f -s -X PATCH https://api.heroku.com/apps/{app_name}/formation \\
             -H "Content-Type: application/json" \\
             -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \\
-            -H "Authorization: Bearer $HEROKU_API_KEY" \\
+            -H "Authorization: Basic $BASIC" \\
             -d "{{\\"updates\\":[{{\\"type\\":\\"web\\",\\"docker_image\\":\\"$IMAGE_ID\\"}}]}}"
         env:
           HEROKU_API_KEY: ${{{{ secrets.HEROKU_API_KEY }}}}
@@ -505,17 +506,19 @@ jobs:
             )
             sys.exit(1)
 
-    def _release(self, headers: dict, app_name: str, image_id: str) -> None:
-        # Container registry releases require the docker-releases Accept header.
-        # The standard version=3 header treats this as a slug-based formation
-        # update, which fails with 404 on brand-new apps that have no web dyno.
-        docker_headers = {
-            **headers,
-            "Accept": "application/vnd.heroku+json; version=3.docker-releases",
-        }
+    def _release(self, api_key: str, app_name: str, image_id: str) -> None:
+        # The docker-releases variant of the formation endpoint uses Basic auth
+        # (username=_, password=api_key) — not the Bearer token accepted by the
+        # standard v3 API. Passing Bearer here returns 401 even with a valid key.
+        import base64
+        basic = base64.b64encode(f"_:{api_key}".encode()).decode()
         resp = requests.patch(
             f"{_HEROKU_API}/apps/{app_name}/formation",
-            headers=docker_headers,
+            headers={
+                "Authorization": f"Basic {basic}",
+                "Accept": "application/vnd.heroku+json; version=3.docker-releases",
+                "Content-Type": "application/json",
+            },
             json={"updates": [{"type": "web", "docker_image": image_id}]},
             timeout=30,
         )
