@@ -1968,21 +1968,11 @@ class Deployment:
         subprocess.run(["docker", "tag", local_tag, heroku_image], check=True)
         provider._docker_push_with_retry(heroku_image)
 
-        # Heroku Formation API requires the image config digest.
-        # `docker inspect --format={{.Id}}` returns the config digest (sha256 of the
-        # image config JSON) from the local daemon — more reliable than
-        # `docker manifest inspect` which requires OCI/experimental support.
-        inspect_result = subprocess.run(
-            ["docker", "inspect", "--format={{.Id}}", heroku_image],
-            capture_output=True, text=True,
-        )
-        if inspect_result.returncode != 0:
-            print(f"\nFailed to inspect image: {inspect_result.stderr}", file=sys.stderr)
-            sys.exit(1)
-        image_id = inspect_result.stdout.strip()
-        if not image_id:
-            print("\nCould not read config digest from local image.", file=sys.stderr)
-            sys.exit(1)
+        # Heroku's Formation API indexes images by config digest. We fetch it
+        # directly from Heroku's own registry API (Docker Registry v2 protocol)
+        # so the digest is guaranteed to match what Heroku has stored — local
+        # `docker inspect` can diverge if Heroku normalises layers on ingest.
+        image_id = provider._get_registry_config_digest(api_key, project_name)
         print(f"  [Heroku] Config digest: {image_id}")
 
         headers = {
@@ -1995,7 +1985,7 @@ class Deployment:
         provider._app_name_resolved = project_name
 
         print(f"\n  Releasing web dyno...")
-        provider._release(headers, project_name, image_id)
+        provider._release(api_key, project_name, image_id)
         provider._print_release_status(headers, project_name)
 
         endpoint = provider._get_app_domain(headers, project_name)
