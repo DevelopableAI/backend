@@ -202,26 +202,11 @@ class HerokuProvider(BaseProvider):
         self._run(["docker", "tag", image_tag, heroku_image])
         self._docker_push_with_retry(heroku_image)
 
-        # 5. Get the image config digest from the manifest.
-        #    With `docker buildx`, `docker inspect --format={{.Id}}` returns the
-        #    manifest digest (sha256 of the manifest JSON), not the config digest
-        #    (sha256 of the image config JSON). Heroku's Formation API indexes
-        #    images by config digest, so we must read it from the manifest itself.
-        manifest_result = subprocess.run(
-            ["docker", "manifest", "inspect", heroku_image],
-            capture_output=True, text=True,
-        )
-        if manifest_result.returncode != 0:
-            print(
-                f"\nFailed to inspect manifest: {manifest_result.stderr}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        manifest = json.loads(manifest_result.stdout)
-        image_id = manifest.get("config", {}).get("digest", "")
-        if not image_id:
-            print("\nCould not read config digest from manifest.", file=sys.stderr)
-            sys.exit(1)
+        # 5. Fetch the image config digest from Heroku's registry API.
+        #    Using the registry API (Docker Registry v2) guarantees the digest
+        #    matches what Heroku has stored — local `docker inspect` or
+        #    `docker manifest inspect` can diverge if Heroku normalises layers.
+        image_id = self._get_registry_config_digest(api_key, app_name)
         print(f"  [Heroku] Config digest: {image_id}")
 
         # 6. Release
@@ -301,7 +286,13 @@ jobs:
 
       - name: Release web dyno
         run: |
-          IMAGE_ID=$(docker inspect --format='{{{{.Id}}}}' registry.heroku.com/{app_name}/web)
+          # Fetch config digest from Heroku's registry API — local `docker inspect`
+          # can diverge from the stored digest if Heroku normalises layers on ingest.
+          IMAGE_ID=$(curl -sf \
+            -H "Authorization: Bearer $HEROKU_API_KEY" \
+            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            https://registry.heroku.com/v2/{app_name}/web/manifests/latest \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['config']['digest'])")
           curl -f -s -X PATCH https://api.heroku.com/apps/{app_name}/formation \\
             -H "Content-Type: application/json" \\
             -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \\
@@ -632,6 +623,37 @@ jobs:
             )
             time.sleep(delay)
             delay *= 2
+
+    def _get_registry_config_digest(self, api_key: str, app_name: str) -> str:
+        """
+        Fetch the image config digest from Heroku's registry (Docker Registry v2 API).
+
+        The Formation API indexes images by config digest (sha256 of the image
+        config JSON). Fetching it from the registry after push guarantees the
+        value matches what Heroku has stored. Local alternatives (`docker inspect`
+        or `docker manifest inspect`) can diverge if Heroku normalises layers on
+        ingest, causing the Formation API to return 401.
+        """
+        resp = requests.get(
+            f"https://{_HEROKU_REGISTRY}/v2/{app_name}/web/manifests/latest",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/vnd.docker.distribution.manifest.v2+json",
+            },
+            timeout=30,
+        )
+        if not resp.ok:
+            print(
+                f"\nFailed to fetch image manifest from Heroku registry "
+                f"({resp.status_code}): {resp.text}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        digest = resp.json().get("config", {}).get("digest", "")
+        if not digest:
+            print("\nCould not read config digest from registry manifest.", file=sys.stderr)
+            sys.exit(1)
+        return digest
 
     def _run(self, cmd: list[str]) -> None:
         result = subprocess.run(cmd, capture_output=True)
