@@ -185,7 +185,7 @@ class TerraformBackend:
     def _bootstrap_heroku(
         self, config: dict[str, Any], project_name: str
     ) -> dict[str, Any]:
-        if config.get("use_local_state"):
+        if config.get("use_local_state") or not config.get("tfc_token"):
             print(
                 "    Using local Terraform state for Heroku "
                 "(see CLAUDE.md → Terraform Infrastructure to configure Terraform Cloud)"
