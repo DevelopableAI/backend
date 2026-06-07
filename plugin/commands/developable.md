@@ -596,19 +596,12 @@ which developable 2>/dev/null || echo "NOT_FOUND"
 ```
   ✗ Developable CLI not found.
 
-  Option A — full install (CLI + /developable skill, recommended):
-    curl -sSL https://raw.githubusercontent.com/developableai/backend/main/install.sh | bash
-
-  Option B — CLI only:
+  Option A — install as a package (recommended, works from any project directory):
     pip install developable
 
-  Option C — run from the Developable repo root:
+  Option B — run from the Developable repo root:
     cd /path/to/developable-repo
     (then re-invoke /developable)
-
-  Option D — install via Claude Code plugin marketplace (namespaced as /developable:developable):
-    /plugin marketplace add developableai/backend
-    /plugin install developable
 
   Reply "done" once the CLI is available and I will continue.
 ```

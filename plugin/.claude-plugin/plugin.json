@@ -1,0 +1,11 @@
+{
+  "name": "developable",
+  "description": "Generate production-hardened Express + TypeScript REST APIs from a Prisma schema. Enforces auth, ownership guards, Zod validation, Prisma ORM, and Terraform IaC. Requires `pip install developable` for the Python CLI backend.",
+  "version": "0.1.0",
+  "author": {
+    "name": "DevelopableAI"
+  },
+  "homepage": "https://github.com/developableai/backend",
+  "repository": "https://github.com/developableai/backend",
+  "license": "MIT"
+}

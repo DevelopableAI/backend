@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "developable"
+version = "0.1.0"
+description = "Generate production-hardened Express + TypeScript REST APIs from a Prisma schema"
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "DevelopableAI" }]
+
+dependencies = [
+    "anthropic>=0.49.0",
+    "jinja2==3.1.2",
+    "pydantic>=2.7.4,<3.0.0",
+    "python-dotenv==1.0.0",
+    "requests>=2.31.0",
+    "PyNaCl>=1.5.0",
+    "sqlparse==0.4.4",
+    "fastapi==0.104.1",
+    "uvicorn[standard]==0.24.0",
+    "python-multipart==0.0.6",
+    "boto3>=1.34.0",
+    "docker>=7.0.0",
+    "google-cloud-run>=0.10.0",
+    "google-auth>=2.0.0",
+    "google-api-python-client>=2.0.0",
+    "google-cloud-storage>=2.0.0",
+]
+
+[project.scripts]
+developable = "main:main"
+
+[project.urls]
+Homepage = "https://github.com/developableai/backend"
+Repository = "https://github.com/developableai/backend"
+
+[tool.setuptools]
+py-modules = ["main", "deploy", "config"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agents*", "core*", "generators*", "developable*"]
+
+[tool.setuptools.package-data]
+# The developable/ package carries the skill and command files
+# Templates and prompts ship as data alongside the developable package
+"developable" = [
+    "skills/**/*.md",
+    "commands/*.md",
+]
