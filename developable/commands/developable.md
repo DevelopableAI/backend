@@ -1,3 +1,7 @@
+---
+description: Generate a production-ready Express + TypeScript REST API from a Prisma schema or plain-English app description
+---
+
 # /developable
 
 Generate a production-ready Express + TypeScript REST API — starting from either an existing Prisma schema or a plain-English description of your app.

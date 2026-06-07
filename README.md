@@ -8,6 +8,16 @@ Use it as a **Claude Code skill** (`/developable`), an **OpenAI Codex skill**, o
 
 ---
 
+## How it works with Claude Code
+
+**Claude Code** is Anthropic's AI coding assistant — available as a [CLI](https://docs.anthropic.com/en/docs/claude-code), a VS Code / JetBrains extension, and at [claude.ai/code](https://claude.ai/code). When you type `/developable` in a Claude Code session, it runs the Developable skill: an instruction set that tells Claude exactly how to parse your schema, which files to write, and which security rules are non-negotiable.
+
+No separate server, no API calls from your machine — Claude Code handles everything using its own context window and built-in file tools.
+
+**OpenAI Codex** works the same way: the skill ships as `AGENTS.md` instructions that Codex follows during a session.
+
+---
+
 ## Install
 
 ### Claude Code
@@ -18,13 +28,17 @@ curl -sSL https://raw.githubusercontent.com/developableai/backend/main/install.s
 
 Restart Claude Code. That's it — `/developable` is now available.
 
+The command will appear in the `/` picker with a description. Type `/developable` and hit Enter — Claude Code handles the rest interactively.
+
 ### OpenAI Codex
 
 ```bash
 $skill-installer install https://github.com/developableai/backend/tree/main/skills/developable
 ```
 
-Or copy `skills/developable/SKILL.md` into your project's `AGENTS.md`.
+Or copy `skills/developable/SKILL.md` into your project's `AGENTS.md` manually.
+
+Once installed, start a Codex session in your project directory and say: `run /developable` or just describe what you want — Codex will follow the skill instructions automatically.
 
 ### Python CLI
 

@@ -79,11 +79,11 @@ fi
 CMDS_DIR="$HOME/.claude/commands"
 mkdir -p "$CMDS_DIR"
 
-if [ -f "$SKILL_SRC/.claude/commands/developable.md" ]; then
-    cp "$SKILL_SRC/.claude/commands/developable.md" "$CMDS_DIR/developable.md"
+if [ -f "$SKILL_SRC/commands/developable.md" ]; then
+    cp "$SKILL_SRC/commands/developable.md" "$CMDS_DIR/developable.md"
     info "/developable command installed to ~/.claude/commands/developable.md (legacy fallback)"
 else
-    warn ".claude/commands/developable.md not found in package — skipping legacy install"
+    warn "commands/developable.md not found in package — skipping legacy install"
 fi
 
 # ── 6. OpenAI Codex: append to AGENTS.md if inside a git repo ───────────────
