@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "developable"
-version = "0.1.2"
+version = "0.1.0"
 description = "Generate production-hardened Express + TypeScript REST APIs from a Prisma schema"
 requires-python = ">=3.11"
 readme = "README.md"
