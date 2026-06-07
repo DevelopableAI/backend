@@ -510,24 +510,44 @@ jobs:
         # The docker-releases variant of the formation endpoint uses Basic auth
         # (username=_, password=api_key) — not the Bearer token accepted by the
         # standard v3 API. Passing Bearer here returns 401 even with a valid key.
+        #
+        # Heroku also returns 401 with "Invalid credentials provided" when the
+        # Formation API receives a digest it hasn't finished indexing yet (race
+        # between `docker push` completing and Heroku's layer normalisation). The
+        # credentials are correct; the 401 is transient and clears within seconds.
         import base64
         basic = base64.b64encode(f"_:{api_key}".encode()).decode()
-        resp = requests.patch(
-            f"{_HEROKU_API}/apps/{app_name}/formation",
-            headers={
-                "Authorization": f"Basic {basic}",
-                "Accept": "application/vnd.heroku+json; version=3.docker-releases",
-                "Content-Type": "application/json",
-            },
-            json={"updates": [{"type": "web", "docker_image": image_id}]},
-            timeout=30,
-        )
-        if not resp.ok:
-            print(
-                f"\nHeroku release failed ({resp.status_code}): {resp.text}",
-                file=sys.stderr,
+        headers = {
+            "Authorization": f"Basic {basic}",
+            "Accept": "application/vnd.heroku+json; version=3.docker-releases",
+            "Content-Type": "application/json",
+        }
+        payload = {"updates": [{"type": "web", "docker_image": image_id}]}
+
+        delay = _PUSH_BACKOFF_BASE_S
+        for attempt in range(1, _PUSH_MAX_RETRIES + 2):
+            resp = requests.patch(
+                f"{_HEROKU_API}/apps/{app_name}/formation",
+                headers=headers,
+                json=payload,
+                timeout=30,
             )
-            sys.exit(1)
+            if resp.ok:
+                return
+            # 401 after a fresh push means Heroku hasn't finished indexing the
+            # image yet — retry with backoff. Any other error is a hard failure.
+            if resp.status_code != 401 or attempt > _PUSH_MAX_RETRIES:
+                print(
+                    f"\nHeroku release failed ({resp.status_code}): {resp.text}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(
+                f"  [Heroku] Release not ready yet (attempt {attempt}/{_PUSH_MAX_RETRIES + 1})"
+                f" — retrying in {delay}s...",
+            )
+            time.sleep(delay)
+            delay *= 2
 
     def _get_app_domain(self, headers: dict, app_name: str) -> str:
         """
