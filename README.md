@@ -169,6 +169,17 @@ Jinja2 template  ──►  TemplateGenerator  ──►  rendered file with pla
 | `.github/workflows/ci.yml` | GitHub Actions: install → migrate → start → test |
 | `.env.example` | All required environment variables documented |
 
+### Terraform IaC (optional)
+
+When `--terraform` is passed to `deploy.py`, four `.tf` files are generated under `terraform/`:
+
+| File | Description |
+|------|-------------|
+| `terraform/main.tf` | ECR/ECS/ALB/RDS (AWS), Cloud Run/Cloud SQL/Artifact Registry (GCP), or heroku_app/addon (Heroku) |
+| `terraform/variables.tf` | Provider-specific inputs (region, project, passwords, image tag) |
+| `terraform/outputs.tf` | Live endpoint URL, database connection string |
+| `terraform/backend.tf` | Remote state: S3 + DynamoDB (AWS), GCS bucket (GCP), Terraform Cloud (Heroku) |
+
 ---
 
 ## REST Endpoints
@@ -177,11 +188,21 @@ Every entity gets these five routes automatically:
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `GET` | `/api/{plural}` | Optional | Paginated list — `?page=1&limit=20` |
+| `GET` | `/api/{plural}` | Optional | Filtered, sorted, paginated list |
 | `GET` | `/api/{plural}/:id` | Optional | Single record |
 | `POST` | `/api/{plural}` | Required | Create (owner FK injected from JWT) |
 | `PUT` | `/api/{plural}/:id` | Required | Partial update with ownership check |
 | `DELETE` | `/api/{plural}/:id` | Required | Delete with ownership check |
+
+**Filter and sort query params** on all list endpoints:
+
+```
+GET /api/posts?filter[title]=hello&sort=createdAt&order=asc&page=1&limit=20
+```
+
+- `filter[fieldName]=value` — restrict results; only non-sensitive scalar fields are allowed (400 otherwise)
+- `sort=fieldName` — sort by any allowed field; defaults to `id desc`
+- `order=asc|desc` — sort direction; defaults to `asc` when a sort field is given
 
 For one-to-many relations, nested routes are generated automatically:
 
@@ -236,12 +257,14 @@ These are **non-negotiable behaviours** baked into every generated API — not s
 | Invariant | Enforced in |
 |-----------|-------------|
 | Integer ID validation — rejects floats, alpha, SQL injection, overflow | `controller.ts.j2` `_parseId` |
+| String ID validation — rejects whitespace, long strings; used when PK is `uuid()` / `cuid()` | `controller.ts.j2` `_parseStringId` |
 | Owner FK server-injected from JWT, never from request body | `controller.ts.j2` create + `validator.ts.j2` LLM hint |
 | Auth entity self-ownership: only update/delete your own record | `controller.ts.j2` `is_auth_entity` branch |
 | Resource ownership check before any write on owned resources | `controller.ts.j2` `owner_fk_field` branch |
 | Sensitive fields hashed before storage | `auth.controller.ts.j2` |
 | Sensitive fields excluded from JWT payload and responses | `auth.controller.ts.j2` `safeSelect` |
 | JWT verified on all write + ownership-sensitive read routes | `routes.ts.j2` + `auth.ts.j2` |
+| Filter fields validated against allowlist — rejects sensitive or unknown fields | `controller.ts.j2` `ALLOWED_FILTER_FIELDS` |
 
 ---
 
@@ -276,6 +299,10 @@ model Post {
 
 ## CLI Reference
 
+Generation and deployment are split into two commands. `main.py` writes files; `deploy.py` provisions cloud infrastructure.
+
+### `python main.py` — Generate
+
 ```
 python main.py <schema.prisma> [options]
 
@@ -294,10 +321,32 @@ Version Control (GitHub)
   --github-user USER     GitHub username or org (or set GITHUB_USER)
   --github-repo NAME     Repository name  [default: <first-entity>-api]
   --private              Create a private repository
+```
 
-Deployment
-  --deploy               Deploy the generated project to a cloud provider
-  --deploy-to PROVIDER   aws | heroku | gcp  [prompted interactively if omitted]
+### `python deploy.py` — Deploy
+
+```
+python deploy.py --out DIR --deploy-to PROVIDER [options]
+
+Core
+  --out DIR              Output directory written by main.py  [default: ./output]
+  --deploy-to PROVIDER   aws | gcp | heroku
+
+AWS
+  --aws-region REGION    AWS region  [default: us-east-1]
+
+GCP
+  --gcp-project ID       GCP project ID
+  --gcp-region REGION    GCP region  [default: us-central1]
+  --gcp-sa-path PATH     Path to GCP service account key JSON
+
+Heroku
+  --heroku-app NAME      Heroku app name  [default: derived from project]
+
+GitHub (for pushing generated Terraform files)
+  --github-token TOKEN   GitHub PAT
+  --github-user USER     GitHub username or org
+  --github-repo NAME     Repository name
 ```
 
 **Common invocations:**
@@ -312,16 +361,18 @@ python main.py schema.prisma --out ./my-api --tests-out ./tests
 # Generate, push to GitHub, run CI automatically
 python main.py schema.prisma --out ./my-api --github
 
-# Complete pipeline: generate → test → push → deploy
-python main.py schema.prisma --out ./my-api --tests-out ./tests \
-  --github --github-token ghp_... --github-user myorg \
-  --deploy --deploy-to aws
-
 # Re-run safely — only regenerates files you haven't touched
 python main.py schema.prisma --out ./my-api --no-llm
 
 # Force full regeneration (overwrites your edits)
 python main.py schema.prisma --out ./my-api --no-llm --force
+
+# Deploy to AWS after generating
+python main.py schema.prisma --out ./my-api --github --github-token ghp_... --github-user myorg
+python deploy.py --out ./my-api --deploy-to aws
+
+# Deploy to GCP Cloud Run
+python deploy.py --out ./my-api --deploy-to gcp --gcp-project my-project-id
 ```
 
 ---
@@ -329,51 +380,37 @@ python main.py schema.prisma --out ./my-api --no-llm --force
 ## Agent Architecture
 
 ```
-                    ┌────────────────────────────────┐
-                    │       Backend Engineer          │
-                    │           main.py               │
-                    │   CLI entry point, orchestrates │
-                    │   all agents in sequence        │
-                    └──────────────┬─────────────────┘
-                                   │
-         ┌─────────────────────────┼─────────────────────────┐
-         │                         │                         │
-         ▼                         ▼                         ▼
-┌─────────────────┐   ┌────────────────────┐   ┌──────────────────────┐
-│  Developer      │   │  Tester Agent      │   │  Version Control     │
-│  Agent          │   │  agents/tester.py  │   │  Agent               │
-│  agents/        │   │                    │   │  agents/             │
-│  developer.py   │   │  TestPlanner +     │   │  version_control.py  │
-│                 │   │  Assembler         │   │                      │
-│  Planner +      │   │  → Python test     │   │  VCPlanner +         │
-│  Assembler      │   │    suite per       │   │  Assembler           │
-│  → Express API  │   │    entity          │   │  → Dockerfile        │
-│  (TypeScript)   │   │  → run_all.py      │   │  → docker-compose    │
-│                 │   │  → helpers.py      │   │  → CI workflow       │
-└────────┬────────┘   └──────────┬─────────┘   │  → git init + push   │
-  api_plan ──────────────────────►             └──────────────────────┘
-                                                          │
-                                                          ▼
-                                              ┌──────────────────────┐
-                                              │  Deployment Agent    │
-                                              │  agents/             │
-                                              │  deployment.py       │
-                                              │                      │
-                                              │  Zero LLM cost —     │
-                                              │  pure provider SDK   │
-                                              │  AWS ECS / Heroku /  │
-                                              │  GCP Cloud Run       │
-                                              │  → live endpoint URL │
-                                              └──────────────────────┘
+  main.py (generate)                      deploy.py (deploy)
+  ────────────────────────────            ──────────────────────────────────────
+  ┌──────────────────────────┐            ┌──────────────────────────────────┐
+  │    Backend Engineer       │            │    Deployment Orchestrator        │
+  │    main.py                │            │    deploy.py                      │
+  └──────┬───────────────────┘            └──────┬────────────────────────────┘
+         │                                       │
+  ┌──────┼────────────────────┐          ┌───────┼────────────────────────────┐
+  │      │                    │          │       │                            │
+  ▼      ▼                    ▼          ▼       ▼                            ▼
+Dev.  Tester           Version      Terraform  Deployment             (reads
+Agent  Agent           Control      Agent      Agent                  .developable/
+                       Agent        agents/    agents/                config.json
+Planner  TestPlanner   VCPlanner    terraform  deployment             written by
+  +        +             +          .py        .py                    main.py)
+Assembler Assembler   Assembler
+→ Express  → Python   → Dockerfile  → HCL      → Docker push
+  API        tests      CI/CD          files      → Cloud Run
+             suite      git push       terraform/  AWS ECS
+                                       aws|gcp|    GCP
+                                       heroku      Heroku
 ```
 
 | Agent | File | Responsibility |
 |-------|------|----------------|
-| Backend Engineer | `main.py` | CLI entry point; parses schema, loads rules, coordinates agents |
+| Backend Engineer | `main.py` | CLI entry point; parses schema, loads rules, coordinates generation agents |
 | Developer | `agents/developer.py` | Generates Express + TypeScript API via Planner → Assembler |
 | Tester | `agents/tester.py` | Generates Python integration test suite (TestPlanner → Assembler) |
 | Version Control | `agents/version_control.py` | Infra files (Dockerfile, Compose, CI), git init, GitHub push |
-| Deployment | `agents/deployment.py` | Builds Docker image, deploys to cloud, records endpoint URL |
+| Terraform | `agents/terraform.py` | Generates HCL IaC files for AWS / GCP / Heroku (no cloud calls) |
+| Deployment | `agents/deployment.py` | Builds Docker image, provisions cloud resources, records endpoint URL |
 
 ---
 
@@ -462,19 +499,26 @@ docker-compose up
 
 ---
 
-## The Long-Term Vision: Claude Code And Codex Skills
+## Claude Code And Codex Skills
 
-The CLI proves the template. The **Claude Code and Codex skills** deliver it.
+The CLI proves the template. The **Claude Code and Codex skills** deliver it — shipped.
 
-Once the template is stable, Developable ships as a publishable `/developable` slash command for Claude Code and as a Codex skill bundle. These package the entire standard — file structure, security invariants, OOP patterns, validation rules — as instructions that the coding agent follows when writing or modifying any file in the project.
+Developable is available as a publishable `/developable` slash command for Claude Code and as a Codex skill bundle. These package the entire standard — file structure, security invariants, OOP patterns, validation rules — as instructions that the coding agent follows when writing or modifying any file in the project.
 
 This changes the dynamic from "hope the LLM makes good decisions" to "the decisions are made; the LLM executes them." Every feature Claude Code adds to your backend conforms to the same invariants as the original generated output, across the full lifetime of the project.
 
-For Codex, the repo now includes a skill bundle at `skills/developable/SKILL.md`.
+| Interface | Location | Runtime required |
+|-----------|----------|------------------|
+| Claude Code skill | `.claude/commands/developable.md` | Claude Code only |
+| Codex skill bundle | `skills/developable/SKILL.md` | Codex only |
+| Python CLI | `main.py` + `deploy.py` | Python 3.11 + Node 18 |
 
 ```
 # Inside Claude Code — generate from an existing schema
 /developable
+
+# Or start from a description
+/developable "A task management app with users, projects, and tasks"
 ```
 
 No Python runtime. No API key setup. No install beyond the skill itself.
@@ -497,10 +541,10 @@ The skill will:
 
 ## Roadmap
 
-- [x] **Claude Code skill** — package the proven template as a publishable `/developable` slash command
-- [x] **Codex skill bundle** — ship the same workflow and standards via `skills/developable/SKILL.md`
+- [x] **Claude Code skill** — `/developable` slash command at `.claude/commands/developable.md`
+- [x] **Codex skill bundle** — same workflow via `skills/developable/SKILL.md`
 - [x] **Schema from prompt** — describe your app in plain English; skill generates `schema.prisma` + `rules.yaml` before codegen
-- [ ] Filter and sort on list endpoints
-- [ ] UUID / cuid ID support
+- [x] **Filter and sort on list endpoints** — `?filter[field]=value&sort=field&order=asc|desc` on all GET-all routes
+- [x] **UUID / cuid ID support** — `@default(uuid())` and `@default(cuid())` PKs; `_parseStringId` replaces `_parseId`
+- [x] **Terraform IaC** — `terraform/` directory with remote state for AWS (S3+DynamoDB), GCP (GCS), Heroku (Terraform Cloud)
 - [ ] Fastify target
-- [ ] Terraform IaC — generate Terraform configs with remote state (AWS S3, GCP GCS, Terraform Cloud for Heroku)

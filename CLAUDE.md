@@ -20,13 +20,11 @@ This is not a prompt quality problem. It is a missing standard problem.
 
 These decisions are encoded in the Jinja2 templates in `templates/express/`. They are not suggestions. They are the template, and the template is the product.
 
-### The Long-Term Goal: A Claude Code Skill
+### The Claude Code Skill (Shipped)
 
-Once this template is stable and proven, it ships as a **publishable Claude Code skill** — a slash command that any developer installs once and uses in any project. When Claude Code (or any agentic system) works on a backend codebase, it does not decide how to structure or secure the code. It follows the Developable template.
+The skill is live at `.claude/commands/developable.md`. A Codex skill bundle ships alongside it at `skills/developable/SKILL.md`. Both package the full generation pipeline — parse → plan → assemble — as prompt instructions that the coding agent follows when writing files. No Python runtime, no `pip install`, no `ANTHROPIC_API_KEY` setup required.
 
-This changes AI-assisted backend development from "hope the LLM makes good decisions" to "the decisions are already made; the LLM executes them."
-
-The current Python CLI is how we prove and harden the template. Every generation run, test, and deployment failure is a signal that refines it. When the template is stable, the skill packages it so any developer can get the same guarantees — not just developers who run the CLI.
+The Python CLI (`main.py` + `deploy.py`) remains the proof and deployment vehicle. Every generation run, test, and deployment failure is a signal that refines the template the skill encodes.
 
 ### Current Output
 
@@ -73,11 +71,12 @@ The platform is modelled as a **Backend Engineer** (`main.py`) that coordinates 
 
 | Agent | File | Responsibility |
 |---|---|---|
-| Backend Engineer | `main.py` | CLI entry point; parses schema, loads rules, coordinates agents |
+| Backend Engineer | `main.py` | CLI entry point; parses schema, loads rules, coordinates generation agents |
 | Developer | `agents/developer.py` | Generates Express + TypeScript API (Planner → Assembler) |
 | Tester | `agents/tester.py` | Generates Python integration test suite (TestPlanner → Assembler) |
 | Version Control | `agents/version_control.py` | Generates infra files (Dockerfile, Compose, CI), initialises git, creates GitHub repo, pushes |
-| Deployment | `agents/deployment.py` | Provisions cloud infrastructure (AWS/GCP/Heroku), deploys container, wires CI/CD |
+| Terraform | `agents/terraform.py` | Generates HCL IaC files (no cloud calls); invoked by `deploy.py` |
+| Deployment | `agents/deployment.py` | Builds Docker image, provisions cloud resources (AWS/GCP/Heroku), records endpoint URL |
 
 ---
 
@@ -85,19 +84,28 @@ The platform is modelled as a **Backend Engineer** (`main.py`) that coordinates 
 
 ```
 backend/
-├── main.py                          # Backend Engineer: CLI orchestrator for all agents
+├── main.py                          # Backend Engineer: CLI orchestrator for generation agents
+├── deploy.py                        # Deployment orchestrator: Terraform IaC + cloud provisioning
 ├── config.py                        # Paths, model name, LLM temperature
 ├── requirements.txt                 # Python dependencies
 ├── README.md                        # User-facing documentation
 ├── Dockerfile                       # Container for running the generator
-├── PROGRESS.md                      # In-progress feature notes
+├── PROGRESS.md                      # Development diary / in-progress notes
 ├── test_schema.prisma               # Example schema used for local testing
+│
+├── .claude/
+│   └── commands/
+│       └── developable.md           # Claude Code skill: /developable slash command
+│
+├── skills/
+│   └── developable/
+│       └── SKILL.md                 # Codex skill bundle: same workflow for Codex
 │
 ├── agents/                          # Agent layer — each agent owns its generation domain
 │   ├── developer.py                 # Developer agent: Express API (wraps Planner + Assembler)
 │   ├── tester.py                    # Tester agent: Python test suite (wraps TestPlanner + Assembler)
 │   ├── version_control.py           # Version Control agent: infra files, git init, GitHub push
-│   ├── deployment.py                # Deployment agent: provision DB + container on AWS/GCP/Heroku, push deploy.yml
+│   ├── deployment.py                # Deployment agent: provision cloud resources, record endpoint URL
 │   └── terraform.py                 # Terraform agent: generate HCL IaC files (no cloud calls)
 │
 ├── core/                            # Shared infrastructure used by agents
@@ -110,6 +118,10 @@ backend/
 │   ├── assembler.py                 # Assembler: orchestrates TemplateGenerator + LLMGenerator; git-diff aware
 │   ├── rules_parser.py              # BusinessRulesParser: merges YAML constraints into spec
 │   ├── deployment_state.py          # DeploymentState: persists deployment record to .developable/state.json
+│   ├── project_config.py            # ProjectConfig: reads/writes .developable/config.json (generate→deploy handoff)
+│   ├── command_builder.py           # Translates skill config dict → CLI invocation strings
+│   ├── llm_data.py                  # Deterministic test data generation (no LLM; format-aware field defaults)
+│   ├── gitignore.py                 # DEFAULT_GITIGNORE_CONTENT + helpers used by VersionControl agent
 │   └── providers/                   # Cloud provider abstractions (AWS, GCP, Heroku)
 │
 ├── generators/
@@ -118,30 +130,46 @@ backend/
 │   └── llm.py                       # LLMGenerator: fills LLM_SECTION markers via Claude API
 │
 ├── templates/
-│   └── express/
-│       └── api/                     # Jinja2 templates for Express + TypeScript REST API output
-│           ├── app.ts.j2            # Express app setup, router mounting, error handler
-│           ├── server.ts.j2         # HTTP server bootstrap
-│           ├── package.json.j2      # npm manifest with all dependencies
-│           ├── tsconfig.json.j2     # TypeScript compiler config
-│           ├── controller.ts.j2     # CRUD + nested-route handlers, ID validation, ownership guards
-│           ├── routes.ts.j2         # Express Router wiring (auth middleware applied per method)
-│           ├── repository.ts.j2     # Prisma data-access layer (findMany, findById, create, update, delete)
-│           ├── validator.ts.j2      # Zod schema wrapper — boilerplate with LLM_SECTION for logic
-│           ├── types.ts.j2          # TypeScript input/output types derived from entity fields
-│           ├── auth.controller.ts.j2 # Register + login handlers, JWT signing, credential hashing
-│           ├── auth.routes.ts.j2    # /auth/register and /auth/login route declarations
-│           ├── auth.ts.j2           # JWT authenticate middleware (populates req.user)
-│           ├── errors.ts.j2         # AppError hierarchy + Express error-handler middleware
-│           ├── pagination.ts.j2     # parsePagination + buildPaginatedResponse helpers
-│           ├── prisma.ts.j2         # Singleton PrismaClient export
-│           ├── crypto.ts.j2         # bcrypt hashValue / compareValue helpers
-│           ├── env.example.j2       # .env.example with all required environment variables
-│           ├── Dockerfile.j2        # Multi-stage Node.js 20 production container
-│           ├── docker-compose.yml.j2 # Local dev stack: PostgreSQL, pgAdmin, API service
-│           └── .github/
-│               └── workflows/
-│                   └── ci.yml.j2    # GitHub Actions: install, migrate, start API, run tests
+│   ├── express/
+│   │   └── api/                     # Jinja2 templates for Express + TypeScript REST API output
+│   │       ├── app.ts.j2            # Express app setup, router mounting, error handler
+│   │       ├── server.ts.j2         # HTTP server bootstrap
+│   │       ├── package.json.j2      # npm manifest with all dependencies
+│   │       ├── tsconfig.json.j2     # TypeScript compiler config
+│   │       ├── controller.ts.j2     # CRUD + nested-route handlers, ID validation, filter/sort, ownership guards
+│   │       ├── routes.ts.j2         # Express Router wiring (auth middleware applied per method)
+│   │       ├── repository.ts.j2     # Prisma data-access layer (findMany with filter/sort, findById, CRUD)
+│   │       ├── validator.ts.j2      # Zod schema wrapper — boilerplate with LLM_SECTION for logic
+│   │       ├── types.ts.j2          # TypeScript input/output types derived from entity fields
+│   │       ├── auth.controller.ts.j2 # Register + login handlers, JWT signing, credential hashing
+│   │       ├── auth.routes.ts.j2    # /auth/register and /auth/login route declarations
+│   │       ├── auth.ts.j2           # JWT authenticate middleware (populates req.user)
+│   │       ├── errors.ts.j2         # AppError hierarchy + Express error-handler middleware
+│   │       ├── pagination.ts.j2     # parsePagination, parseListQuery, buildPaginatedResponse helpers
+│   │       ├── prisma.ts.j2         # Singleton PrismaClient export
+│   │       ├── crypto.ts.j2         # bcrypt hashValue / compareValue helpers
+│   │       ├── env.example.j2       # .env.example with all required environment variables
+│   │       ├── Dockerfile.j2        # Multi-stage Node.js 20 production container
+│   │       ├── docker-compose.yml.j2 # Local dev stack: PostgreSQL, pgAdmin, API service
+│   │       └── .github/
+│   │           └── workflows/
+│   │               └── ci.yml.j2    # GitHub Actions: install, migrate, start API, run tests
+│   ├── terraform/
+│   │   ├── aws/                     # AWS: ECS Fargate, ALB, RDS, ECR, VPC; state in S3+DynamoDB
+│   │   │   ├── main.tf.j2
+│   │   │   ├── variables.tf.j2
+│   │   │   ├── outputs.tf.j2
+│   │   │   └── backend.tf.j2
+│   │   ├── gcp/                     # GCP: Cloud Run, Cloud SQL, Artifact Registry; state in GCS
+│   │   │   ├── main.tf.j2
+│   │   │   ├── variables.tf.j2
+│   │   │   ├── outputs.tf.j2
+│   │   │   └── backend.tf.j2
+│   │   └── heroku/                  # Heroku: heroku_app, heroku-postgresql addon; state in Terraform Cloud
+│   │       ├── main.tf.j2
+│   │       ├── variables.tf.j2
+│   │       ├── outputs.tf.j2
+│   │       └── backend.tf.j2
 │   └── tests/                       # Jinja2 templates for the Python integration test suite
 │       ├── helpers.py.j2            # Shared HTTP client, auth helpers, state fixtures
 │       ├── run_all.py.j2            # Sequential test runner
@@ -253,6 +281,16 @@ After `--github`, the repository is live and CI runs automatically. For local Do
 cd output
 cp .env.example .env   # fill in secrets
 docker-compose up
+```
+
+To deploy to a cloud provider after generating:
+
+```bash
+# Write generation metadata (done automatically by main.py)
+# Then run deploy.py — reads .developable/config.json for schema path, project name, etc.
+python deploy.py --out ./output --deploy-to aws
+python deploy.py --out ./output --deploy-to gcp --gcp-project my-project-id
+python deploy.py --out ./output --deploy-to heroku
 ```
 
 ---
@@ -368,8 +406,10 @@ model Post {
       "name_plural": "users",
       "is_auth_entity": True,
       "auth_id_field": "id",           # actual PK field name
-      "auth_id_ts_type": "number",
+      "auth_id_ts_type": "number",     # "number" | "string"
       "auth_login_field": { ... },     # field dict used for login lookup (email preferred)
+      "pk_ts_type": "number",          # "number" | "string" — drives _parseId vs _parseStringId
+      "pk_strategy": "autoincrement",  # "autoincrement" | "uuid" | "cuid" | "none"
       "llm_hints": ["hint text", ...],
       "fields": [
         {
@@ -383,6 +423,7 @@ model Post {
           "is_relation": False,
           "is_sensitive": False,       # True for fields marked // @llm sensitive
           "default": "autoincrement()",
+          "pk_strategy": "autoincrement",  # set on @id fields only
           "annotations": ["@id", "@default(autoincrement())"]
         }
       ],
@@ -412,12 +453,14 @@ These are non-negotiable behaviours baked into every generated API:
 | Invariant | Where enforced |
 |---|---|
 | Integer ID validation — rejects floats, alpha, SQL-injection suffixes, overflow | `controller.ts.j2` `_parseId` |
+| String ID validation — rejects whitespace, oversized strings; used for `uuid()`/`cuid()` PKs | `controller.ts.j2` `_parseStringId` (when `entity.pk_ts_type == "string"`) |
 | Owner FK injected server-side from JWT, never accepted from request body | `controller.ts.j2` `create` + `validator.ts.j2` LLM hint |
 | Auth entity self-ownership: users may only update/delete their own record | `controller.ts.j2` `update` / `remove` (`is_auth_entity` branch) |
 | Resource ownership check before update/delete for owned resources | `controller.ts.j2` `update` / `remove` (`owner_fk_field` branch) |
 | Sensitive fields hashed with bcrypt before storage | `auth.controller.ts.j2` |
 | Sensitive fields excluded from JWT payload and all API responses | `auth.controller.ts.j2` `safeSelect` |
 | JWT verified on all write routes and ownership-sensitive reads | `routes.ts.j2` + `auth.ts.j2` |
+| Filter fields validated against allowlist — sensitive and unknown fields rejected (400) | `controller.ts.j2` `ALLOWED_FILTER_FIELDS` / `parseListQuery` |
 
 ---
 
@@ -426,15 +469,20 @@ These are non-negotiable behaviours baked into every generated API:
 Key variables available in each template category:
 
 **All entity templates:**
-- `entity` — full entity dict from the spec
+- `entity` — full entity dict from the spec (includes `pk_ts_type`, `pk_strategy`)
 - `auth_entity_name` — name of the auth entity, or `None`
 
 **Controller / Routes:**
 - `owner_fk_field` — scalar FK field name pointing to auth entity (e.g. `"authorId"`), or `None`
-- `nested_routes` — list of `{ relation_name, related_entity, related_entity_lower, related_entity_plural, fk_field }` for one-to-many relations
+- `nested_routes` — list of `{ relation_name, related_entity, related_entity_lower, related_entity_plural, fk_field, filterable_fields, sortable_fields }` for one-to-many relations
+- `filterable_fields` — non-id, non-relation, non-sensitive scalar fields; used to build `ALLOWED_FILTER_FIELDS`
+- `sortable_fields` — same set as `filterable_fields`; used to build `ALLOWED_SORT_FIELDS`
 
 **Validator:**
 - `owner_fk_field` — same as above; injected as a `SERVER-INJECTED` comment into the LLM section so the model excludes it from Zod schemas
+
+**Repository:**
+- `filterable_fields` — used to generate per-field `where` clause helpers and type coercion for numeric fields
 
 **Auth controller:**
 - `auth_entity` — the entity dict
@@ -443,6 +491,11 @@ Key variables available in each template category:
 **Infra templates (Dockerfile, docker-compose, CI):**
 - `spec` — full spec dict
 - `project_name` — slug-safe name derived from the first entity (e.g. `"user-api"`); used for database naming in docker-compose
+
+**Terraform templates:**
+- `spec` — full spec dict
+- `project_name` — slug used for resource naming and state bucket defaults
+- `provider_config` — provider-specific config dict (region, project ID, state bucket name, etc.)
 
 ---
 
@@ -455,8 +508,10 @@ Key variables available in each template category:
 - **`--no-llm` mode must always produce valid TypeScript** (with empty Zod objects as placeholders) so the template pipeline can be tested without API calls
 - **Tests in `tests/` run against the generated project** (a live Express server), not the generator itself; they are integration + security tests for the output
 - **Infra templates are fully static** — `Dockerfile.j2`, `docker-compose.yml.j2`, and `ci.yml.j2` contain no LLM sections; `VCPlanner` always sets `needs_llm: False` for them
-- **GitHub Actions expressions must be escaped** — wrap the entire CI template in `{% raw %} / {% endraw %}` to prevent Jinja2 from interpreting `${{ }}` as its own template syntax
+- **Terraform templates are fully static** — all `templates/terraform/**/*.j2` files render without LLM calls; `TerraformPlanner` always sets `needs_llm: False`
+- **GitHub Actions expressions must be escaped** — wrap the entire CI template in `{% raw %} / {% endraw %}` to prevent Jinja2 from interpreting `${{ }}` as its own template syntax; Terraform HCL templates do NOT need this (HCL `${}` and Jinja2 `{{ }}` don't overlap — use `$${var}` if a literal HCL interpolation is needed)
 - **`--force` flag controls re-generation safety** — without it, the Assembler checks `git diff HEAD` before overwriting each file; files with local changes are skipped to preserve user edits
+- **`main.py` generates; `deploy.py` deploys** — generation metadata is persisted to `<out_dir>/.developable/config.json` by `main.py`; `deploy.py` reads it so cloud-specific flags don't need to be repeated
 
 ---
 
@@ -505,68 +560,40 @@ Key variables available in each template category:
 
 ---
 
-## Planned Migration: Claude Code Skill
+## Claude Code Skill and Codex Bundle (Shipped)
 
-The next major architectural direction is to repackage the Developable template as a **publishable Claude Code skill** — a slash command (e.g. `/developable`) that users invoke directly inside Claude Code.
+Both delivery vehicles are live.
 
-### Why This Matters
+| Interface | File | Runtime |
+|---|---|---|
+| Claude Code `/developable` skill | `.claude/commands/developable.md` | Claude Code |
+| Codex skill bundle | `skills/developable/SKILL.md` | Codex |
 
-The template — file structure, security invariants, OOP patterns, auth model — is what has value. The Python CLI is the vehicle used to prove and harden it. The Claude Code skill is the vehicle that makes it accessible.
+The skill encodes the full generation pipeline as prompt instructions — parse → plan → assemble — without requiring Python, npm, or an `ANTHROPIC_API_KEY`. Claude Code's native `Write`/`Edit`/`Bash` tools replace the `Assembler` + `LLMGenerator` layer; the security invariants, schema annotations, and file structure rules are encoded verbatim in the skill definition.
 
-When the skill ships, a developer working on any backend project installs it once. Every time Claude Code writes or modifies a file in that project, it follows the Developable template. The LLM is no longer guessing at structure or security — it has an authoritative guide that was proven across multiple real schemas and deployments.
+The Python CLI (`main.py` + `deploy.py`) remains alongside the skill for:
+- Cloud deployment (Terraform generation + cloud provisioning)
+- CI/CD integration (GitHub Actions wiring)
+- Batch regeneration of existing projects
 
-This is the shift: from "generate a project" to "enforce a standard across the lifetime of a project."
+### What the Skill Encodes
 
-### Practical Changes
-
-- **Zero install friction** — no Python runtime, no `pip install`, no `ANTHROPIC_API_KEY` setup; Claude Code supplies the model.
-- **Native tool use** — Claude Code's built-in `Write`/`Edit`/`Bash` tools replace the `Assembler` + `LLMGenerator` layer; Claude writes files directly following the template.
-- **Ongoing enforcement** — the skill is not just for initial generation; it guides every subsequent feature addition, ensuring new code conforms to the same invariants as the original output.
-- **Publishable** — skills ship as a single markdown file checked into a public repo; discovery and install are one command.
-
-### What Changes
-
-| Current (Python CLI) | Future (Claude Code Skill) |
-|---|---|
-| `python main.py schema.prisma --out ./my-api` | `/developable` in Claude Code |
-| `pip install developable` | Claude Code skill install |
-| `LLMGenerator` fills `LLM_SECTION` markers via Anthropic SDK | Claude Code writes files directly using its native tools |
-| `Assembler` orchestrates template rendering + LLM | Skill prompt instructs Claude to follow the same generation invariants |
-| `VersionControl` agent pushes to GitHub via REST API | Claude Code's GitHub MCP or `gh` CLI |
-| Python 3.11 + Node 18 required on user machine | Claude Code only |
-
-### What Stays the Same
-
-- The **Jinja2 templates** in `templates/express/` remain the source of truth for generated file shapes; the skill prompt instructs Claude to follow them.
-- The **schema annotations** (`@auth_entity`, `@llm sensitive`, `@llm hints`) remain unchanged — the skill parses the same Prisma schema format.
-- The **security invariants** (ID validation, owner FK injection, auth middleware, sensitive field hashing) are encoded into the skill prompt and enforced identically.
-- The **generation pipeline** logic (parse → plan → assemble) is preserved as reasoning instructions in the skill rather than Python code.
-
-### Migration Phases
-
-1. **Skill scaffold** — Create `.claude/commands/developable.md` as the skill entry point; encode the generation pipeline, security invariants, and schema annotation rules as prompt instructions.
-2. **Template encoding** — Convert Jinja2 templates to inline examples or referenced files the skill uses as structural guides when writing output.
-3. **Skill publishing** — Package the repo for Claude Code skill distribution (skill manifest, README quickstart for `/developable`, test schema examples).
-4. **Deprecate Python CLI** — Once the skill reaches feature parity, `main.py` and the Python agent layer become optional legacy; the skill is the primary interface.
-
-### Skill File Location
-
-```
-.claude/
-└── commands/
-    └── developable.md    ← the publishable skill definition
-```
+- Schema annotation parsing rules (`@auth_entity`, `@llm sensitive`, `@llm <hint>`)
+- All 9 security invariants (verbatim, non-negotiable)
+- File generation plan (project files → per-entity files → auth files)
+- Abbreviated structural templates for the 5 key file types (controller, repository, routes, validator, types)
+- Plain-English schema generation mode: collect description → clarify → write `schema.prisma` + `rules.yaml` → confirm → generate
 
 ---
 
 ## Known Limitations
 
-1. **Express only** — no FastAPI or other framework target yet
-2. **Single auth entity** — only one `// @auth_entity` per schema is supported
-3. **Single auth entity** — only one `// @auth_entity` per schema is supported (multi-tenant auth requires a second pass)
-4. **No test suite for the generator itself** — only the generated projects are tested; consider adding pytest tests for `PrismaParser`, `Planner`, and template rendering
-5. **Synchronous Anthropic client** — `LLMGenerator` uses the blocking SDK client; for parallel generation wrap calls with `asyncio.to_thread` or switch to `anthropic.AsyncAnthropic`
-6. **No rate limiting or audit logging in generated output** — planned as next invariant layer
-7. **GitHub token embedded in remote URL** — the VersionControl agent uses `https://<token>@github.com/...` to authenticate the push; the token may appear in `git remote -v` output inside the generated project
-8. **CI uses `prisma db push` not `migrate deploy`** — freshly generated projects have no committed migration files, so CI uses `db push --accept-data-loss`; projects that adopt proper migrations should update the workflow step
-9. **Terraform state bucket name collisions** — if the project-scoped S3 bucket name is taken by another AWS account, the Deployment agent falls back to `developablecode-terraform-state` and re-renders `backend.tf` accordingly
+1. **Express only for Python CLI** — Fastify target is next; no other framework yet
+2. **Single auth entity** — only one `// @auth_entity` per schema is supported (multi-tenant auth requires a second pass)
+3. **No test suite for the generator itself** — only the generated projects are tested; consider adding pytest tests for `PrismaParser`, `Planner`, and template rendering
+4. **Synchronous Anthropic client** — `LLMGenerator` uses the blocking SDK client; for parallel generation wrap calls with `asyncio.to_thread` or switch to `anthropic.AsyncAnthropic`
+5. **No rate limiting or audit logging in generated output** — planned as next invariant layer
+6. **GitHub token embedded in remote URL** — the VersionControl agent uses `https://<token>@github.com/...` to authenticate the push; the token may appear in `git remote -v` output inside the generated project
+7. **CI uses `prisma db push` not `migrate deploy`** — freshly generated projects have no committed migration files, so CI uses `db push --accept-data-loss`; projects that adopt proper migrations should update the workflow step
+8. **Terraform state bucket name collisions** — if the project-scoped S3 bucket name is taken by another AWS account, the Deployment agent falls back to `developablecode-terraform-state` and re-renders `backend.tf` accordingly
+9. **Enum-typed PKs unsupported** — `_parseId` / `_parseStringId` only handle `Int` and `String` PKs; `@id` on an Enum field will fall back to integer parsing
