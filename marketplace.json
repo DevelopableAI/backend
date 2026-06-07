@@ -1,0 +1,12 @@
+{
+  "name": "DevelopableAI",
+  "description": "Generate production-hardened Express + TypeScript REST APIs from a Prisma schema",
+  "plugins": [
+    {
+      "name": "developable",
+      "description": "Full-stack backend generator: JWT auth, ownership guards, Zod validation, Prisma ORM, integration tests, and Terraform IaC for AWS/GCP/Heroku",
+      "path": "plugin",
+      "version": "0.1.0"
+    }
+  ]
+}
