@@ -288,12 +288,12 @@ jobs:
         run: |
           # Fetch config digest from Heroku's registry API — local `docker inspect`
           # can diverge from the stored digest if Heroku normalises layers on ingest.
+          BASIC=$(echo -n "_:$HEROKU_API_KEY" | base64)
           IMAGE_ID=$(curl -sf \
-            -H "Authorization: Bearer $HEROKU_API_KEY" \
+            -H "Authorization: Basic $BASIC" \
             -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
             https://registry.heroku.com/v2/{app_name}/web/manifests/latest \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['config']['digest'])")
-          BASIC=$(echo -n "_:$HEROKU_API_KEY" | base64)
           curl -f -s -X PATCH https://api.heroku.com/apps/{app_name}/formation \\
             -H "Content-Type: application/json" \\
             -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \\
@@ -637,10 +637,12 @@ jobs:
         or `docker manifest inspect`) can diverge if Heroku normalises layers on
         ingest, causing the Formation API to return 401.
         """
+        import base64
+        basic = base64.b64encode(f"_:{api_key}".encode()).decode()
         resp = requests.get(
             f"https://{_HEROKU_REGISTRY}/v2/{app_name}/web/manifests/latest",
             headers={
-                "Authorization": f"Bearer {api_key}",
+                "Authorization": f"Basic {basic}",
                 "Accept": "application/vnd.docker.distribution.manifest.v2+json",
             },
             timeout=30,
