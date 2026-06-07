@@ -24,6 +24,14 @@ dist/
 # Deployment state
 .developable/
 
+# Terraform — provider cache and sensitive variable files
+.terraform/
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfvars.json
+terraform/*.tfstate
+terraform/*.tfstate.backup
+
 # OS
 .DS_Store
 Thumbs.db
@@ -43,6 +51,12 @@ REQUIRED_GITIGNORE_PATTERNS = [
     "__pycache__/",
     "**/__pycache__/",
     ".developable/",
+    ".terraform/",
+    "terraform/.terraform/",
+    "terraform/.terraform.lock.hcl",
+    "terraform/*.tfvars.json",
+    "terraform/*.tfstate",
+    "terraform/*.tfstate.backup",
 ]
 
 

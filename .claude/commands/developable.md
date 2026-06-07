@@ -165,7 +165,7 @@ Then ask the user explicitly:
 
 **If the user says `edit: <instruction>`:** apply the change to both files, redisplay the changed file(s), and ask again.
 
-**If the user says `ok`:** set `schema_path` to the just-written `schema.prisma` and proceed to Phase 0b.
+**If the user says `ok`:** set `schema_path` to the just-written `schema.prisma`, set `rules_path` to the just-written `rules.yaml`, and proceed to Phase 0b.
 
 **If the user says `stop`:** print `Schema saved to schema.prisma. Run /developable schema.prisma whenever you're ready.` and end.
 
@@ -325,13 +325,14 @@ Output progress at each phase boundary and after each file write. This text appe
 
 ## Phase 0b — Collect Configuration (ask before doing anything else)
 
-Before reading any file or generating anything, collect the four configuration values below.
+Before reading any file or generating anything, collect the five configuration values below.
 
 **Default values (use these when the user has not explicitly stated otherwise):**
 - `out_dir` → `./output`
 - `github_enabled` → `false`
 - `deploy_provider` → `none`
 - `project_name` → derive from schema filename or first entity name (e.g. `blog_api.prisma` → "Blog Api")
+- `rules_path` → **no default — must be provided by the user**
 
 **Step 1 — Apply anything the user already stated in their invocation message.** If the user wrote `/developable the project name is Blog REST backend. The schema is at ./test_schema.prisma`, then `project_name = "Blog REST backend"` and `schema_path = ./test_schema.prisma` are already known. Do not ask for them again.
 
@@ -342,10 +343,13 @@ Here's the configuration I'll use — reply "ok" to proceed or tell me what to c
 
   Project name : {project_name}
   Schema       : {schema_path}
+  Rules file   : {rules_path | ⚠ required — not provided yet}
   Output dir   : {out_dir}
   GitHub push  : {yes → username/repo-name (public|private) | no}
-  Deploy to    : {provider | none}
+  Deploy to    : {provider | none}   [if gcp: (project: {gcp_project}, region: {gcp_region}, auth: {gcp_sa_path | gcloud CLI (ADC)})]
 ```
+
+**Do not proceed past this step until `rules_path` is set.** If it is missing, show the config block with the `⚠ required` warning and wait for the user to provide it before accepting "ok".
 
 If the user says "ok" (or equivalent like "yes", "looks good", "go ahead"): proceed to Phase 0c.
 
@@ -359,22 +363,25 @@ If the user changes a value: update it and show the config block again. Repeat u
 **Deploy sub-questions** — only ask these if the user changes "Deploy to" to aws/gcp/heroku and has not already provided them:
 - aws → AWS region (default: us-east-1)
 - gcp → GCP project ID + region (default: us-central1)
+         + "Do you have a GCP service account key file? Enter the path, or leave blank to use your gcloud CLI credentials (ADC)."
 - heroku → Heroku app name (default: `{project_slug}`)
 
 **Store the confirmed values as variables for all later phases:**
 - `project_name`, `project_slug` (lowercase, hyphens)
-- `schema_path`, `out_dir`
+- `schema_path`, `rules_path`, `out_dir`
 - `github_enabled`, `github_user`, `github_repo`, `github_private`
 - `deploy_provider`, `deploy_config`
+- `gcp_sa_path` (absolute file path string, or empty string if using ADC — only relevant when `deploy_provider == "gcp"`)
 
 After the user confirms, print:
 ```
 ━━━ Configuration confirmed ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Project : {project_name}
   Schema  : {schema_path}
+  Rules   : {rules_path}
   Output  : {out_dir}
   GitHub  : {yes → github_user/github_repo (public|private) | no}
-  Deploy  : {provider | none}
+  Deploy  : {provider | none}   [if gcp: auth: {gcp_sa_path | gcloud CLI (ADC)}]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
@@ -396,7 +403,15 @@ Only check credentials that are actually needed based on the Phase 0b answers.
 gh auth status
 ```
 
-**If the command succeeds:** print `  ✓ GitHub: authenticated` and continue.
+**If the command succeeds:** also capture the token so it can be forwarded to `deploy.py`:
+
+```bash
+# Prefer an explicit env var; fall back to the token gh CLI has cached.
+GITHUB_TOKEN="${GITHUB_TOKEN:-$(gh auth token 2>/dev/null)}"
+echo "$GITHUB_TOKEN"
+```
+
+Set `{github_token}` to the printed value. Print `  ✓ GitHub: authenticated` and continue.
 
 **If it fails or `gh` is not installed:**
 ```
@@ -419,7 +434,7 @@ gh auth status
 
   Reply "done" once authenticated and I will continue.
 ```
-Wait for the user to reply before proceeding.
+Wait for the user to reply before proceeding. After they confirm, re-run both checks and capture `{github_token}` as above.
 
 ---
 
@@ -464,11 +479,31 @@ Wait for the user to reply before proceeding.
 
 ### GCP (check if `deploy_provider == "gcp"`)
 
+**If `gcp_sa_path` is set** — verify the file exists:
+```bash
+ls "{gcp_sa_path}"
+```
+
+If the file exists: print `  ✓ GCP: service account key found at {gcp_sa_path}` and continue.
+
+If the file is not found:
+```
+  ✗ GCP: service account key not found at {gcp_sa_path}
+
+  Check the path and try again, or leave the SA path blank to use your gcloud CLI credentials instead.
+
+  Reply with the correct path or "use adc" to switch to gcloud CLI authentication.
+```
+Wait for the user to reply before proceeding. If they reply "use adc", set `gcp_sa_path = ""` and proceed with the ADC check below.
+
+---
+
+**If `gcp_sa_path` is empty** — check gcloud ADC:
 ```bash
 gcloud auth list --filter=status:ACTIVE --format="value(account)"
 ```
 
-**If it returns an account:** print `  ✓ GCP: authenticated as {account}` and continue.
+**If it returns an account:** print `  ✓ GCP: authenticated as {account} (gcloud CLI / ADC)` and continue.
 
 **If it returns nothing or fails:**
 ```
@@ -478,10 +513,11 @@ gcloud auth list --filter=status:ACTIVE --format="value(account)"
 
   Option A — User account (recommended for local use):
     gcloud auth login
+    gcloud auth application-default login
     gcloud config set project {gcp_project_id}
 
-  Option B — Service account (for CI):
-    export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
+  Option B — Service account key file:
+    Provide the path to your service account JSON key when prompted above.
 
   To create a service account key: GCP Console → IAM & Admin →
   Service Accounts → Create → grant roles:
@@ -572,31 +608,85 @@ which developable 2>/dev/null || echo "NOT_FOUND"
 
 ### Step 1b — Run the CLI
 
-Build the command via the command builder (single source of truth for flag mapping), then run it:
+Build both commands up front (single source of truth), then run them in sequence.
+
+**Step 1 — Build the `main.py` command** (foreground Bash call):
 
 ```bash
-CLI_CMD=$(python core/command_builder.py << 'JSON'
-{"cli": "{cli_command}", "schema_path": "{schema_path}", "out_dir": "{out_dir}", "tests_out": "{out_dir}/tests"}
+python core/command_builder.py << 'JSON'
+{
+  "cli": "{cli_command}",
+  "schema_path": "{schema_path}",
+  "rules": "{rules_path}",
+  "out_dir": "{out_dir}",
+  "tests_out": "{out_dir}/tests",
+  "github": {github_enabled},
+  "github_token": "{github_token}",
+  "github_user": "{github_user}",
+  "github_repo": "{github_repo}",
+  "github_private": {github_private},
+  "project_name": "{project_name}"
+}
 JSON
-)
-$CLI_CMD
 ```
 
-- Stream the CLI output directly so the user sees the generator's own progress lines
-- On non-zero exit code: stop and show the full error — do NOT proceed to Phase 2 with broken output
-- The CLI always generates Dockerfile, docker-compose.yml, .github/workflows/ci.yml, and .gitignore regardless of whether GitHub push is enabled
+Capture the printed command as `{main_cmd}`.
 
-### Step 1c — Report
+**Step 2 — Build the `deploy.py` command** (only if `deploy_provider` is not "none"):
 
+```bash
+python core/command_builder.py << 'JSON'
+{
+  "command": "deploy",
+  "cli": "{cli_command}",
+  "out_dir": "{out_dir}",
+  "deploy_to": "{deploy_provider}",
+  "aws_region": "{deploy_config.aws_region}",
+  "gcp_project": "{deploy_config.gcp_project}",
+  "gcp_region": "{deploy_config.gcp_region}",
+  "gcp_sa_path": "{gcp_sa_path}",
+  "heroku_app": "{deploy_config.heroku_app}",
+  "github_token": "{github_token}"
+}
+JSON
+```
+
+Capture the printed command as `{deploy_cmd}`. Skip this step if `deploy_provider` is "none".
+
+**Step 3 — Launch `main.py`** using a **separate Bash tool call with `run_in_background: true`** and a 600000ms timeout. Do NOT use `&` — background child processes of a regular Bash call are killed when the shell exits. `run_in_background: true` keeps the process alive under the session and notifies you when it finishes:
+
+```bash
+# This entire command is the run_in_background: true Bash call
+{main_cmd} 2>&1 | tee /tmp/developable_cli.log
+```
+
+You will be notified automatically when this background process completes. `main.py` handles code generation and the GitHub push — it does not deploy to cloud.
+
+### Step 1c — Wait for files, then hand off to Phase 2
+
+After launching the background CLI, poll for the generated source files using regular foreground Bash calls — these work normally while the background process runs:
+
+```bash
+# Wait for src/ to be populated (generator writes these before starting deployment)
+until [ -d {out_dir}/src ] && [ "$(find {out_dir}/src -name '*.ts' | wc -l)" -gt 0 ]; do
+  sleep 2
+done
+```
+
+Count generated files and print:
 ```bash
 find {out_dir}/src -name "*.ts" | wc -l
 find {out_dir}/tests -name "*.py" 2>/dev/null | wc -l
 ```
 
-Print:
 ```
-  Phase 1 complete — {N} TypeScript files + {M} test files generated
+  Phase 1 structural files ready — {N} TypeScript files + {M} test files
+  (main.py continuing in background — GitHub push in progress — starting Phase 2 now)
 ```
+
+Immediately begin Phase 2. `main.py` continues in the background handling the GitHub push while Phase 2 fills LLM sections.
+
+**The background-completion notification signals that `main.py` is done.** When it arrives (typically during or just after Phase 2), check `/tmp/developable_cli.log` for errors. Cloud deployment (`deploy.py`) runs as a separate step after Phase 2 completes.
 
 ---
 
@@ -634,7 +724,7 @@ const postUpdateSchema = z.object({});
 /* LLM_SECTION_END */
 ```
 
-Also read the corresponding `src/types/{entity}.types.ts` (fully rendered by the CLI) for the complete field list and TypeScript types.
+The field list and TypeScript types are embedded in the `// Fields:` comment block inside the LLM_SECTION — use those directly.
 
 **Generate the Zod schemas using these rules — apply them exactly:**
 
@@ -656,7 +746,7 @@ Also read the corresponding `src/types/{entity}.types.ts` (fully rendered by the
 - **Update schema** → `{lower}CreateSchema.partial()` — never `.partial()` individual fields
 - **Match ts_type strictly** — never use `z.string()` for a `number` field or vice versa
 
-Use `Edit` to replace the content **between** `/* LLM_SECTION_START */` and `/* LLM_SECTION_END */`, keeping both marker lines in place.
+Use `Edit` to replace the **entire block** — from `/* LLM_SECTION_START */` through `/* LLM_SECTION_END */` inclusive — with just the generated Zod schemas. The marker lines must not appear in the output file.
 
 **Tool call description:** `[Phase 2] Fill Zod schemas — {Entity} validator`
 **After edit:** print `  ✓ src/validators/{entity}.validator.ts`
@@ -710,61 +800,92 @@ Each file contains context hints the template rendered:
 - Outermost statements at column 0; nested code indented 4 spaces
 - All string values must be single-line, under 80 characters
 
-Use `Edit` to replace the content **between** `# LLM_SECTION_START` and `# LLM_SECTION_END`, keeping both marker lines in place.
+Use `Edit` to replace the **entire block** — from `# LLM_SECTION_START` through `# LLM_SECTION_END` inclusive — with just the generated test cases. The marker lines must not appear in the output file.
 
 **Tool call description:** `[Phase 2] Fill test cases — {filename}`
 **After edit:** print `  ✓ tests/{filename}`
 
 ---
 
-After all files are processed, print:
+After all files are processed, push them to GitHub (if `github_enabled` is true):
+
+```bash
+cd {out_dir}
+git status --short src/validators/ tests/
+git add src/validators/ tests/
+git diff --cached --quiet || git commit -m "Fill validation logic and test cases (Developable Phase 2)"
+git push origin main
 ```
+
+- `git diff --cached --quiet` skips the commit if nothing changed (e.g. `--no-llm` run with no markers)
+- On push failure: warn the user and print the manual command, then continue
+
+Print:
+```
+  ✓ Phase 2 changes pushed to GitHub
   Phase 2 complete — {N} validators + {M} test files filled
 ```
 
 ---
 
-## Phase 3 — Publish
+## Phase 2.5 — Cloud Deployment (skip if `deploy_provider` is "none")
+
+If `deploy_provider` is "none", skip this phase entirely and go straight to Phase 3.
+
+Otherwise, verify `main.py` has finished (wait for the background-completion notification if it hasn't arrived yet), then launch `deploy.py`:
 
 ```
-━━━ Phase 3/3: Publish ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━ Deploying to {deploy_provider} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-### GitHub (if `github_enabled` is true)
-
-Dockerfile, docker-compose.yml, .github/workflows/ci.yml, and .gitignore were
-written by the CLI in Phase 1 (always, unconditionally). All that remains is
-git init, repo creation, and the push.
+Run `deploy.py` using a **separate Bash tool call with `run_in_background: true`** and a 600000ms timeout:
 
 ```bash
-cd {out_dir}
-git init && git add . && git commit -m "Initial Developable-generated API"
-gh repo create {github_user}/{github_repo} \
-  --{public|private} \
-  --source=. --remote=origin \
-  --description="{project_name} API by Developable (developablecode.app)"
-git push -u origin main
+# This entire command is the run_in_background: true Bash call
+{deploy_cmd} 2>&1 | tee /tmp/developable_deploy.log
 ```
 
-Replace `--{public|private}` with `--public` or `--private` based on `github_private`.
+Print immediately after launching:
 
-After a successful push, print:
 ```
-  ✓ Repository live: https://github.com/{github_user}/{github_repo}
-  ✓ GitHub Actions CI triggered — check the Actions tab
+  Cloud deployment started — this takes 15–20 minutes.
+  AWS: RDS + ECS + ALB provisioning running in background.
+  GCP: Cloud SQL + Cloud Run provisioning running in background.
+  Heroku: app + Postgres addon provisioning running in background.
+  You will be notified when it completes — Phase 3 report will follow.
 ```
+
+**Phase 3 waits for the `deploy.py` background-completion notification** before printing the final summary. When it arrives, check `/tmp/developable_deploy.log` for the endpoint and any errors.
+
+---
+
+## Phase 3 — Report
+
+```
+━━━ Phase 3/3: Done ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+If `deploy_provider` is not "none": wait for the Phase 2.5 background-completion notification, then check `/tmp/developable_deploy.log` for the endpoint and any errors.
+
+Otherwise: check `/tmp/developable_cli.log` for any errors, then print the final summary.
 
 ### Final Summary
 
-Print the done block, adapting next steps to what was enabled:
+For deployment runs: parse the endpoint from `/tmp/developable_deploy.log` (look for the `Endpoint :` line printed by `deploy.py`).
+
+Print the done block, adapting lines to what was enabled:
 
 ```
 ━━━ Done ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✓ Generated {N} API files across {Y} entities
 ✓ Generated {M} test modules in tests/
-✓ Generated CLAUDE.md with Developable standards
+✓ Generated CLAUDE.md and AGENTS.md with Developable standards
 ✓ Generated Dockerfile, docker-compose.yml, .github/workflows/ci.yml, .gitignore
-{if github_enabled: ✓ Repository live: https://github.com/{github_user}/{github_repo}}
+[if github_enabled]  ✓ Repository live: https://github.com/{github_user}/{github_repo}
+[if github_enabled]  ✓ GitHub Actions CI triggered — check the Actions tab
+[if deploy_provider=aws]   ✓ Deployed to AWS ECS Fargate — endpoint shown above
+[if deploy_provider=gcp]   ✓ Deployed to GCP Cloud Run — endpoint shown above
+[if deploy_provider=heroku] ✓ Deployed to Heroku — endpoint shown above
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Next steps:
@@ -778,27 +899,4 @@ Run tests (requires running server):
   python tests/run_all.py http://localhost:3000
 ```
 
-Only append deploy-specific blocks when `github_enabled` is true:
-
-**aws:**
-```
-Deploy to AWS (ECS Fargate):
-  See .github/workflows/ci.yml for automated deployment on push to main.
-  Ensure AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION are set as GitHub secrets.
-```
-
-**gcp:**
-```
-Deploy to GCP (Cloud Run):
-  See .github/workflows/ci.yml for automated deployment on push to main.
-  Ensure GCP_PROJECT_ID, GCP_SA_KEY are set as GitHub secrets.
-```
-
-**heroku:**
-```
-Deploy to Heroku:
-  heroku login
-  heroku addons:create heroku-postgresql:essential-0 --app {heroku_app}
-  heroku config:set DATABASE_URL=$(heroku config:get DATABASE_URL --app {heroku_app})
-  git push heroku main
-```
+Only print the "Next steps" and "Run tests" blocks when `deploy_provider` is "none" — if the app was deployed the live endpoint is the next thing to use, not local dev.

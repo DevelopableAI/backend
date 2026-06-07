@@ -67,7 +67,7 @@ class HerokuProvider(BaseProvider):
         """Check HEROKU_API_KEY env var, then ~/.netrc."""
         api_key = os.environ.get("HEROKU_API_KEY", "").strip()
         if api_key:
-            return {"api_key": api_key, "app_name": self._app_name}
+            return {"api_key": api_key, "app_name": self._app_name, "heroku_region": "us"}
 
         try:
             nrc = netrc.netrc()
@@ -75,7 +75,7 @@ class HerokuProvider(BaseProvider):
             if auth:
                 token = auth[2]  # password field holds the API token
                 if token:
-                    return {"api_key": token, "app_name": self._app_name}
+                    return {"api_key": token, "app_name": self._app_name, "heroku_region": "us"}
         except (FileNotFoundError, netrc.NetrcParseError):
             pass
 
@@ -98,7 +98,12 @@ class HerokuProvider(BaseProvider):
             ).strip()
             app_name = entered or None
 
-        return {"api_key": api_key, "app_name": app_name}
+        region = input("  Heroku region [us/eu, default: us]: ").strip().lower() or "us"
+        if region not in ("us", "eu"):
+            print("  Warning: unrecognised region — defaulting to 'us'.")
+            region = "us"
+
+        return {"api_key": api_key, "app_name": app_name, "heroku_region": region}
 
     # ── Database provisioning ──────────────────────────────────────────────────
 
@@ -197,31 +202,16 @@ class HerokuProvider(BaseProvider):
         self._run(["docker", "tag", image_tag, heroku_image])
         self._docker_push_with_retry(heroku_image)
 
-        # 5. Get the image config digest from the manifest.
-        #    With `docker buildx`, `docker inspect --format={{.Id}}` returns the
-        #    manifest digest (sha256 of the manifest JSON), not the config digest
-        #    (sha256 of the image config JSON). Heroku's Formation API indexes
-        #    images by config digest, so we must read it from the manifest itself.
-        manifest_result = subprocess.run(
-            ["docker", "manifest", "inspect", heroku_image],
-            capture_output=True, text=True,
-        )
-        if manifest_result.returncode != 0:
-            print(
-                f"\nFailed to inspect manifest: {manifest_result.stderr}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        manifest = json.loads(manifest_result.stdout)
-        image_id = manifest.get("config", {}).get("digest", "")
-        if not image_id:
-            print("\nCould not read config digest from manifest.", file=sys.stderr)
-            sys.exit(1)
+        # 5. Fetch the image config digest from Heroku's registry API.
+        #    Using the registry API (Docker Registry v2) guarantees the digest
+        #    matches what Heroku has stored — local `docker inspect` or
+        #    `docker manifest inspect` can diverge if Heroku normalises layers.
+        image_id = self._get_registry_config_digest(api_key, app_name)
         print(f"  [Heroku] Config digest: {image_id}")
 
         # 6. Release
         print(f"  [Heroku] Releasing web dyno...")
-        self._release(headers, app_name, image_id)
+        self._release(api_key, app_name, image_id)
 
         # 7. Check that Heroku accepted the release and show dyno state
         self._print_release_status(headers, app_name)
@@ -290,16 +280,24 @@ jobs:
 
       - name: Build and push image
         run: |
-          docker build -t registry.heroku.com/{app_name}/web .
+          docker build --platform linux/amd64 --provenance=false --load \
+            -t registry.heroku.com/{app_name}/web .
           docker push registry.heroku.com/{app_name}/web
 
       - name: Release web dyno
         run: |
-          IMAGE_ID=$(docker manifest inspect registry.heroku.com/{app_name}/web | python3 -c "import sys,json; m=json.load(sys.stdin); print(m['config']['digest'])")
+          # Fetch config digest from Heroku's registry API — local `docker inspect`
+          # can diverge from the stored digest if Heroku normalises layers on ingest.
+          BASIC=$(echo -n "_:$HEROKU_API_KEY" | base64)
+          IMAGE_ID=$(curl -sf \
+            -H "Authorization: Basic $BASIC" \
+            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            https://registry.heroku.com/v2/{app_name}/web/manifests/latest \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['config']['digest'])")
           curl -f -s -X PATCH https://api.heroku.com/apps/{app_name}/formation \\
             -H "Content-Type: application/json" \\
             -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \\
-            -H "Authorization: Bearer $HEROKU_API_KEY" \\
+            -H "Authorization: Basic $BASIC" \\
             -d "{{\\"updates\\":[{{\\"type\\":\\"web\\",\\"docker_image\\":\\"$IMAGE_ID\\"}}]}}"
         env:
           HEROKU_API_KEY: ${{{{ secrets.HEROKU_API_KEY }}}}
@@ -343,7 +341,8 @@ jobs:
                 return app_name  # Reuse our own app
 
             # Name taken by someone else — append suffix
-            new_name = f"{app_name}-{self._credentials.get('deployment_id', 'dev')[:6]}"
+            import secrets as _secrets
+            new_name = f"{app_name}-{_secrets.token_hex(3)}"
             print(f"  [Heroku] App name '{app_name}' is taken. Trying '{new_name}'...")
             retry = requests.post(
                 f"{_HEROKU_API}/apps",
@@ -507,26 +506,48 @@ jobs:
             )
             sys.exit(1)
 
-    def _release(self, headers: dict, app_name: str, image_id: str) -> None:
-        # Container registry releases require the docker-releases Accept header.
-        # The standard version=3 header treats this as a slug-based formation
-        # update, which fails with 404 on brand-new apps that have no web dyno.
-        docker_headers = {
-            **headers,
+    def _release(self, api_key: str, app_name: str, image_id: str) -> None:
+        # The docker-releases variant of the formation endpoint uses Basic auth
+        # (username=_, password=api_key) — not the Bearer token accepted by the
+        # standard v3 API. Passing Bearer here returns 401 even with a valid key.
+        #
+        # Heroku also returns 401 with "Invalid credentials provided" when the
+        # Formation API receives a digest it hasn't finished indexing yet (race
+        # between `docker push` completing and Heroku's layer normalisation). The
+        # credentials are correct; the 401 is transient and clears within seconds.
+        import base64
+        basic = base64.b64encode(f"_:{api_key}".encode()).decode()
+        headers = {
+            "Authorization": f"Basic {basic}",
             "Accept": "application/vnd.heroku+json; version=3.docker-releases",
+            "Content-Type": "application/json",
         }
-        resp = requests.patch(
-            f"{_HEROKU_API}/apps/{app_name}/formation",
-            headers=docker_headers,
-            json={"updates": [{"type": "web", "docker_image": image_id}]},
-            timeout=30,
-        )
-        if not resp.ok:
-            print(
-                f"\nHeroku release failed ({resp.status_code}): {resp.text}",
-                file=sys.stderr,
+        payload = {"updates": [{"type": "web", "docker_image": image_id}]}
+
+        delay = _PUSH_BACKOFF_BASE_S
+        for attempt in range(1, _PUSH_MAX_RETRIES + 2):
+            resp = requests.patch(
+                f"{_HEROKU_API}/apps/{app_name}/formation",
+                headers=headers,
+                json=payload,
+                timeout=30,
             )
-            sys.exit(1)
+            if resp.ok:
+                return
+            # 401 after a fresh push means Heroku hasn't finished indexing the
+            # image yet — retry with backoff. Any other error is a hard failure.
+            if resp.status_code != 401 or attempt > _PUSH_MAX_RETRIES:
+                print(
+                    f"\nHeroku release failed ({resp.status_code}): {resp.text}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(
+                f"  [Heroku] Release not ready yet (attempt {attempt}/{_PUSH_MAX_RETRIES + 1})"
+                f" — retrying in {delay}s...",
+            )
+            time.sleep(delay)
+            delay *= 2
 
     def _get_app_domain(self, headers: dict, app_name: str) -> str:
         """
@@ -589,9 +610,12 @@ jobs:
         Called by the deployment agent AFTER apply_schema() so DATABASE_URL is
         already set in Heroku's config vars and the dyno has restarted with it.
         """
-        print(f"  [Heroku] Waiting for dyno to become ready (up to {timeout_s}s)...", end="", flush=True)
+        print(
+            f"  [Heroku] Waiting for dyno to become ready (up to {timeout_s}s)"
+            f" — polling {endpoint}/health ...",
+            end="", flush=True,
+        )
         deadline = time.time() + timeout_s
-        print(f"  [Heroku] Endpoint to call: {endpoint}/health")
         while time.time() < deadline:
             try:
                 resp = requests.get(f"{endpoint}/health", timeout=5)
@@ -622,6 +646,39 @@ jobs:
             )
             time.sleep(delay)
             delay *= 2
+
+    def _get_registry_config_digest(self, api_key: str, app_name: str) -> str:
+        """
+        Fetch the image config digest from Heroku's registry (Docker Registry v2 API).
+
+        The Formation API indexes images by config digest (sha256 of the image
+        config JSON). Fetching it from the registry after push guarantees the
+        value matches what Heroku has stored. Local alternatives (`docker inspect`
+        or `docker manifest inspect`) can diverge if Heroku normalises layers on
+        ingest, causing the Formation API to return 401.
+        """
+        import base64
+        basic = base64.b64encode(f"_:{api_key}".encode()).decode()
+        resp = requests.get(
+            f"https://{_HEROKU_REGISTRY}/v2/{app_name}/web/manifests/latest",
+            headers={
+                "Authorization": f"Basic {basic}",
+                "Accept": "application/vnd.docker.distribution.manifest.v2+json",
+            },
+            timeout=30,
+        )
+        if not resp.ok:
+            print(
+                f"\nFailed to fetch image manifest from Heroku registry "
+                f"({resp.status_code}): {resp.text}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        digest = resp.json().get("config", {}).get("digest", "")
+        if not digest:
+            print("\nCould not read config digest from registry manifest.", file=sys.stderr)
+            sys.exit(1)
+        return digest
 
     def _run(self, cmd: list[str]) -> None:
         result = subprocess.run(cmd, capture_output=True)

@@ -1,0 +1,20 @@
+entities:
+  User:
+    constraints:
+      - "Email must be unique and lowercased before storage"
+      - "Password must be at least 8 characters; never returned in any API response"
+      - "Role must be either CLIENT or FREELANCER"
+
+  Job:
+    constraints:
+      - "Only the client who posted the job (clientId) can update or delete it"
+      - "Title and description must be non-empty; budget must be a positive number"
+
+  Proposal:
+    constraints:
+      - "Only the freelancer who submitted the proposal (freelancerId) can edit coverLetter or quotedPrice"
+      - "Status must be one of: pending, accepted, rejected; defaults to pending"
+      - "Only the client who owns the parent job can change proposal status to accepted or rejected"
+      - "A freelancer cannot edit a proposal after its status has been accepted or rejected"
+      - "Cover letter must be non-empty; quotedPrice must be a positive number"
+    primary_parent: Job

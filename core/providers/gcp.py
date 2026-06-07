@@ -89,14 +89,15 @@ class GCPProvider(BaseProvider):
 
         sa_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
         if sa_path:
-            if not Path(sa_path).exists():
+            abs_sa_path = str(Path(sa_path).resolve())
+            if not Path(abs_sa_path).exists():
                 return None
             return {
-                "credentials_file": sa_path,
+                "credentials_file": abs_sa_path,
                 "credentials_type": "service_account",
-                "project_id": project_id or self._read_project_from_sa(sa_path),
+                "project_id": project_id or self._read_project_from_sa(abs_sa_path),
                 "region": self._region,
-                "credentials_b64": self._encode_sa_file(sa_path),
+                "credentials_b64": self._encode_sa_file(abs_sa_path),
             }
 
         try:
@@ -139,7 +140,7 @@ class GCPProvider(BaseProvider):
 
         region = self._region or input(f"  Region [{_DEFAULT_REGION}]: ").strip() or _DEFAULT_REGION
 
-        resolved_sa = str(Path(sa_path).expanduser()) if sa_path else None
+        resolved_sa = str(Path(sa_path).expanduser().resolve()) if sa_path else None
         return {
             "credentials_file": resolved_sa,
             "credentials_type": "service_account" if sa_path else "adc",
@@ -533,6 +534,89 @@ jobs:
             sys.exit(1)
 
     # ── Private helpers: Cloud Run / GCR ──────────────────────────────────────
+
+    def ensure_ci_service_account(self, project_id: str, gcp_creds: Any) -> str:
+        """
+        Idempotently create a 'developable-ci' service account, grant it the
+        minimum roles needed for Cloud Run + Artifact Registry CI/CD, create a
+        key, and return the key JSON base64-encoded (ready for GCP_CREDENTIALS).
+
+        Called only when using ADC so that GitHub Actions gets a real SA key even
+        though the local user authenticated via gcloud CLI.
+        """
+        try:
+            from googleapiclient.discovery import build as gapi_build
+        except ImportError:
+            print(
+                "\n  Warning: google-api-python-client not installed — cannot auto-create CI SA key.\n"
+                "  Run: pip install google-api-python-client",
+                file=sys.stderr,
+            )
+            return ""
+
+        import base64
+
+        sa_name = "developable-ci"
+        sa_email = f"{sa_name}@{project_id}.iam.gserviceaccount.com"
+        iam = gapi_build("iam", "v1", credentials=gcp_creds)
+        crm = gapi_build("cloudresourcemanager", "v1", credentials=gcp_creds)
+
+        # ── Create SA (idempotent) ─────────────────────────────────────────────
+        try:
+            iam.projects().serviceAccounts().create(
+                name=f"projects/{project_id}",
+                body={
+                    "accountId": sa_name,
+                    "serviceAccount": {"displayName": "Developable CI/CD"},
+                },
+            ).execute()
+            print(f"  [GCP] Created CI service account: {sa_email}")
+        except Exception as exc:
+            if "already exists" in str(exc).lower():
+                print(f"  [GCP] CI service account already exists: {sa_email}")
+            else:
+                print(f"  Warning: could not create CI SA: {exc}", file=sys.stderr)
+                return ""
+
+        # ── Grant minimum roles ────────────────────────────────────────────────
+        ci_roles = [
+            "roles/run.developer",
+            "roles/artifactregistry.writer",
+            "roles/iam.serviceAccountUser",
+        ]
+        try:
+            policy = crm.projects().getIamPolicy(
+                resource=project_id, body={}
+            ).execute()
+            bindings = policy.setdefault("bindings", [])
+            member = f"serviceAccount:{sa_email}"
+            for role in ci_roles:
+                binding = next((b for b in bindings if b["role"] == role), None)
+                if binding:
+                    if member not in binding["members"]:
+                        binding["members"].append(member)
+                else:
+                    bindings.append({"role": role, "members": [member]})
+            crm.projects().setIamPolicy(
+                resource=project_id, body={"policy": policy}
+            ).execute()
+            print(f"  [GCP] Granted CI roles: {', '.join(ci_roles)}")
+        except Exception as exc:
+            print(f"  Warning: could not set IAM roles on CI SA: {exc}", file=sys.stderr)
+
+        # ── Create key ─────────────────────────────────────────────────────────
+        try:
+            key = iam.projects().serviceAccounts().keys().create(
+                name=f"projects/{project_id}/serviceAccounts/{sa_email}",
+                body={"privateKeyType": "TYPE_GOOGLE_CREDENTIALS_FILE"},
+            ).execute()
+            key_json = base64.b64decode(key["privateKeyData"]).decode()
+            key_b64 = base64.b64encode(key_json.encode()).decode()
+            print(f"  [GCP] Created CI SA key for {sa_email}")
+            return key_b64
+        except Exception as exc:
+            print(f"  Warning: could not create CI SA key: {exc}", file=sys.stderr)
+            return ""
 
     def _load_credentials(self, creds_info: dict[str, Any]) -> Any:
         if creds_info["credentials_type"] == "service_account" and creds_info["credentials_file"]:

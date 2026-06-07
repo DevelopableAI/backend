@@ -1,3 +1,4 @@
+{% set missing_id = "00000000-0000-4000-8000-000000000000" if entity.pk_strategy == "uuid" else ("c000000000000000000000000" if entity.pk_strategy == "cuid" else "9999999") %}
 """
 Section {{ section_num }} — {{ entity.name }}: authenticated write operations (PUT / DELETE).
 
@@ -185,11 +186,11 @@ def run(ctx: TestContext) -> None:
     # {{ section_num }}-notfound  PUT non-existent → 404
 {% if auth_entity %}
     if token1:
-        resp = ctx.req("PUT", "/api/{{ entity.name_plural }}/9999999", token=token1,
+        resp = ctx.req("PUT", "/api/{{ entity.name_plural }}/{{ missing_id }}", token=token1,
                        body={"title": "Ghost update"})
-        ctx.assert_status(resp, 404, "PUT /api/{{ entity.name_plural }}/9999999 (non-existent) → 404")
+        ctx.assert_status(resp, 404, "PUT /api/{{ entity.name_plural }}/{{ missing_id }} (non-existent) → 404")
     else:
-        ctx.skip("PUT /api/{{ entity.name_plural }}/9999999 — token not available")
+        ctx.skip("PUT /api/{{ entity.name_plural }}/{{ missing_id }} — token not available")
 {% endif %}
 
     # {{ section_num }}-delete-noauth  DELETE without auth → 401
@@ -230,8 +231,8 @@ def run(ctx: TestContext) -> None:
 
     # {{ section_num }}-delete-notfound  DELETE non-existent → 404
     if token1:
-        resp = ctx.req("DELETE", "/api/{{ entity.name_plural }}/9999999", token=token1)
-        ctx.assert_status(resp, 404, "DELETE /api/{{ entity.name_plural }}/9999999 (non-existent) → 404")
+        resp = ctx.req("DELETE", "/api/{{ entity.name_plural }}/{{ missing_id }}", token=token1)
+        ctx.assert_status(resp, 404, "DELETE /api/{{ entity.name_plural }}/{{ missing_id }} (non-existent) → 404")
     else:
-        ctx.skip("DELETE /api/{{ entity.name_plural }}/9999999 — token not available")
+        ctx.skip("DELETE /api/{{ entity.name_plural }}/{{ missing_id }} — token not available")
 {% endif %}

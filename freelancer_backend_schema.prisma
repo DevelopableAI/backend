@@ -1,0 +1,53 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  CLIENT
+  FREELANCER
+}
+
+// @auth_entity
+model User {
+  id                 Int        @id @default(autoincrement())
+  email              String     @unique
+  name               String
+  password           String     // @llm sensitive
+  role               Role       @default(FREELANCER)
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  postedJobs         Job[]
+  submittedProposals Proposal[]
+}
+
+// @llm Only the client who posted this job (clientId matches JWT user) can update or delete it
+model Job {
+  id          Int        @id @default(autoincrement())
+  title       String
+  description String
+  budget      Float
+  clientId    Int
+  client      User       @relation(fields: [clientId], references: [id])
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  proposals   Proposal[]
+}
+
+// @llm Only the freelancer who submitted this proposal (freelancerId matches JWT user) can edit coverLetter or quotedPrice; only the client who owns the parent job can change status to accepted or rejected
+model Proposal {
+  id           Int      @id @default(autoincrement())
+  coverLetter  String
+  quotedPrice  Float
+  status       String   @default("pending")
+  jobId        Int
+  job          Job      @relation(fields: [jobId], references: [id])
+  freelancerId Int
+  freelancer   User     @relation(fields: [freelancerId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}

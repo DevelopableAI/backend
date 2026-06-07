@@ -3,6 +3,12 @@ import { ValidationError } from '../lib/errors.js';
 import { {{ entity.name }}CreateInput, {{ entity.name }}UpdateInput } from '../types/{{ entity.name_lower }}.types.js';
 
 /* LLM_SECTION_START */
+// Entity: {{ entity.name }}
+// Fields (name: ts_type, required/optional):
+{% for field in scalar_fields %}
+//   {{ field.name }}: {{ field.ts_type }}{% if field.is_optional %} (optional{% if field.default %}, default={{ field.default }}{% endif %}){% else %} (required){% endif %}{% if field.is_sensitive %} [sensitive]{% endif %}
+
+{% endfor %}
 // TODO: define Zod schemas for {{ entity.name }} create and update
 {% if owner_fk_field %}
 // SERVER-INJECTED (always): {{ owner_fk_field }} is set from req.user.id — exclude from ALL schemas

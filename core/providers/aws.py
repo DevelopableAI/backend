@@ -88,7 +88,7 @@ class AWSProvider(BaseProvider):
             creds = session.get_credentials()
             if creds is None:
                 return None
-            resolved = creds.resolve()
+            resolved = creds.get_frozen_credentials()
             region = self._region or session.region_name
             if not region:
                 return None
@@ -318,8 +318,9 @@ class AWSProvider(BaseProvider):
     ) -> str:
         """Return a GitHub Actions deploy.yml for AWS ECS Fargate."""
         region = record.get("region", "us-east-1")
-        cluster_name = f"{project_name}-cluster"
-        service_name = f"{project_name}-service"
+        # Terraform names both resources var.project_name (e.g. "test-api").
+        cluster_name = project_name
+        service_name = project_name
 
         # Build ECR registry URL from the image_uri in the record
         image_uri = record.get("image_uri", "")
@@ -344,11 +345,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Verify AWS secrets are configured
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::error::AWS_ACCESS_KEY_ID and/or AWS_SECRET_ACCESS_KEY secret is not set."
+            echo "Add them at: GitHub repo -> Settings -> Secrets and variables -> Actions"
+            exit 1
+          fi
+        env:
+          AWS_ACCESS_KEY_ID: ${{{{ secrets.AWS_ACCESS_KEY_ID }}}}
+          AWS_SECRET_ACCESS_KEY: ${{{{ secrets.AWS_SECRET_ACCESS_KEY }}}}
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{{{ secrets.AWS_ACCESS_KEY_ID }}}}
           aws-secret-access-key: ${{{{ secrets.AWS_SECRET_ACCESS_KEY }}}}
+          aws-session-token: ${{{{ secrets.AWS_SESSION_TOKEN }}}}
           aws-region: {region}
 
       - name: Login to Amazon ECR
@@ -524,10 +537,18 @@ jobs:
                 raise
             print(f"  [AWS] RDS instance '{instance_id}' already exists — reusing.")
 
-        # Poll until available
+        # Poll until available — AWS may take a moment to register a brand-new
+        # instance, so DBInstanceNotFound on the first few polls is expected.
         deadline = time.time() + _RDS_WAIT_TIMEOUT_S
         while time.time() < deadline:
-            resp = rds.describe_db_instances(DBInstanceIdentifier=instance_id)
+            try:
+                resp = rds.describe_db_instances(DBInstanceIdentifier=instance_id)
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] == "DBInstanceNotFound":
+                    print(f"  [AWS] RDS instance not yet registered — waiting...", end="\r", flush=True)
+                    time.sleep(_POLL_INTERVAL_S)
+                    continue
+                raise
             inst = resp["DBInstances"][0]
             status = inst["DBInstanceStatus"]
             if status == "available":

@@ -103,12 +103,148 @@ class VersionControl:
     def _write_gitignore(self) -> None:
         (self.out_dir / ".gitignore").write_text(DEFAULT_GITIGNORE_CONTENT)
 
+    def _ensure_git_identity(self) -> None:
+        """
+        Ensure git user.name and user.email are set before committing.
+
+        If either is missing from global config, tell the user, offer to set
+        them now, and only fall back to the Developable placeholder if the
+        user explicitly declines.
+        """
+        fallback_name = "Developable"
+        fallback_email = "generated@developable.ai"
+
+        def _global(key: str) -> str:
+            r = subprocess.run(
+                ["git", "config", "--global", key],
+                capture_output=True, text=True,
+            )
+            return r.stdout.strip() if r.returncode == 0 else ""
+
+        def _local(key: str) -> str:
+            r = subprocess.run(
+                ["git", "config", "--local", key],
+                cwd=self.out_dir,
+                capture_output=True,
+                text=True,
+            )
+            return r.stdout.strip() if r.returncode == 0 else ""
+
+        def _unset_local(key: str) -> None:
+            subprocess.run(
+                ["git", "config", "--local", "--unset", key],
+                cwd=self.out_dir,
+                capture_output=True,
+                text=True,
+            )
+
+        name = _global("user.name")
+        email = _global("user.email")
+        local_name = _local("user.name")
+        local_email = _local("user.email")
+
+        # Clean up stale repo-local fallback identity from older generated repos
+        # so the user's real global identity takes precedence again.
+        if name and local_name == fallback_name:
+            _unset_local("user.name")
+            local_name = ""
+        if email and local_email == fallback_email:
+            _unset_local("user.email")
+            local_email = ""
+
+        # Respect an explicit non-fallback repo-local identity.
+        effective_name = local_name or name
+        effective_email = local_email or email
+        if (
+            effective_name and effective_email
+            and effective_name != fallback_name
+            and effective_email != fallback_email
+        ):
+            return
+
+        if name and email:
+            return  # user's own identity is already configured — nothing to do
+
+        # Try GitHub API before prompting (token is available when --github is used).
+        if self.github_token and (not name or not email):
+            gh_name, gh_email = self._fetch_github_identity()
+            if not name and gh_name:
+                name = gh_name
+                subprocess.run(["git", "config", "--global", "user.name", name])
+            if not email and gh_email:
+                email = gh_email
+                subprocess.run(["git", "config", "--global", "user.email", email])
+            if name and email:
+                print(f"  ✓ Git identity set from GitHub account: {name} <{email}>")
+                return
+
+        missing = []
+        if not effective_name or effective_name == fallback_name:
+            missing.append("user.name")
+        if not effective_email or effective_email == fallback_email:
+            missing.append("user.email")
+
+        print(
+            f"\n  ⚠  No global git identity found ({', '.join(missing)}).\n"
+            "  Commits will be attributed to whoever you set here.\n"
+        )
+        choice = input(
+            "  Set your git identity now? [Y/n] "
+        ).strip().lower()
+
+        if choice in ("", "y", "yes"):
+            if not effective_name or effective_name == fallback_name:
+                name = input("  Your name  (e.g. Jane Smith): ").strip()
+                if name:
+                    subprocess.run(["git", "config", "--global", "user.name", name])
+                    effective_name = name
+            if not effective_email or effective_email == fallback_email:
+                email = input("  Your email (e.g. jane@example.com): ").strip()
+                if email:
+                    subprocess.run(["git", "config", "--global", "user.email", email])
+                    effective_email = email
+            if effective_name and effective_email:
+                print("  ✓ Git identity saved to global config.")
+                return
+
+        # User declined or provided nothing — use placeholder so git commit works.
+        print(
+            "  Using fallback identity for this commit "
+            f"(name: {fallback_name}, email: {fallback_email}).\n"
+            "  Set your own anytime: git config --global user.name 'Your Name'"
+        )
+        if not effective_name:
+            self._git("config", "user.name", fallback_name)
+        if not effective_email:
+            self._git("config", "user.email", fallback_email)
+
+    def _fetch_github_identity(self) -> tuple[str, str]:
+        """Return (name, email) from the GitHub /user API using the stored token."""
+        try:
+            resp = requests.get(
+                "https://api.github.com/user",
+                headers={
+                    "Authorization": f"token {self.github_token}",
+                    "Accept": "application/vnd.github.v3+json",
+                },
+                timeout=10,
+            )
+            if resp.ok:
+                data = resp.json()
+                name = (data.get("name") or "").strip()
+                login = (data.get("login") or "").strip()
+                email = (data.get("email") or "").strip()
+                if not email and login:
+                    email = f"{login}@users.noreply.github.com"
+                return name or login, email
+        except Exception:
+            pass
+        return "", ""
+
     def _init_git(self) -> None:
         is_new_repo = not (self.out_dir / ".git").exists()
         self._git("init")
-        # Set repo-scoped identity so git commit works even when global config is absent
-        self._git("config", "user.email", "generated@developable.ai")
-        self._git("config", "user.name", "Developable")
+        self._ensure_git_identity()
         self._git("add", ".")
         # Skip commit if nothing is staged (re-run with no changes)
         has_staged = subprocess.run(
@@ -127,6 +263,15 @@ class VersionControl:
         if is_new_repo:
             self._git("branch", "-M", "main")
 
+    def _repo_description(self, spec: dict[str, Any]) -> str:
+        """Build a concise, informative GitHub repo description from the spec."""
+        entities = spec.get("entities", [])
+        auth = spec.get("auth_entity_name")
+        names = [e["name"] for e in entities if e["name"] != auth]
+        resource_part = ", ".join(names[:3]) + ("…" if len(names) > 3 else "")
+        auth_part = f" · auth via {auth}" if auth else ""
+        return f"REST API for {resource_part}{auth_part} — generated by Developable (developablecode.app)"
+
     def _create_github_repo(self) -> tuple[str, str]:
         """Create the repo via GitHub REST API. Returns (html_url, clone_url)."""
         headers = {
@@ -136,7 +281,7 @@ class VersionControl:
         payload = {
             "name": self.repo_name,
             "private": self.private,
-            "description": f"{self.project_name} API by developable (developablecode.app)",
+            "description": self._repo_description(self._spec),
             "auto_init": False,
         }
         response = requests.post(

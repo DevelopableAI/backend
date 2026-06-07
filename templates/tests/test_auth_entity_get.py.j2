@@ -1,3 +1,4 @@
+{% set missing_id = "00000000-0000-4000-8000-000000000000" if auth_entity.pk_strategy == "uuid" else ("c000000000000000000000000" if auth_entity.pk_strategy == "cuid" else "9999999") %}
 """
 Section {{ section_num }} — {{ auth_entity.name }}: unauthenticated GET operations.
 
@@ -78,8 +79,8 @@ def run(ctx: TestContext) -> None:
 {% endfor %}
 
     # {{ section_num }}-7  Non-existent → 404
-    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}/9999999")
-    ctx.assert_status(resp, 404, "GET /api/{{ auth_entity.name_plural }}/9999999 → 404")
+    resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}/{{ missing_id }}")
+    ctx.assert_status(resp, 404, "GET /api/{{ auth_entity.name_plural }}/{{ missing_id }} → 404")
 
     # {{ section_num }}-8  Non-numeric ID → 400
     resp = ctx.req("GET", "/api/{{ auth_entity.name_plural }}/abc")
