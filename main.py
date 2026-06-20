@@ -1,71 +1,13 @@
 import argparse
-import getpass
-import os
 import sys
 from pathlib import Path
 
 from core.parser import PrismaParser
 from core.rules_parser import BusinessRulesParser
 from core.project_config import ProjectConfig
+from core.cli_helpers import collect_env_values, collect_github_config, print_llm_usage_summary
 from agents.developer import Developer
 from agents.tester import Tester
-from generators.llm import get_session_summary, reset_session
-
-
-def collect_env_values(env_vars: list[str]) -> dict[str, str]:
-    """
-    Build the env dict written to .env in the output directory.
-
-    Schema-referenced vars (e.g. DATABASE_URL) are written as empty placeholders
-    so the user can fill them in. PORT and NODE_ENV always get sensible defaults.
-    No interactive prompting — the CLI must be safe to run non-interactively.
-    """
-    values: dict[str, str] = {var: "" for var in env_vars}
-    values.setdefault("PORT", "3000")
-    values.setdefault("NODE_ENV", "development")
-    return values
-
-
-def collect_github_config(args: argparse.Namespace, spec: dict) -> dict:
-    """
-    Interactively collect any missing GitHub configuration.
-
-    Falls back to env vars (GITHUB_TOKEN, GITHUB_USER), then prompts the user
-    for anything still missing — mirrors the collect_env_values() pattern.
-    """
-    from config import GITHUB_TOKEN, GITHUB_USER
-
-    default_repo = spec["entities"][0]["name_lower"] + "-api"
-
-    token = getattr(args, "github_token", None) or GITHUB_TOKEN
-    user = getattr(args, "github_user", None) or GITHUB_USER
-
-    print("\nVersion Control Agent — GitHub configuration")
-    print("(Defaults shown in brackets; press Enter to accept)\n")
-
-    if not token:
-        token = getpass.getpass("  GitHub Personal Access Token: ").strip()
-        if not token:
-            print("Error: a GitHub Personal Access Token is required.", file=sys.stderr)
-            sys.exit(1)
-
-    if not user:
-        user = input("  GitHub username or org: ").strip()
-        if not user:
-            print("Error: GitHub username/org is required.", file=sys.stderr)
-            sys.exit(1)
-
-    repo = getattr(args, "github_repo", None) or ""
-    if not repo:
-        repo = input(f"  Repository name [{default_repo}]: ").strip() or default_repo
-
-    project_name = getattr(args, "project_name", None) or ""
-    if not project_name:
-        project_name = spec["entities"][0]["name"] + " API"
-
-    private = getattr(args, "private", False)
-
-    return {"token": token, "user": user, "repo": repo, "private": private, "project_name": project_name}
 
 
 def main():
@@ -73,55 +15,28 @@ def main():
         description="Developable Backend Engineer — generates production-ready backend services from a Prisma schema"
     )
     parser.add_argument("schema", help="Path to schema.prisma")
-    parser.add_argument(
-        "--out", default="./output",
-        help="Output directory for the generated API (default: ./output)",
-    )
-    parser.add_argument(
-        "--no-llm", action="store_true",
-        help="Skip LLM calls, use placeholder logic only",
-    )
-    parser.add_argument(
-        "--rules", default=None,
-        help="Path to a schema.rules.yaml file with business logic constraints",
-    )
-    parser.add_argument(
-        "--tests-out", default=None, metavar="DIR",
-        help="If set, generate integration test suite into this directory",
-    )
-
-    # ── Version Control agent flags ───────────────────────────────────────────
-    parser.add_argument(
-        "--github", action="store_true",
-        help="Publish the generated project to a new GitHub repository",
-    )
-    parser.add_argument(
-        "--github-token", default=None, metavar="TOKEN",
-        help="GitHub Personal Access Token (fallback: GITHUB_TOKEN env var)",
-    )
-    parser.add_argument(
-        "--github-user", default=None, metavar="USER",
-        help="GitHub username or org to create the repo under (fallback: GITHUB_USER env var)",
-    )
-    parser.add_argument(
-        "--github-repo", default=None, metavar="NAME",
-        help="Repository name to create (default: <first-entity>-api)",
-    )
-    parser.add_argument(
-        "--project-name", default=None, metavar="NAME",
-        help="Project name used in the GitHub repo description (e.g. 'My Blog')",
-    )
-    parser.add_argument(
-        "--private", action="store_true",
-        help="Create the GitHub repository as private",
-    )
-    parser.add_argument(
-        "--force", action="store_true",
-        help=(
-            "Overwrite all files, including ones you have modified since the last commit. "
-            "By default, re-runs skip files that differ from HEAD in the output git repo."
-        ),
-    )
+    parser.add_argument("--out", default="./output",
+        help="Output directory for the generated API (default: ./output)")
+    parser.add_argument("--no-llm", action="store_true",
+        help="Skip LLM calls, use placeholder logic only")
+    parser.add_argument("--rules", default=None,
+        help="Path to a schema.rules.yaml file with business logic constraints")
+    parser.add_argument("--tests-out", default=None, metavar="DIR",
+        help="If set, generate integration test suite into this directory")
+    parser.add_argument("--github", action="store_true",
+        help="Publish the generated project to a new GitHub repository")
+    parser.add_argument("--github-token", default=None, metavar="TOKEN",
+        help="GitHub Personal Access Token (fallback: GITHUB_TOKEN env var)")
+    parser.add_argument("--github-user", default=None, metavar="USER",
+        help="GitHub username or org to create the repo under (fallback: GITHUB_USER env var)")
+    parser.add_argument("--github-repo", default=None, metavar="NAME",
+        help="Repository name to create (default: <first-entity>-api)")
+    parser.add_argument("--project-name", default=None, metavar="NAME",
+        help="Project name used in the GitHub repo description")
+    parser.add_argument("--private", action="store_true",
+        help="Create the GitHub repository as private")
+    parser.add_argument("--force", action="store_true",
+        help="Overwrite all files including ones modified since the last commit")
 
     args = parser.parse_args()
 
@@ -146,44 +61,27 @@ def main():
 
     env_values = collect_env_values(spec.get("env_vars", []))
 
-    # ── Developer agent: generate the Express API ─────────────────────────────
+    # ── Developer agent ────────────────────────────────────────────────────────
     print(f"\n[Developer] Generating Express API into {out_dir}/...")
     developer = Developer(out_dir=out_dir, use_llm=not args.no_llm, force=args.force)
     api_plan = developer.generate(spec, env_values=env_values)
 
     print(f"\nDone. Your project is at {out_dir}/")
     print("Next steps:")
-    print("  cd", out_dir)
-    print("  npm install")
-    print("  npx prisma migrate dev")
-    print("  npm run dev")
+    print(f"  cd {out_dir} && npm install && npx prisma migrate dev && npm run dev")
 
-    # ── Tester agent: generate the integration test suite ─────────────────────
-    # When --github is used, tests MUST live inside out_dir/tests so that
-    # `git add .` includes them and CI's hashFiles('tests/run_all.py') finds
-    # them. An explicit --tests-out outside out_dir is silently ignored in
-    # favour of out_dir/tests when publishing to GitHub.
-    tests_out = args.tests_out
-    if args.github:
-        tests_out = str(out_dir / "tests")
-
+    # ── Tester agent ───────────────────────────────────────────────────────────
+    # When --github is used, tests must live inside out_dir/tests so CI finds them.
+    tests_out = str(out_dir / "tests") if args.github else args.tests_out
     if tests_out:
         tests_dir = Path(tests_out)
         print(f"\n[Tester] Generating integration test suite into {tests_dir}/...")
-        tester = Tester(tests_dir=tests_dir, use_llm=not args.no_llm, force=args.force)
-        tester.generate(spec, api_plan)
-
+        Tester(tests_dir=tests_dir, use_llm=not args.no_llm, force=args.force).generate(spec, api_plan)
         print(f"\nTest suite at {tests_dir}/")
-        print("Run tests:")
-        print(f"  pip install requests")
-        print(f"  python {tests_dir}/run_all.py [API_BASE_URL]")
+        print(f"  pip install requests && python {tests_dir}/run_all.py [API_BASE_URL]")
 
     # ── Version Control agent ──────────────────────────────────────────────────
-    # Infra files (Dockerfile, docker-compose, CI, .gitignore) are always
-    # generated so every output directory is deployment-ready regardless of
-    # whether --github is passed.
     from agents.version_control import VersionControl
-
     print(f"\n[Version Control] Generating infrastructure files...")
     vc = VersionControl(out_dir=out_dir)
     vc.generate_infra(spec)
@@ -201,14 +99,11 @@ def main():
         repo_url = vc.publish(spec, api_plan)
         print(f"\nRepository published: {repo_url}")
         print("GitHub Actions CI will run automatically on every push.")
-        print("For local development with pgAdmin:")
-        print(f"  cd {out_dir}")
-        print("  cp .env.example .env  # fill in your values")
-        print("  docker compose up")
+        print(f"  cd {out_dir} && cp .env.example .env && docker compose up")
 
         github_info = {"user": gh["user"], "repo": gh["repo"], "repo_url": repo_url}
 
-    # ── Persist generation metadata for deploy.py ──────────────────────────────
+    # ── Persist generation metadata ────────────────────────────────────────────
     ProjectConfig.save(
         out_dir=out_dir,
         schema_path=schema_path,
@@ -217,36 +112,10 @@ def main():
         github_info=github_info,
     )
     print(f"\nGeneration config saved to {out_dir}/.developable/config.json")
-    print("To deploy to a cloud provider, run:")
     print(f"  python deploy.py --out {out_dir} --deploy-to aws|gcp|heroku")
 
-    # ── LLM usage summary ──────────────────────────────────────────────────────
     if not args.no_llm:
-        _print_usage_summary()
-
-
-def _print_usage_summary():
-    summary = get_session_summary()
-    if not summary:
-        return
-
-    calls = summary["calls"]
-    hits = summary["cache_hits"]
-    api_calls = calls - hits
-    total_in = summary["input_tokens"]
-    total_out = summary["output_tokens"]
-    cache_write = summary["cache_write_tokens"]
-    cache_read = summary["cache_read_tokens"]
-    cost = summary["estimated_cost_usd"]
-
-    print("\n── LLM usage ────────────────────────────────────────────")
-    print(f"  API calls       : {api_calls}  (+ {hits} response cache hits, 0 cost)")
-    print(f"  Input tokens    : {total_in:,}  (uncached)")
-    print(f"  Cache write     : {cache_write:,}  tokens")
-    print(f"  Cache read      : {cache_read:,}  tokens  (billed at 10% rate)")
-    print(f"  Output tokens   : {total_out:,}")
-    print(f"  Estimated cost  : ${cost:.4f}")
-    print("─────────────────────────────────────────────────────────")
+        print_llm_usage_summary()
 
 
 if __name__ == "__main__":
