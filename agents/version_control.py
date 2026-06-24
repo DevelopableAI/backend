@@ -58,7 +58,7 @@ class VersionControl:
     def github_token(self, value: str) -> None:
         self.github = GitHubClient(value)
 
-    def generate_infra(self, spec: dict[str, Any]) -> None:
+    def generate_infra(self, spec: dict[str, Any]) -> dict[str, Any]:
         """Generate infrastructure files and .gitignore — no git or GitHub operations."""
         print("  Generating infrastructure files (Dockerfile, docker-compose, CI)...")
         plan = VCPlanner().plan(spec)
@@ -66,6 +66,7 @@ class VersionControl:
         self.assembler.assemble(spec, plan)
         print("  Writing .gitignore...")
         (self.out_dir / ".gitignore").write_text(DEFAULT_GITIGNORE_CONTENT)
+        return plan
 
     def publish(self, spec: dict[str, Any], api_plan: dict[str, Any]) -> str:
         """

@@ -1,5 +1,17 @@
+export interface {{ entity.name }}Record {
+{% for field in entity.fields if not field.is_relation %}
+  {{ field.name }}{% if field.is_optional %}?{% endif %}: {{ field.ts_type }};
+{% endfor %}
+}
+
+{% if entity.fields | selectattr('is_sensitive') | list %}
+export type {{ entity.name }}Response = Omit<{{ entity.name }}Record, {% for field in entity.fields if field.is_sensitive and not field.is_relation %}'{{ field.name }}'{% if not loop.last %} | {% endif %}{% endfor %}>;
+{% else %}
+export type {{ entity.name }}Response = {{ entity.name }}Record;
+{% endif %}
+
 export interface {{ entity.name }}CreateInput {
-{% for field in scalar_fields %}
+{% for field in scalar_fields if field.name not in (injected_scalar_fields | map(attribute='name') | list) %}
 {% if not field.is_optional and not field.default %}
   {{ field.name }}: {{ field.ts_type }};
 {% else %}
@@ -9,3 +21,8 @@ export interface {{ entity.name }}CreateInput {
 }
 
 export type {{ entity.name }}UpdateInput = Partial<{{ entity.name }}CreateInput>;
+{% if injected_scalar_fields %}
+export type {{ entity.name }}PersistenceCreateInput = {{ entity.name }}CreateInput & Partial<Pick<{{ entity.name }}Record, {% for field in injected_scalar_fields %}'{{ field.name }}'{% if not loop.last %} | {% endif %}{% endfor %}>>;
+{% else %}
+export type {{ entity.name }}PersistenceCreateInput = {{ entity.name }}CreateInput;
+{% endif %}

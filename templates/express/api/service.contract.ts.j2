@@ -1,0 +1,23 @@
+import { ListQueryParams } from '../lib/pagination.js';
+import { {{ entity.name }}CreateInput, {{ entity.name }}Response, {{ entity.name }}UpdateInput } from '../types/{{ entity.name_lower }}.types.js';
+
+export interface I{{ entity.name }}Service {
+  list(params: ListQueryParams): Promise<{ data: {{ entity.name }}Response[]; total: number }>;
+  getById(id: {{ entity.pk_ts_type }}): Promise<{{ entity.name }}Response>;
+  create(data: {{ entity.name }}CreateInput, actorId?: string | number): Promise<{{ entity.name }}Response>;
+  update(id: {{ entity.pk_ts_type }}, data: {{ entity.name }}UpdateInput, actorId?: string | number): Promise<{{ entity.name }}Response>;
+  remove(id: {{ entity.pk_ts_type }}, actorId?: string | number): Promise<void>;
+{% for rel in parent_fk_relations %}
+  listBy{{ rel.fk_field[0] | upper ~ rel.fk_field[1:] }}(
+    parentId: {{ entity.pk_ts_type }},
+    params: ListQueryParams,
+  ): Promise<{ data: {{ entity.name }}Response[]; total: number }>;
+{% if primary_parent == rel.related_entity %}
+  createFor{{ rel.related_entity }}(
+    parentId: {{ entity.pk_ts_type }},
+    data: {{ entity.name }}CreateInput,
+    actorId?: string | number,
+  ): Promise<{{ entity.name }}Response>;
+{% endif %}
+{% endfor %}
+}

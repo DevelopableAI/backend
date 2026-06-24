@@ -1,26 +1,21 @@
 {% set parse_id_fn = '_parseStringId' if entity.pk_ts_type == 'string' else '_parseId' %}
 import { Request, Response, NextFunction } from 'express';
-import { {{ entity.name }}Repository } from '../repositories/{{ entity.name_lower }}.repository.js';
+import { I{{ entity.name }}Service } from '../contracts/{{ entity.name_lower }}.service.contract.js';
 import { validate{{ entity.name }}Create, validate{{ entity.name }}Update } from '../validators/{{ entity.name_lower }}.validator.js';
 import { parseListQuery, buildPaginatedResponse } from '../lib/pagination.js';
-import { NotFoundError, AppError } from '../lib/errors.js';
+import { AppError } from '../lib/errors.js';
 {% for nested in nested_routes %}
-import { {{ nested.related_entity }}Repository } from '../repositories/{{ nested.related_entity_lower }}.repository.js';
-import { validate{{ nested.related_entity }}Create{% if nested.has_parent_fk_schema %}, validate{{ nested.related_entity }}CreateNested{% endif %}, validate{{ nested.related_entity }}Update } from '../validators/{{ nested.related_entity_lower }}.validator.js';
+import { I{{ nested.related_entity }}Service } from '../contracts/{{ nested.related_entity_lower }}.service.contract.js';
+import { validate{{ nested.related_entity }}Create{% if nested.has_parent_fk_schema %}, validate{{ nested.related_entity }}CreateNested{% endif %} } from '../validators/{{ nested.related_entity_lower }}.validator.js';
 {% endfor %}
 
 export class {{ entity.name }}Controller {
-  private repository: {{ entity.name }}Repository;
+  constructor(
+    private readonly service: I{{ entity.name }}Service{% if nested_routes %},{% endif %}
 {% for nested in nested_routes %}
-  private {{ nested.related_entity_lower }}Repository: {{ nested.related_entity }}Repository;
+    private readonly {{ nested.related_entity_lower }}Service: I{{ nested.related_entity }}Service{% if not loop.last %},{% endif %}
 {% endfor %}
-
-  constructor() {
-    this.repository = new {{ entity.name }}Repository();
-{% for nested in nested_routes %}
-    this.{{ nested.related_entity_lower }}Repository = new {{ nested.related_entity }}Repository();
-{% endfor %}
-  }
+  ) {}
 
   private readonly ALLOWED_FILTER_FIELDS = [{% for f in filterable_fields %}'{{ f.name }}'{% if not loop.last %}, {% endif %}{% endfor %}] as const;
   private readonly ALLOWED_SORT_FIELDS = [{% for f in sortable_fields %}'{{ f.name }}'{% if not loop.last %}, {% endif %}{% endfor %}] as const;
@@ -28,7 +23,7 @@ export class {{ entity.name }}Controller {
   async getAll(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const params = parseListQuery(req, this.ALLOWED_FILTER_FIELDS, this.ALLOWED_SORT_FIELDS);
-      const { data, total } = await this.repository.findMany(params);
+      const { data, total } = await this.service.list(params);
       res.json(buildPaginatedResponse(data, total, params));
     } catch (err) {
       next(err);
@@ -38,10 +33,7 @@ export class {{ entity.name }}Controller {
   async getById(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = this.{{ parse_id_fn }}(req.params.id);
-      const record = await this.repository.findById(id);
-      if (!record) {
-        throw new NotFoundError('{{ entity.name }}', id);
-      }
+      const record = await this.service.getById(id);
       res.json(record);
     } catch (err) {
       next(err);
@@ -51,12 +43,7 @@ export class {{ entity.name }}Controller {
   async create(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const data = validate{{ entity.name }}Create(req.body);
-{% if owner_fk_field %}
-      // Inject the authenticated user's ID as the owner FK
-      const record = await this.repository.create({ ...data, {{ owner_fk_field }}: req.user!.id });
-{% else %}
-      const record = await this.repository.create(data);
-{% endif %}
+      const record = await this.service.create(data, req.user?.id);
       res.status(201).json(record);
     } catch (err) {
       next(err);
@@ -66,24 +53,8 @@ export class {{ entity.name }}Controller {
   async update(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = this.{{ parse_id_fn }}(req.params.id);
-{% if entity.is_auth_entity and auth_entity_name %}
-      if (id !== req.user!.id) {
-        throw new AppError(403, 'Forbidden');
-      }
-{% elif owner_fk_field %}
-      const existing = await this.repository.findById(id);
-      if (!existing) {
-        throw new NotFoundError('{{ entity.name }}', id);
-      }
-      if (existing.{{ owner_fk_field }} !== req.user!.id) {
-        throw new AppError(403, 'Forbidden');
-      }
-{% endif %}
       const data = validate{{ entity.name }}Update(req.body);
-      const record = await this.repository.update(id, data);
-      if (!record) {
-        throw new NotFoundError('{{ entity.name }}', id);
-      }
+      const record = await this.service.update(id, data, req.user?.id);
       res.json(record);
     } catch (err) {
       next(err);
@@ -93,23 +64,7 @@ export class {{ entity.name }}Controller {
   async remove(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = this.{{ parse_id_fn }}(req.params.id);
-{% if entity.is_auth_entity and auth_entity_name %}
-      if (id !== req.user!.id) {
-        throw new AppError(403, 'Forbidden');
-      }
-{% elif owner_fk_field %}
-      const existing = await this.repository.findById(id);
-      if (!existing) {
-        throw new NotFoundError('{{ entity.name }}', id);
-      }
-      if (existing.{{ owner_fk_field }} !== req.user!.id) {
-        throw new AppError(403, 'Forbidden');
-      }
-{% endif %}
-      const deleted = await this.repository.delete(id);
-      if (!deleted) {
-        throw new NotFoundError('{{ entity.name }}', id);
-      }
+      await this.service.remove(id, req.user?.id);
       res.status(204).send();
     } catch (err) {
       next(err);
@@ -125,12 +80,13 @@ export class {{ entity.name }}Controller {
       const nestedFilterFields = [{% for f in nested.filterable_fields %}'{{ f.name }}'{% if not loop.last %}, {% endif %}{% endfor %}] as const;
       const nestedSortFields = [{% for f in nested.sortable_fields %}'{{ f.name }}'{% if not loop.last %}, {% endif %}{% endfor %}] as const;
       const params = parseListQuery(req, nestedFilterFields, nestedSortFields);
-      const { data, total } = await this.{{ nested.related_entity_lower }}Repository.findManyBy{{ nested.fk_field[0] | upper ~ nested.fk_field[1:] }}(parentId, params);
+      const { data, total } = await this.{{ nested.related_entity_lower }}Service.listBy{{ nested.fk_field[0] | upper ~ nested.fk_field[1:] }}(parentId, params);
       res.json(buildPaginatedResponse(data, total, params));
     } catch (err) {
       next(err);
     }
   }
+{% if nested.is_primary_parent %}
 
   async create{{ nested.related_entity }}For{{ entity.name }}(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -146,18 +102,13 @@ export class {{ entity.name }}Controller {
 {% else %}
       const data = validate{{ nested.related_entity }}Create(req.body);
 {% endif %}
-      // Inject the parent FK; ignore any {{ nested.fk_field }} provided in the body
-{% if nested.child_owner_fk_field %}
-      // Also inject the owner FK ({{ nested.child_owner_fk_field }}) from the authenticated user's token
-      const record = await this.{{ nested.related_entity_lower }}Repository.create({ ...data, {{ nested.fk_field }}: parentId, {{ nested.child_owner_fk_field }}: req.user!.id });
-{% else %}
-      const record = await this.{{ nested.related_entity_lower }}Repository.create({ ...data, {{ nested.fk_field }}: parentId });
-{% endif %}
+      const record = await this.{{ nested.related_entity_lower }}Service.createFor{{ entity.name }}(parentId, data, req.user?.id);
       res.status(201).json(record);
     } catch (err) {
       next(err);
     }
   }
+{% endif %}
 
 {% endfor %}
 

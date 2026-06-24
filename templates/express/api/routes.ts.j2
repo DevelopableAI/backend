@@ -1,11 +1,8 @@
 import { Router } from 'express';
-import { {{ entity.name }}Controller } from '../controllers/{{ entity.name_lower }}.controller.js';
-{% if auth_entity_name %}
-import { authenticate } from '../lib/auth.js';
-{% endif %}
+import { {{ entity.name_lower }}Controller{% if auth_entity_name %}, authenticate{% endif %} } from '../bootstrap/container.js';
 
 const router = Router();
-const controller = new {{ entity.name }}Controller();
+const controller = {{ entity.name_lower }}Controller;
 
 {% for route in routes %}
 {% if route.method in ['PUT', 'DELETE'] and auth_entity_name %}

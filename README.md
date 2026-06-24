@@ -1,10 +1,24 @@
 # Developable
 
-Developable reads a Prisma schema and generates a complete, production-ready Express + TypeScript REST API — with security invariants baked structurally into every file, not as prompts you have to remember to follow.
+Developable reads a Prisma schema and generates a complete, production-ready Express + TypeScript REST API — with security invariants and architectural rules baked structurally into every file, not as prompts you have to remember to follow.
 
 The difference from asking an LLM to write a backend: the security rules are in the Jinja2 templates. The LLM cannot skip them, forget them, or override them. Every generated API enforces auth middleware on write routes, server-side FK injection, ownership checks before updates and deletes, sensitive-field hashing, and ID validation — regardless of what the model does with the rest of the code.
 
-Use it as a **Claude Code skill** (`/developable`), an **OpenAI Codex skill**, or a **Python CLI**.
+Use it primarily as a **Claude Code slash command** (`/developable`) or an **OpenAI Codex skill**. The Python CLI remains available as a secondary engine and automation fallback.
+
+---
+
+## Managed repos
+
+Developable now treats generated and adopted backends as **managed repos**. After the first successful `/developable init` or `/developable adopt`, the repo gets a `.developable/` contract bundle that becomes the source of truth for:
+
+- backend layer topology
+- security invariants
+- SOLID constraints
+- route and ownership behavior
+- local hook and CI conformance checks
+
+If `.developable/contract.json` exists, later backend work should continue in managed mode even when the user does not explicitly invoke `/developable` again.
 
 ---
 

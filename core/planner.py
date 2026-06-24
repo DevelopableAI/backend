@@ -29,12 +29,20 @@ class Planner:
         datasource = spec["datasource"]
         entities = spec["entities"]
         auth_entity_name = spec.get("auth_entity_name")
+        auth_entity = next((e for e in entities if e.get("is_auth_entity")), None)
 
         has_sensitive_fields = any(
             f["is_sensitive"]
             for e in entities
             for f in e["fields"]
         )
+        controller_specs = [
+            {
+                "entity": entity,
+                "nested_routes": self._build_nested_routes(entity, entities, auth_entity_name),
+            }
+            for entity in entities
+        ]
 
         # Derive a human-readable project name from the schema path for CLAUDE.md
         import os
@@ -90,6 +98,17 @@ class Planner:
                 "needs_llm": False,
             },
             {
+                "path": "src/bootstrap/container.ts",
+                "template": "express/api/container.ts.j2",
+                "context": {
+                    "entities": entities,
+                    "controller_specs": controller_specs,
+                    "auth_entity": auth_entity,
+                    "auth_entity_name": auth_entity_name,
+                },
+                "needs_llm": False,
+            },
+            {
                 "path": "src/lib/prisma.ts",
                 "template": "express/api/prisma.ts.j2",
                 "context": {},
@@ -119,18 +138,57 @@ class Planner:
             },
         ]
 
-        # Add crypto utility if any entity has sensitive fields
+        if auth_entity_name:
+            files.extend([
+                {
+                    "path": "src/contracts/token-service.contract.ts",
+                    "template": "express/api/token-service.contract.ts.j2",
+                    "context": {},
+                    "needs_llm": False,
+                },
+                {
+                    "path": "src/adapters/jwt-token.service.ts",
+                    "template": "express/api/jwt-token.service.ts.j2",
+                    "context": {},
+                    "needs_llm": False,
+                },
+                {
+                    "path": "src/contracts/auth.service.contract.ts",
+                    "template": "express/api/auth.service.contract.ts.j2",
+                    "context": {"auth_entity": auth_entity},
+                    "needs_llm": False,
+                },
+                {
+                    "path": "src/services/auth.service.ts",
+                    "template": "express/api/auth.service.ts.j2",
+                    "context": {
+                        "auth_entity": auth_entity,
+                        "sensitive_fields": [
+                            field for field in auth_entity["fields"] if field["is_sensitive"]
+                        ] if auth_entity else [],
+                    },
+                    "needs_llm": False,
+                },
+            ])
+
         if has_sensitive_fields:
-            files.append({
-                "path": "src/lib/crypto.ts",
-                "template": "express/api/crypto.ts.j2",
-                "context": {},
-                "needs_llm": False,
-            })
+            files.extend([
+                {
+                    "path": "src/contracts/password-hasher.contract.ts",
+                    "template": "express/api/password-hasher.contract.ts.j2",
+                    "context": {},
+                    "needs_llm": False,
+                },
+                {
+                    "path": "src/adapters/bcrypt-password-hasher.ts",
+                    "template": "express/api/bcrypt-password-hasher.ts.j2",
+                    "context": {},
+                    "needs_llm": False,
+                },
+            ])
 
         # Add JWT auth middleware if an auth entity was detected
         if auth_entity_name:
-            auth_entity = next((e for e in entities if e.get("is_auth_entity")), None)
             files.append({
                 "path": "src/lib/auth.ts",
                 "template": "express/api/auth.ts.j2",
@@ -181,6 +239,7 @@ class Planner:
         parent_fk_relations = [
             r for r in entity.get("relations", []) if r["type"] == "many_to_one" and r.get("fk_field")
         ]
+        injected_scalar_fields = self._get_injected_create_fields(entity, parent_fk_relations, owner_fk_field)
 
         # child_cascade_deletes: other entities that FK-reference this entity and must be
         # deleted first (in a transaction) before this entity can be deleted.
@@ -236,6 +295,15 @@ class Planner:
                 "needs_llm": False,
             },
             {
+                "path": f"src/contracts/{name_lower}.repository.contract.ts",
+                "template": "express/api/repository.contract.ts.j2",
+                "context": {
+                    "entity": entity,
+                    "parent_fk_relations": parent_fk_relations,
+                },
+                "needs_llm": False,
+            },
+            {
                 "path": f"src/repositories/{name_lower}.repository.ts",
                 "template": "express/api/repository.ts.j2",
                 "context": {
@@ -244,6 +312,29 @@ class Planner:
                     "child_cascade_deletes": child_cascade_deletes,
                     "filterable_fields": filterable_fields,
                     "sortable_fields": sortable_fields,
+                },
+                "needs_llm": False,
+            },
+            {
+                "path": f"src/contracts/{name_lower}.service.contract.ts",
+                "template": "express/api/service.contract.ts.j2",
+                "context": {
+                    "entity": entity,
+                    "parent_fk_relations": parent_fk_relations,
+                    "primary_parent": primary_parent,
+                    "owner_fk_field": owner_fk_field,
+                },
+                "needs_llm": False,
+            },
+            {
+                "path": f"src/services/{name_lower}.service.ts",
+                "template": "express/api/service.ts.j2",
+                "context": {
+                    "entity": entity,
+                    "parent_fk_relations": parent_fk_relations,
+                    "primary_parent": primary_parent,
+                    "owner_fk_field": owner_fk_field,
+                    "auth_entity_name": auth_entity_name,
                 },
                 "needs_llm": False,
             },
@@ -267,6 +358,7 @@ class Planner:
                 "context": {
                     "entity": entity,
                     "scalar_fields": scalar_fields,
+                    "injected_scalar_fields": injected_scalar_fields,
                 },
                 "needs_llm": False,
             },
@@ -287,13 +379,25 @@ class Planner:
                     "template": "express/api/auth.controller.ts.j2",
                     "context": {
                         "auth_entity": entity,
-                        "sensitive_fields": sensitive_fields,
                     },
                     "needs_llm": False,
                 },
             ]
 
         return files
+
+    def _get_injected_create_fields(
+        self,
+        entity: dict,
+        parent_fk_relations: list[dict],
+        owner_fk_field: str | None,
+    ) -> list[dict]:
+        injected = []
+        if owner_fk_field:
+            owner_field = next((field for field in entity["fields"] if field["name"] == owner_fk_field), None)
+            if owner_field:
+                injected.append(owner_field)
+        return injected
 
     def _infer_routes(self, entity: dict) -> list[dict]:
         plural = entity["name_plural"]

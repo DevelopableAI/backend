@@ -6,6 +6,8 @@ from core.parser import PrismaParser
 from core.rules_parser import BusinessRulesParser
 from core.project_config import ProjectConfig
 from core.cli_helpers import collect_env_values, collect_github_config, print_llm_usage_summary
+from core.conformance_checker import ConformanceChecker
+from core.project_contract import ProjectContractWriter
 from agents.developer import Developer
 from agents.tester import Tester
 
@@ -73,10 +75,11 @@ def main():
     # ── Tester agent ───────────────────────────────────────────────────────────
     # When --github is used, tests must live inside out_dir/tests so CI finds them.
     tests_out = str(out_dir / "tests") if args.github else args.tests_out
+    test_plan: dict | None = None
     if tests_out:
         tests_dir = Path(tests_out)
         print(f"\n[Tester] Generating integration test suite into {tests_dir}/...")
-        Tester(tests_dir=tests_dir, use_llm=not args.no_llm, force=args.force).generate(spec, api_plan)
+        test_plan = Tester(tests_dir=tests_dir, use_llm=not args.no_llm, force=args.force).generate(spec, api_plan)
         print(f"\nTest suite at {tests_dir}/")
         print(f"  pip install requests && python {tests_dir}/run_all.py [API_BASE_URL]")
 
@@ -84,7 +87,24 @@ def main():
     from agents.version_control import VersionControl
     print(f"\n[Version Control] Generating infrastructure files...")
     vc = VersionControl(out_dir=out_dir)
-    vc.generate_infra(spec)
+    infra_plan = vc.generate_infra(spec)
+
+    # ── Developable managed contract ───────────────────────────────────────────
+    print(f"\n[Developable] Writing managed contract bundle...")
+    ProjectContractWriter(out_dir).write(
+        spec=spec,
+        api_plan=api_plan,
+        test_plan=test_plan,
+        infra_plan=infra_plan,
+        repo_mode="generated",
+    )
+    result = ConformanceChecker(out_dir).check()
+    if not result.ok:
+        print("\nDevelopable conformance failed for the generated project:")
+        for error in result.errors:
+            print(f"  - {error}")
+        sys.exit(1)
+    print("  Managed contract written and verified.")
 
     github_info: dict | None = None
     if args.github:

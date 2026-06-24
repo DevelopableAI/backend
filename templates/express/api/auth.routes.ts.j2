@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { AuthController } from '../controllers/auth.controller.js';
+import { authController } from '../bootstrap/container.js';
 
 const router = Router();
-const controller = new AuthController();
+const controller = authController;
 
 // POST /auth/register — create a new account
 router.post('/register', controller.register.bind(controller));

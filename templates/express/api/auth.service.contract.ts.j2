@@ -1,0 +1,25 @@
+import { {{ auth_entity.name }}CreateInput, {{ auth_entity.name }}Response } from '../types/{{ auth_entity.name_lower }}.types.js';
+
+export interface AuthLoginInput {
+{% if auth_entity.auth_login_field %}
+  {{ auth_entity.auth_login_field.name }}: {{ auth_entity.auth_login_field.ts_type }};
+{% endif %}
+{% set credential_field = auth_entity.fields | selectattr('is_sensitive') | list | first %}
+{% if credential_field %}
+  {{ credential_field.name }}: string;
+{% endif %}
+}
+
+export interface AuthRegisterResult {
+  token: string;
+  {{ auth_entity.name_lower }}: {{ auth_entity.name }}Response;
+}
+
+export interface AuthLoginResult {
+  token: string;
+}
+
+export interface IAuthService {
+  register(data: {{ auth_entity.name }}CreateInput): Promise<AuthRegisterResult>;
+  login(credentials: AuthLoginInput): Promise<AuthLoginResult>;
+}
