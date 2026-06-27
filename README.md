@@ -143,6 +143,14 @@ python deploy.py --out ./my-api --deploy-to gcp --gcp-project my-project-id
 python deploy.py --out ./my-api --deploy-to heroku
 ```
 
+Deployment provider choice is always explicit. Developable should not infer a cloud target for you, and managed command/skill flows must distinguish:
+
+- CI/CD scaffolding only
+- CI/CD + Terraform/IaC only
+- deploy now
+
+When deployment credentials are auto-detected, Developable now validates them before use and stops after bounded retry attempts instead of looping indefinitely on the same credential path.
+
 ---
 
 ## What gets generated

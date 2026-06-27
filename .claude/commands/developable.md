@@ -22,6 +22,22 @@ If `.developable/contract.json` exists:
 - `/developable apply` — repair contract drift in managed files
 - `/developable extend` — add or change backend behavior while preserving the managed contract
 
+## Deployment Choice Rules
+
+If the user asks for CI/CD, deployment, hosting, or cloud setup:
+
+1. Do **not** assume they want an immediate live deployment.
+2. First distinguish between:
+   - `generate CI/CD only`
+   - `generate CI/CD + Terraform/IaC only`
+   - `deploy now`
+3. If they want `deploy now`, require an explicit provider choice:
+   - `AWS`
+   - `GCP`
+   - `Heroku`
+4. Never infer `Heroku` as a fallback just because it is the least-parameter path.
+5. If credentials are detected but fail validation, surface that clearly and ask for corrected credentials instead of repeating the same path indefinitely.
+
 ## Slash-Command Workflow
 
 1. Prefer the command surface over direct ad hoc backend generation.

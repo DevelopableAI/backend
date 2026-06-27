@@ -18,6 +18,13 @@ If `.developable/contract.json` exists, load `.developable/*` before backend edi
 - `/developable apply`
 - `/developable extend`
 
+## Deployment Rules
+
+- Do not assume the user wants immediate live deployment.
+- Separate `CI/CD only`, `IaC only`, and `deploy now`.
+- Require an explicit provider choice for `deploy now`.
+- Never default to `Heroku`.
+
 ## Standards
 
 - managed backends must pass `npm run check:developable`

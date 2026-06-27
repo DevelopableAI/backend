@@ -293,6 +293,8 @@ python deploy.py --out ./output --deploy-to gcp --gcp-project my-project-id
 python deploy.py --out ./output --deploy-to heroku
 ```
 
+Deployment is an explicit choice. The command/skill layer should separate `CI/CD only`, `CI/CD + Terraform/IaC only`, and `deploy now`, and should never infer Heroku as a convenience fallback.
+
 ---
 
 ## Generation Pipeline
@@ -575,6 +577,8 @@ The Python CLI (`main.py` + `deploy.py`) remains alongside the skill for:
 - Cloud deployment (Terraform generation + cloud provisioning)
 - CI/CD integration (GitHub Actions wiring)
 - Batch regeneration of existing projects
+
+When the deploy path is used, detected provider credentials must be validated before provisioning starts. If validation fails, the user should be asked for corrected credentials after bounded retries rather than being left in an open-ended retry loop. Provider-specific transient retries still belong inside the provider implementation itself, such as Heroku's post-push release polling.
 
 ### What the Skill Encodes
 

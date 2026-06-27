@@ -15,6 +15,13 @@ Developable is the primary structural workflow for managed backends. If `.develo
 - `apply`
 - `extend`
 
+## Deployment Rules
+
+- Separate CI/CD scaffolding from actual deployment.
+- Require an explicit provider choice for deployment.
+- Never infer Heroku as a fallback provider.
+- If detected credentials fail validation, ask for corrected credentials instead of retrying the same method indefinitely.
+
 ## Required Behavior
 
 - preserve `.developable/*` as the source of truth

@@ -39,6 +39,20 @@ Then:
 - `apply`: restore conformance in managed files
 - `extend`: add features while preserving the managed contract
 
+## Deployment Rules
+
+When a user asks for CI/CD, deployment, or cloud hosting:
+
+- do not default to live deployment
+- first separate `CI/CD scaffolding` from `actual deployment`
+- if actual deployment is requested, require an explicit provider choice:
+  - `AWS`
+  - `GCP`
+  - `Heroku`
+- never infer `Heroku` by convenience
+- if credentials are detected but invalid, ask for corrected credentials after validation fails
+- preserve provider-specific deployment retries only for known post-auth transient states, not for credential guessing
+
 ## Core Standards
 
 - Do not replace template logic with whole-file free-form LLM generation.

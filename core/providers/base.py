@@ -63,6 +63,17 @@ class BaseProvider(ABC):
         """
 
     @abstractmethod
+    def validate_credentials(self, credentials: dict[str, Any]) -> tuple[bool, str | None]:
+        """
+        Verify that a credentials dict is actually usable for this provider.
+
+        Returns:
+            (is_valid, reason)
+            is_valid: True when the credentials are usable.
+            reason: Human-readable failure reason when invalid, else None.
+        """
+
+    @abstractmethod
     def provision_database(
         self,
         spec: dict[str, Any],
