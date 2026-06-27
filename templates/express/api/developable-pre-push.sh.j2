@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+if [ ! -f package.json ] || [ ! -f .developable/contract.json ]; then
+  exit 0
+fi
+
+npm run check:developable

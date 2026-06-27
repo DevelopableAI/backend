@@ -1,0 +1,69 @@
+{% set credential_field = sensitive_fields[0] if sensitive_fields else None %}
+{% set login_field = auth_entity.auth_login_field %}
+{% set id_field_name = auth_entity.auth_id_field %}
+import { ConflictError, UnauthorizedError } from '../lib/errors.js';
+import { IAuthService, AuthLoginInput, AuthLoginResult, AuthRegisterResult } from '../contracts/auth.service.contract.js';
+import { IPasswordHasher } from '../contracts/password-hasher.contract.js';
+import { ITokenService } from '../contracts/token-service.contract.js';
+import { I{{ auth_entity.name }}Repository } from '../contracts/{{ auth_entity.name_lower }}.repository.contract.js';
+import { {{ auth_entity.name }}CreateInput, {{ auth_entity.name }}PersistenceCreateInput, {{ auth_entity.name }}Response } from '../types/{{ auth_entity.name_lower }}.types.js';
+
+export class AuthService implements IAuthService {
+  constructor(
+    private readonly repository: I{{ auth_entity.name }}Repository,
+{% if credential_field %}
+    private readonly passwordHasher: IPasswordHasher,
+{% endif %}
+    private readonly tokenService: ITokenService,
+  ) {}
+
+  async register(data: {{ auth_entity.name }}CreateInput): Promise<AuthRegisterResult> {
+    try {
+      const payload: {{ auth_entity.name }}PersistenceCreateInput = {
+        ...data,
+{% if credential_field %}
+        {{ credential_field.name }}: await this.passwordHasher.hash(String(data.{{ credential_field.name }})),
+{% endif %}
+      };
+      const {{ auth_entity.name_lower }} = await this.repository.create(payload);
+      const token = await this.tokenService.sign(this.buildAuthPayload({{ auth_entity.name_lower }}));
+      return { token, {{ auth_entity.name_lower }} };
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        throw new ConflictError('An account with this {{ login_field.name if login_field else "identifier" }} already exists');
+      }
+      throw err;
+    }
+  }
+
+  async login(credentials: AuthLoginInput): Promise<AuthLoginResult> {
+{% if login_field %}
+    const {{ auth_entity.name_lower }} = await this.repository.findAuthByLogin(credentials.{{ login_field.name }});
+{% else %}
+    const {{ auth_entity.name_lower }} = null;
+{% endif %}
+    if (!{{ auth_entity.name_lower }}) {
+      throw new UnauthorizedError('Invalid credentials');
+    }
+{% if credential_field %}
+    const valid = await this.passwordHasher.compare(
+      credentials.{{ credential_field.name }},
+      String({{ auth_entity.name_lower }}.{{ credential_field.name }}),
+    );
+    if (!valid) {
+      throw new UnauthorizedError('Invalid credentials');
+    }
+{% endif %}
+    const safeUser = await this.repository.findById({{ auth_entity.name_lower }}.{{ id_field_name }});
+    if (!safeUser) {
+      throw new UnauthorizedError('Invalid credentials');
+    }
+    const token = await this.tokenService.sign(this.buildAuthPayload(safeUser));
+    return { token };
+  }
+
+  private buildAuthPayload(user: {{ auth_entity.name }}Response): Record<string, unknown> {
+    const { {{ id_field_name }}: principalId, ...rest } = user as {{ auth_entity.name }}Response & Record<string, unknown>;
+    return { id: principalId, ...rest };
+  }
+}

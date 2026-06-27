@@ -1,0 +1,19 @@
+import { ListQueryParams } from '../lib/pagination.js';
+import { {{ entity.name }}CreateInput, {{ entity.name }}UpdateInput, {{ entity.name }}PersistenceCreateInput, {{ entity.name }}Record, {{ entity.name }}Response } from '../types/{{ entity.name_lower }}.types.js';
+
+export interface I{{ entity.name }}Repository {
+  findMany(params: ListQueryParams): Promise<{ data: {{ entity.name }}Response[]; total: number }>;
+  findById(id: {{ entity.pk_ts_type }}): Promise<{{ entity.name }}Response | null>;
+  create(data: {{ entity.name }}PersistenceCreateInput): Promise<{{ entity.name }}Response>;
+  update(id: {{ entity.pk_ts_type }}, data: {{ entity.name }}UpdateInput): Promise<{{ entity.name }}Response | null>;
+  delete(id: {{ entity.pk_ts_type }}): Promise<boolean>;
+{% for rel in parent_fk_relations %}
+  findManyBy{{ rel.fk_field[0] | upper ~ rel.fk_field[1:] }}(
+    parentId: {{ entity.pk_ts_type }},
+    params: ListQueryParams,
+  ): Promise<{ data: {{ entity.name }}Response[]; total: number }>;
+{% endfor %}
+{% if entity.is_auth_entity and entity.auth_login_field %}
+  findAuthByLogin(loginValue: {{ entity.auth_login_field.ts_type }}): Promise<{{ entity.name }}Record | null>;
+{% endif %}
+}

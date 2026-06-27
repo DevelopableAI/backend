@@ -10,7 +10,7 @@ This is not a prompt quality problem. It is a missing standard problem.
 
 ### The Solution
 
-**Developable** establishes that standard. It is an opinionated, battle-tested template for building Express + TypeScript REST APIs that encodes exact answers to the questions that LLMs otherwise guess at:
+**Developable** establishes that standard. It is an opinionated, battle-tested template system for building and preserving Express + TypeScript REST APIs. The standard now lives both in the Jinja templates and in the repo-local `.developable/*` contract bundle written into managed backends.
 
 - **File structure** — routes → controllers → repositories; one file per concern, consistent naming
 - **Security invariants** — non-negotiable rules baked into every generated file (see the Security Invariants section)
@@ -18,11 +18,11 @@ This is not a prompt quality problem. It is a missing standard problem.
 - **Auth and ownership** — how JWT is verified, how ownership is checked, how sensitive fields are handled
 - **Validation** — Zod schemas at the controller boundary, server-side FK injection, no client-supplied owner IDs
 
-These decisions are encoded in the Jinja2 templates in `templates/express/`. They are not suggestions. They are the template, and the template is the product.
+These decisions are encoded in the Jinja2 templates in `templates/express/` and enforced through managed-repo conformance metadata in `.developable/*`. They are not suggestions. They are the template standard, and the template standard is the product.
 
 ### The Claude Code Skill (Shipped)
 
-The skill is live at `.claude/commands/developable.md`. A Codex skill bundle ships alongside it at `skills/developable/SKILL.md`. Both package the full generation pipeline — parse → plan → assemble — as prompt instructions that the coding agent follows when writing files. No Python runtime, no `pip install`, no `ANTHROPIC_API_KEY` setup required.
+The skill is live at `.claude/commands/developable.md`. A Codex skill bundle ships alongside it at `skills/developable/SKILL.md`. Both now frame Developable as a slash-command-first managed-backend workflow: `init`, `adopt`, `check`, `apply`, and `extend`. After a repo is managed, `.developable/*` should be loaded on later backend passes even without an explicit Developable invocation.
 
 The Python CLI (`main.py` + `deploy.py`) remains the proof and deployment vehicle. Every generation run, test, and deployment failure is a signal that refines the template the skill encodes.
 
@@ -292,6 +292,8 @@ python deploy.py --out ./output --deploy-to aws
 python deploy.py --out ./output --deploy-to gcp --gcp-project my-project-id
 python deploy.py --out ./output --deploy-to heroku
 ```
+
+Deployment is an explicit choice. The command/skill layer should separate `CI/CD only`, `CI/CD + Terraform/IaC only`, and `deploy now`, and should never infer Heroku as a convenience fallback.
 
 ---
 
@@ -575,6 +577,8 @@ The Python CLI (`main.py` + `deploy.py`) remains alongside the skill for:
 - Cloud deployment (Terraform generation + cloud provisioning)
 - CI/CD integration (GitHub Actions wiring)
 - Batch regeneration of existing projects
+
+When the deploy path is used, detected provider credentials must be validated before provisioning starts. If validation fails, the user should be asked for corrected credentials after bounded retries rather than being left in an open-ended retry loop. Provider-specific transient retries still belong inside the provider implementation itself, such as Heroku's post-push release polling.
 
 ### What the Skill Encodes
 

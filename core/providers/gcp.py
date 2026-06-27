@@ -149,6 +149,45 @@ class GCPProvider(BaseProvider):
             "credentials_b64": self._encode_sa_file(resolved_sa) if resolved_sa else "",
         }
 
+    def validate_credentials(self, credentials: dict[str, Any]) -> tuple[bool, str | None]:
+        """
+        Validate GCP credentials by refreshing the token and confirming the
+        configured project is accessible.
+        """
+        project_id = credentials.get("project_id", "").strip()
+        if not project_id:
+            return False, "GCP project ID is missing"
+
+        try:
+            gcp_creds = self._load_credentials(credentials)
+        except Exception as exc:
+            return False, f"Could not load GCP credentials: {exc}"
+
+        try:
+            from google.auth.transport.requests import Request as GoogleAuthRequest
+            gcp_creds.refresh(GoogleAuthRequest())
+        except Exception as exc:
+            return False, f"GCP credential refresh failed: {exc}"
+
+        try:
+            from googleapiclient.discovery import build as gapi_build
+            from googleapiclient.errors import HttpError as GApiHttpError
+        except ImportError:
+            return True, None
+
+        try:
+            crm = gapi_build("cloudresourcemanager", "v1", credentials=gcp_creds)
+            crm.projects().get(projectId=project_id).execute()
+            return True, None
+        except GApiHttpError as exc:
+            if exc.resp.status == 403:
+                return False, f"GCP credentials are valid but do not have access to project '{project_id}'"
+            if exc.resp.status == 404:
+                return False, f"GCP project '{project_id}' was not found"
+            return False, f"GCP project access validation failed (HTTP {exc.resp.status}): {exc}"
+        except Exception as exc:
+            return False, f"Could not validate GCP project access: {exc}"
+
     # ── Database provisioning ──────────────────────────────────────────────────
 
     def provision_database(
