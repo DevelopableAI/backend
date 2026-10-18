@@ -105,6 +105,33 @@ class HerokuProvider(BaseProvider):
 
         return {"api_key": api_key, "app_name": app_name, "heroku_region": region}
 
+    def validate_credentials(self, credentials: dict[str, Any]) -> tuple[bool, str | None]:
+        """
+        Validate that the Heroku API key can authenticate against the Platform API.
+
+        This is a preflight auth check only. It intentionally does NOT reuse the
+        post-push release semantics where Heroku may return 401 while the pushed
+        image is still being indexed.
+        """
+        api_key = credentials.get("api_key", "").strip()
+        if not api_key:
+            return False, "Heroku API key is missing"
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/vnd.heroku+json; version=3",
+        }
+        try:
+            resp = requests.get(f"{_HEROKU_API}/account", headers=headers, timeout=15)
+        except requests.RequestException as exc:
+            return False, f"Could not reach Heroku API: {exc}"
+
+        if resp.ok:
+            return True, None
+        if resp.status_code == 401:
+            return False, "Heroku API key was rejected by the Platform API"
+        return False, f"Heroku credential validation failed with HTTP {resp.status_code}: {resp.text}"
+
     # ── Database provisioning ──────────────────────────────────────────────────
 
     def provision_database(

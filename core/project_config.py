@@ -49,6 +49,7 @@ class ProjectConfig:
             "out_dir": str(out_dir.resolve()),
             "project_name": spec["entities"][0]["name_lower"] + "-api" if spec.get("entities") else "",
             "tests_dir": str(tests_dir.resolve()) if tests_dir else None,
+            "managed_contract_path": str((out_dir / ".developable" / "contract.json").resolve()),
             "github_user": github_info.get("user") if github_info else None,
             "github_repo": github_info.get("repo") if github_info else None,
             "repo_url": github_info.get("repo_url") if github_info else None,

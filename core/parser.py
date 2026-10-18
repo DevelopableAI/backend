@@ -273,7 +273,7 @@ class PrismaParser:
             "@updatedAt" in annotations
             or (
                 default_val is not None
-                and default_val.startswith(("autoincrement(", "cuid(", "uuid(", "dbgenerated("))
+                and default_val.startswith(("autoincrement(", "cuid(", "uuid(", "dbgenerated(", "now("))
             )
         )
 

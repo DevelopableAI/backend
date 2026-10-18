@@ -69,8 +69,7 @@ class Deployment:
         provider = get_provider(provider_name, self.out_dir, **self.provider_kwargs.get(provider_name, {}))
 
         print(f"\n  Detecting {provider.display_name} credentials...")
-        creds = provider.detect_credentials() or provider.collect_credentials()
-        print(f"  Found existing credentials." if provider.detect_credentials() else "")
+        creds = self._resolve_credentials(provider)
         provider.configure(creds)
 
         project_name = provider.slug(spec)
@@ -97,6 +96,37 @@ class Deployment:
 
         self._run_remote_tests(record["endpoint"])
         return record
+
+    def _resolve_credentials(self, provider: Any) -> dict[str, Any]:
+        detected = provider.detect_credentials()
+        if detected:
+            is_valid, reason = provider.validate_credentials(detected)
+            if is_valid:
+                print("  Found existing credentials.")
+                return detected
+            print(
+                "  Detected credentials, but they failed validation.\n"
+                f"  Reason: {reason or 'unknown validation failure'}"
+            )
+
+        max_manual_attempts = 2
+        for attempt in range(1, max_manual_attempts + 1):
+            creds = provider.collect_credentials()
+            is_valid, reason = provider.validate_credentials(creds)
+            if is_valid:
+                print("  Credentials validated.")
+                return creds
+            print(
+                f"  The supplied credentials were not accepted (attempt {attempt}/{max_manual_attempts}).\n"
+                f"  Reason: {reason or 'unknown validation failure'}"
+            )
+
+        print(
+            "\n  Deployment stopped: provider credentials could not be validated after multiple attempts.\n"
+            "  Fix the credentials or authentication method, then rerun deployment.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # ── Provider selection ─────────────────────────────────────────────────────
 

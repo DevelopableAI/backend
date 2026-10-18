@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
+import { ITokenService } from '../contracts/token-service.contract.js';
 
 export interface AuthUser {
   id: {{ auth_entity.auth_id_ts_type }};
@@ -16,19 +16,21 @@ declare global {
   }
 }
 
-export function authenticate(req: Request, res: Response, next: NextFunction): void {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
+export function createAuthenticate(tokenService: ITokenService) {
+  return async function authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
 
-  if (!token) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
+    if (!token) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
 
-  try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET!) as AuthUser;
-    next();
-  } catch {
-    res.status(401).json({ error: 'Invalid or expired token' });
-  }
+    try {
+      req.user = await tokenService.verify<AuthUser>(token);
+      next();
+    } catch {
+      res.status(401).json({ error: 'Invalid or expired token' });
+    }
+  };
 }

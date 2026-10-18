@@ -129,6 +129,33 @@ class AWSProvider(BaseProvider):
             "region": region,
         }
 
+    def validate_credentials(self, credentials: dict[str, Any]) -> tuple[bool, str | None]:
+        """Validate AWS credentials with a cheap STS identity check."""
+        try:
+            import boto3
+            from botocore.exceptions import BotoCoreError, ClientError
+        except ImportError:
+            return False, "boto3 is not installed"
+
+        region = credentials.get("region")
+        if not region:
+            return False, "AWS region is missing"
+
+        try:
+            session = boto3.Session(
+                aws_access_key_id=credentials.get("access_key"),
+                aws_secret_access_key=credentials.get("secret_key"),
+                aws_session_token=credentials.get("session_token"),
+                region_name=region,
+            )
+            sts = session.client("sts")
+            sts.get_caller_identity()
+            return True, None
+        except (BotoCoreError, ClientError) as exc:
+            return False, f"AWS credential validation failed: {exc}"
+        except Exception as exc:
+            return False, f"Could not validate AWS credentials: {exc}"
+
     # ── Database provisioning ──────────────────────────────────────────────────
 
     def provision_database(

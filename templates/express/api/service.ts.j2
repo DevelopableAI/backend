@@ -1,0 +1,107 @@
+import { ForbiddenError, NotFoundError, UnauthorizedError } from '../lib/errors.js';
+import { ListQueryParams } from '../lib/pagination.js';
+import { I{{ entity.name }}Repository } from '../contracts/{{ entity.name_lower }}.repository.contract.js';
+import { I{{ entity.name }}Service } from '../contracts/{{ entity.name_lower }}.service.contract.js';
+import { {{ entity.name }}CreateInput, {{ entity.name }}PersistenceCreateInput, {{ entity.name }}Response, {{ entity.name }}UpdateInput } from '../types/{{ entity.name_lower }}.types.js';
+
+export class {{ entity.name }}Service implements I{{ entity.name }}Service {
+  constructor(private readonly repository: I{{ entity.name }}Repository) {}
+
+  async list(params: ListQueryParams): Promise<{ data: {{ entity.name }}Response[]; total: number }> {
+    return this.repository.findMany(params);
+  }
+
+  async getById(id: {{ entity.pk_ts_type }}): Promise<{{ entity.name }}Response> {
+    return this.requireRecord(id);
+  }
+
+  async create(data: {{ entity.name }}CreateInput, actorId?: string | number): Promise<{{ entity.name }}Response> {
+    const payload: {{ entity.name }}PersistenceCreateInput = {
+      ...data,
+{% if owner_fk_field %}
+      {{ owner_fk_field }}: this.requireActorId(actorId) as any,
+{% endif %}
+    };
+    return this.repository.create(payload);
+  }
+
+  async update(
+    id: {{ entity.pk_ts_type }},
+    data: {{ entity.name }}UpdateInput,
+    actorId?: string | number,
+  ): Promise<{{ entity.name }}Response> {
+{% if entity.is_auth_entity and auth_entity_name %}
+    if (this.requireActorId(actorId) !== id) {
+      throw new ForbiddenError('You may only update your own record');
+    }
+{% elif owner_fk_field %}
+    const existing = await this.requireRecord(id);
+    if (existing.{{ owner_fk_field }} !== this.requireActorId(actorId)) {
+      throw new ForbiddenError('You do not own this resource');
+    }
+{% endif %}
+    const record = await this.repository.update(id, data);
+    if (!record) {
+      throw new NotFoundError('{{ entity.name }}', id);
+    }
+    return record;
+  }
+
+  async remove(id: {{ entity.pk_ts_type }}, actorId?: string | number): Promise<void> {
+{% if entity.is_auth_entity and auth_entity_name %}
+    if (this.requireActorId(actorId) !== id) {
+      throw new ForbiddenError('You may only delete your own record');
+    }
+{% elif owner_fk_field %}
+    const existing = await this.requireRecord(id);
+    if (existing.{{ owner_fk_field }} !== this.requireActorId(actorId)) {
+      throw new ForbiddenError('You do not own this resource');
+    }
+{% endif %}
+    const deleted = await this.repository.delete(id);
+    if (!deleted) {
+      throw new NotFoundError('{{ entity.name }}', id);
+    }
+  }
+{% for rel in parent_fk_relations %}
+
+  async listBy{{ rel.fk_field[0] | upper ~ rel.fk_field[1:] }}(
+    parentId: {{ entity.pk_ts_type }},
+    params: ListQueryParams,
+  ): Promise<{ data: {{ entity.name }}Response[]; total: number }> {
+    return this.repository.findManyBy{{ rel.fk_field[0] | upper ~ rel.fk_field[1:] }}(parentId, params);
+  }
+{% if primary_parent == rel.related_entity %}
+
+  async createFor{{ rel.related_entity }}(
+    parentId: {{ entity.pk_ts_type }},
+    data: {{ entity.name }}CreateInput,
+    actorId?: string | number,
+  ): Promise<{{ entity.name }}Response> {
+    const payload: {{ entity.name }}PersistenceCreateInput = {
+      ...data,
+      {{ rel.fk_field }}: parentId,
+{% if owner_fk_field %}
+      {{ owner_fk_field }}: this.requireActorId(actorId) as any,
+{% endif %}
+    };
+    return this.repository.create(payload);
+  }
+{% endif %}
+{% endfor %}
+
+  private async requireRecord(id: {{ entity.pk_ts_type }}): Promise<{{ entity.name }}Response> {
+    const record = await this.repository.findById(id);
+    if (!record) {
+      throw new NotFoundError('{{ entity.name }}', id);
+    }
+    return record;
+  }
+
+  private requireActorId(actorId?: string | number): string | number {
+    if (actorId === undefined || actorId === null) {
+      throw new UnauthorizedError('Authentication is required');
+    }
+    return actorId;
+  }
+}

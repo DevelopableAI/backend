@@ -1,0 +1,44 @@
+{% if auth_entity_name %}
+import { createAuthenticate } from '../lib/auth.js';
+import { JwtTokenService } from '../adapters/jwt-token.service.js';
+import { AuthController } from '../controllers/auth.controller.js';
+import { AuthService } from '../services/auth.service.js';
+{% endif %}
+{% if auth_entity and (auth_entity.fields | selectattr('is_sensitive') | list | length > 0) %}
+import { BcryptPasswordHasher } from '../adapters/bcrypt-password-hasher.js';
+{% endif %}
+{% for entity in entities %}
+import { {{ entity.name }}Controller } from '../controllers/{{ entity.name_lower }}.controller.js';
+import { {{ entity.name }}Service } from '../services/{{ entity.name_lower }}.service.js';
+import { {{ entity.name }}Repository } from '../repositories/{{ entity.name_lower }}.repository.js';
+{% endfor %}
+
+{% if auth_entity_name %}
+const tokenService = new JwtTokenService();
+{% endif %}
+{% if auth_entity and (auth_entity.fields | selectattr('is_sensitive') | list | length > 0) %}
+const passwordHasher = new BcryptPasswordHasher();
+{% endif %}
+{% if auth_entity_name %}
+export const authenticate = createAuthenticate(tokenService);
+{% endif %}
+{% for entity in entities %}
+const {{ entity.name_lower }}Repository = new {{ entity.name }}Repository();
+const {{ entity.name_lower }}Service = new {{ entity.name }}Service({{ entity.name_lower }}Repository);
+{% endfor %}
+{% for spec in controller_specs %}
+export const {{ spec.entity.name_lower }}Controller = new {{ spec.entity.name }}Controller(
+  {{ spec.entity.name_lower }}Service{% for nested in spec.nested_routes %},
+  {{ nested.related_entity_lower }}Service{% endfor %}
+);
+{% endfor %}
+{% if auth_entity %}
+export const authService = new AuthService(
+  {{ auth_entity.name_lower }}Repository,
+{% if auth_entity and (auth_entity.fields | selectattr('is_sensitive') | list | length > 0) %}
+  passwordHasher,
+{% endif %}
+  tokenService,
+);
+export const authController = new AuthController(authService);
+{% endif %}

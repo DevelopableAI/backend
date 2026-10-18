@@ -1,14 +1,9 @@
-{% set credential_field = sensitive_fields[0] if sensitive_fields else None %}
+{% set credential_field = (auth_entity.fields | selectattr('is_sensitive') | list | first) if (auth_entity.fields | selectattr('is_sensitive') | list) else None %}
 {% set login_field = auth_entity.auth_login_field %}
-{% set id_field_name = auth_entity.auth_id_field %}
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
 import { z } from 'zod';
-import { prisma } from '../lib/prisma.js';
-{% if credential_field %}
-import { hashValue, compareValue } from '../lib/crypto.js';
-{% endif %}
-import { AppError, ValidationError } from '../lib/errors.js';
+import { IAuthService } from '../contracts/auth.service.contract.js';
+import { ValidationError } from '../lib/errors.js';
 
 const registerSchema = z.object({
 {% if login_field %}
@@ -52,13 +47,9 @@ const loginSchema = z.object({
 });
 
 // Safe select: all non-sensitive fields returned from register / embedded in JWT
-const safeSelect = {
-{% for field in auth_entity.fields if not field.is_relation and not field.is_sensitive %}
-  {{ field.name }}: true,
-{% endfor %}
-} as const;
-
 export class AuthController {
+  constructor(private readonly authService: IAuthService) {}
+
   async register(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const parsed = registerSchema.safeParse(req.body);
@@ -67,36 +58,10 @@ export class AuthController {
         throw new ValidationError(message);
       }
 
-      const data = parsed.data;
-{% if credential_field %}
-      const hashedCredential = await hashValue(data.{{ credential_field.name }});
-{% endif %}
-
-      const {{ auth_entity.name_lower }} = await prisma.{{ auth_entity.name_lower }}.create({
-        data: {
-          ...data,
-{% if credential_field %}
-          {{ credential_field.name }}: hashedCredential,
-{% endif %}
-        },
-        select: safeSelect,
-      });
-
-      // Spread entire safe record into JWT; map PK field to 'id' for a stable AuthUser.id
-      const { {{ id_field_name }}: pkValue, ...otherFields } = {{ auth_entity.name_lower }};
-      const token = jwt.sign(
-        { id: pkValue, ...otherFields },
-        process.env.JWT_SECRET!,
-        { expiresIn: '7d' },
-      );
-
-      res.status(201).json({ token, {{ auth_entity.name_lower }} });
-    } catch (err: any) {
-      if (err?.code === 'P2002') {
-        next(new AppError(409, 'An account with this {{ login_field.name if login_field else 'identifier' }} already exists'));
-      } else {
-        next(err);
-      }
+      const result = await this.authService.register(parsed.data);
+      res.status(201).json(result);
+    } catch (err) {
+      next(err);
     }
   }
 
@@ -114,44 +79,8 @@ export class AuthController {
 {% if credential_field %}
       const {{ credential_field.name }} = parsed.data.{{ credential_field.name }};
 {% endif %}
-
-      // Fetch the record including the sensitive credential field for verification
-{% if login_field %}
-{% if login_field.is_unique or login_field.is_id %}
-      const {{ auth_entity.name_lower }} = await prisma.{{ auth_entity.name_lower }}.findUnique({
-        where: { {{ login_field.name }} },
-      });
-{% else %}
-      const {{ auth_entity.name_lower }} = await prisma.{{ auth_entity.name_lower }}.findFirst({
-        where: { {{ login_field.name }} },
-      });
-{% endif %}
-{% else %}
-      // No unique login field available — cannot perform login lookup
-      throw new AppError(501, 'Login not supported for this entity configuration');
-{% endif %}
-
-      if (!{{ auth_entity.name_lower }}) {
-        throw new AppError(401, 'Invalid {{ login_field.name if login_field else 'credentials' }} or {{ credential_field.name if credential_field else 'password' }}');
-      }
-
-{% if credential_field %}
-      const credentialValid = await compareValue({{ credential_field.name }}, {{ auth_entity.name_lower }}.{{ credential_field.name }});
-      if (!credentialValid) {
-        throw new AppError(401, 'Invalid {{ login_field.name if login_field else 'credentials' }} or {{ credential_field.name }}');
-      }
-{% endif %}
-
-      // Build JWT payload: exclude sensitive fields, map PK to 'id' for a stable AuthUser.id
-      const { {{ id_field_name }}: pkValue, {% for sf in sensitive_fields %}{{ sf.name }}: _sf{{ loop.index0 }}, {% endfor %}...otherFields } = {{ auth_entity.name_lower }};
-      const token = jwt.sign(
-        { id: pkValue, ...otherFields },
-        process.env.JWT_SECRET!,
-        { expiresIn: '7d' },
-      );
-
-      // Return token only — never expose the credential field in a response
-      res.json({ token });
+      const result = await this.authService.login(parsed.data);
+      res.json(result);
     } catch (err) {
       next(err);
     }

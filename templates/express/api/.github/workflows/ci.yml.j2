@@ -44,6 +44,9 @@ jobs:
       - name: Install Node dependencies
         run: npm install
 
+      - name: Run Developable conformance check
+        run: npm run check:developable
+
       - name: Set up Terraform
         if: ${{ hashFiles('terraform/*.tf') != '' }}
         uses: hashicorp/setup-terraform@v3

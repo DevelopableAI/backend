@@ -6,7 +6,9 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "lint": "eslint src --ext .ts"
+    "lint": "eslint src --ext .ts",
+    "check:developable": "node scripts/check-developable.js",
+    "postinstall": "node scripts/install-developable-hooks.js"
   },
   "dependencies": {
     "@prisma/client": "^5.0.0",
